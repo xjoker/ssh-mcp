@@ -5,12 +5,34 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
 
 	"github.com/BurntSushi/toml"
 )
+
+// expandKeyPath resolves a user-supplied key_path:
+//   - "" → unchanged (validation is the caller's job)
+//   - "~/foo" or "~\foo" → $HOME/foo
+//   - relative path → joined with configDir (the directory holding config.toml)
+//   - absolute path → unchanged
+func expandKeyPath(p, configDir string) string {
+	if p == "" {
+		return p
+	}
+	if strings.HasPrefix(p, "~/") || strings.HasPrefix(p, `~\`) {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, p[2:])
+		}
+		return p
+	}
+	if filepath.IsAbs(p) {
+		return p
+	}
+	return filepath.Join(configDir, p)
+}
 
 // tagRe validates tag strings: ^[a-z0-9_-]+$
 var tagRe = regexp.MustCompile(`^[a-z0-9_-]+$`)
@@ -120,6 +142,12 @@ func Load(path string) (*Config, error) {
 		WeakAlgorithmsOptIn:          rs.WeakAlgorithmsOptIn,
 	}
 
+	// configDir is the directory of the loaded config file; relative paths
+	// in key_path are resolved against it so users don't have to repeat the
+	// repo path in every entry.
+	absPath, _ := filepath.Abs(path)
+	configDir := filepath.Dir(absPath)
+
 	// Normalise server map keys to lowercase. ProxyJump references are
 	// also lowercased for symmetry, so that `proxy_jump = "Bastion"` matches
 	// `[servers.bastion]` regardless of case in the TOML source.
@@ -128,6 +156,7 @@ func Load(path string) (*Config, error) {
 		lk := strings.ToLower(k)
 		v.Name = lk
 		v.ProxyJump = strings.ToLower(v.ProxyJump)
+		v.KeyPath = expandKeyPath(v.KeyPath, configDir)
 		servers[lk] = v
 	}
 

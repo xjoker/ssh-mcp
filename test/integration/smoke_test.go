@@ -55,10 +55,9 @@ func startBridge(t *testing.T, ctx context.Context) (*mcp.ClientSession, func())
 }
 
 // decodeData returns the data payload from a successful CallToolResult.
-// On failure, decodes the envelope and t.Fatalf's with its contents.
+// On failure, surfaces the envelope error via t.Fatalf.
 //
-// The mcpserver dispatcher emits raw data on success (no envelope wrapper),
-// and the full {ok:false, error:{...}} envelope on failure, with IsError set.
+// SDD §5.1: every response is wrapped as {ok, data?, error?}.
 func decodeData(t *testing.T, res *mcp.CallToolResult) map[string]any {
 	t.Helper()
 	if len(res.Content) == 0 {
@@ -68,14 +67,18 @@ func decodeData(t *testing.T, res *mcp.CallToolResult) map[string]any {
 	if !ok {
 		t.Fatalf("expected text content, got %T", res.Content[0])
 	}
-	if res.IsError {
-		t.Fatalf("tool returned error: %s", tc.Text)
+	var env struct {
+		OK    bool                   `json:"ok"`
+		Data  map[string]any         `json:"data"`
+		Error map[string]any         `json:"error"`
 	}
-	var data map[string]any
-	if err := json.Unmarshal([]byte(tc.Text), &data); err != nil {
+	if err := json.Unmarshal([]byte(tc.Text), &env); err != nil {
 		t.Fatalf("unmarshal: %v\nraw: %s", err, tc.Text)
 	}
-	return data
+	if !env.OK || res.IsError {
+		t.Fatalf("tool returned error: %s", tc.Text)
+	}
+	return env.Data
 }
 
 func TestSSHExec_Password(t *testing.T) {

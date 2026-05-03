@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -426,5 +427,78 @@ func TestDefaultPath_NonEmpty(t *testing.T) {
 		if !strings.Contains(p, "mcp-ssh-bridge/config.toml") {
 			t.Errorf("DefaultPath missing expected suffix: %q", p)
 		}
+	}
+}
+
+func TestLoad_KeyPathRelativeResolvedAgainstConfigDir(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	body := `
+[servers.web]
+host = "h"
+user = "u"
+auth = "key"
+key_path = "keys/id_ed25519"
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(dir, "keys/id_ed25519")
+	if got := cfg.Servers["web"].KeyPath; got != want {
+		t.Errorf("key_path: got %q, want %q", got, want)
+	}
+}
+
+func TestLoad_KeyPathAbsolutePreserved(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	abs := filepath.Join(t.TempDir(), "abs/key")
+	body := `
+[servers.web]
+host = "h"
+user = "u"
+auth = "key"
+key_path = ` + fmt.Sprintf("%q", abs) + `
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Servers["web"].KeyPath; got != abs {
+		t.Errorf("key_path: got %q, want %q (absolute should be preserved)", got, abs)
+	}
+}
+
+func TestLoad_KeyPathTildeExpanded(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home dir")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	body := `
+[servers.web]
+host = "h"
+user = "u"
+auth = "key"
+key_path = "~/.ssh/id_ed25519"
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(home, ".ssh/id_ed25519")
+	if got := cfg.Servers["web"].KeyPath; got != want {
+		t.Errorf("key_path: got %q, want %q", got, want)
 	}
 }

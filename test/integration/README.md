@@ -15,17 +15,13 @@ transport against two `linuxserver/openssh-server` containers.
 # 1. Generate a throwaway SSH key for the key-auth container
 ssh-keygen -t ed25519 -N '' -f test/integration/test_key -C test@msb-integration
 
-# 2. Edit test/integration/config.toml and replace the placeholder
-#    /REPLACE/WITH/ABSOLUTE/PATH/... with the real absolute path to
-#    test/integration/test_key on your machine
-
-# 3. Bring up the containers (publishes 22021 + 22022 on localhost)
+# 2. Bring up the containers (publishes 22021 + 22022 on localhost)
 docker compose -f test/integration/docker-compose.yml up -d
 
-# 4. Build the bridge
+# 3. Build the bridge
 go build -trimpath -o bin/mcp-ssh-bridge ./cmd/mcp-ssh-bridge
 
-# 5. Trust the host keys once
+# 4. Trust the host keys once
 MCP_SSH_BRIDGE_CONFIG=$PWD/test/integration/config.toml \
   ./bin/mcp-ssh-bridge trust test-pwd
 MCP_SSH_BRIDGE_CONFIG=$PWD/test/integration/config.toml \
@@ -62,5 +58,5 @@ rm -f test/integration/test_key test/integration/test_key.pub
 
 - `USER_PASSWORD=test-password-marker` in `docker-compose.yml` is a
   throwaway value tied to ephemeral test containers; never reuse.
-- Key path in `config.toml` must be absolute — the bridge resolves it
-  relative to its own working directory at runtime.
+- `key_path` may be relative; the bridge resolves it against the
+  directory containing the config file (or `~` against `$HOME`).

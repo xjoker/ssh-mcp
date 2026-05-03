@@ -179,23 +179,20 @@ func buildElicitFunc(req *mcp.CallToolRequest) tools.ElicitFunc {
 }
 
 // envelopeToCallToolResult converts an envelope.Response to a mcp.CallToolResult.
-// Tool-level errors are represented as text content with IsError=true so that
-// the LLM client can see them.
+// The full envelope ({ok, data?, error?}) is always emitted as a single
+// TextContent payload so that LLM consumers see the contract documented in
+// SDD §5.1 verbatim. IsError is also set on the MCP result so MCP-aware
+// clients can short-circuit without parsing.
 func envelopeToCallToolResult(resp envelope.Response) *mcp.CallToolResult {
-	var text string
-	if resp.OK {
-		b, _ := json.Marshal(resp.Data)
-		text = string(b)
-	} else if resp.Error != nil {
-		b, _ := json.Marshal(resp)
-		text = string(b)
-	} else {
-		text = `{"ok":false}`
+	b, err := json.Marshal(resp)
+	if err != nil {
+		// Marshal of a well-formed Response cannot fail in practice;
+		// surface it loudly if it ever does.
+		b = []byte(`{"ok":false,"error":{"code":"INTERNAL_ERROR","message":"envelope marshal failed","retriable":false}}`)
 	}
-
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
-			&mcp.TextContent{Text: text},
+			&mcp.TextContent{Text: string(b)},
 		},
 		IsError: !resp.OK,
 	}
