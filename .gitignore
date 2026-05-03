@@ -6,3 +6,6 @@
 .idea/
 .vscode/
 .claude/
+test/integration/test_key
+test/integration/test_key.pub
+test/integration/.state/

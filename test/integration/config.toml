@@ -1,0 +1,27 @@
+[settings]
+allow_config_plaintext_password = true
+allow_inline_credentials = true
+allow_quick_setup = true
+default_timeout_ms = 30000
+max_timeout_ms = 60000
+output_max_bytes = 65536
+
+[servers.test-pwd]
+host = "127.0.0.1"
+port = 22021
+user = "tester"
+auth = "password"
+password = "plaintext:test-password-marker"
+description = "Integration test - password auth"
+tags = ["test"]
+
+[servers.test-key]
+host = "127.0.0.1"
+port = 22022
+user = "tester"
+auth = "key"
+# Replace with absolute path to repo's test/integration/test_key before running
+# the integration suite. Tests will fail with CONN_FAILED if this is left as-is.
+key_path = "/REPLACE/WITH/ABSOLUTE/PATH/TO/test/integration/test_key"
+description = "Integration test - key auth"
+tags = ["test"]

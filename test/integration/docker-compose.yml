@@ -1,0 +1,32 @@
+services:
+  ssh-pwd:
+    image: linuxserver/openssh-server:latest
+    platform: linux/amd64
+    container_name: msb-test-ssh-pwd
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+      - PASSWORD_ACCESS=true
+      - USER_NAME=tester
+      - USER_PASSWORD=test-password-marker
+      - SUDO_ACCESS=false
+    ports:
+      - "22021:2222"
+
+  ssh-key:
+    image: linuxserver/openssh-server:latest
+    platform: linux/amd64
+    container_name: msb-test-ssh-key
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+      - PASSWORD_ACCESS=false
+      - USER_NAME=tester
+      - SUDO_ACCESS=false
+      - PUBLIC_KEY_FILE=/keys/test_key.pub
+    volumes:
+      - ./test_key.pub:/keys/test_key.pub:ro
+    ports:
+      - "22022:2222"
