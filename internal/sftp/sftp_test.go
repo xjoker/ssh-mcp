@@ -666,3 +666,48 @@ func TestWrite_AtomicTmpNamesUnique(t *testing.T) {
 		seen[openedPath] = true
 	}
 }
+
+// SDD §13 / Codex L02: Realpath must re-validate the server's response
+// through safety.ValidateRemotePath. A malicious server returning a NUL
+// byte / oversized / non-absolute path must be rejected.
+func TestRealpath_RejectsNULFromServer(t *testing.T) {
+	c := &Client{b: &fakeBackend{
+		getwdResult: "/home/u",
+		realPathFunc: func(p string) (string, error) {
+			return "/tmp/evil\x00path", nil
+		},
+	}}
+	_, err := c.Realpath("foo")
+	if err == nil {
+		t.Fatal("expected error for NUL byte in server response")
+	}
+}
+
+func TestRealpath_RejectsRelativeFromServer(t *testing.T) {
+	c := &Client{b: &fakeBackend{
+		getwdResult: "/home/u",
+		realPathFunc: func(p string) (string, error) {
+			return "relative/path", nil
+		},
+	}}
+	_, err := c.Realpath("foo")
+	if err == nil {
+		t.Fatal("expected error for relative path from server")
+	}
+}
+
+func TestRealpath_AcceptsValidAbsolute(t *testing.T) {
+	c := &Client{b: &fakeBackend{
+		getwdResult: "/home/u",
+		realPathFunc: func(p string) (string, error) {
+			return "/etc/hosts", nil
+		},
+	}}
+	rp, err := c.Realpath("foo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rp.String() != "/etc/hosts" {
+		t.Errorf("got %q, want /etc/hosts", rp.String())
+	}
+}

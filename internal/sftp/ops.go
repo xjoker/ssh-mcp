@@ -367,7 +367,10 @@ func (c *Client) Symlink(target, linkPath safety.RemotePath) error {
 // Realpath resolves path to an absolute path on the remote host.
 // It expands a leading '~' to the remote home directory, resolves relative
 // paths against the remote working directory, then calls the SFTP server's
-// realpath to canonicalize.
+// realpath to canonicalize. The server's response is re-validated through
+// safety.ValidateRemotePath (S-1 / Codex L02): a malicious or buggy SFTP
+// server cannot smuggle in NUL bytes, oversized paths, or non-absolute
+// strings even though we are usually willing to trust it.
 func (c *Client) Realpath(p string) (safety.RemotePath, error) {
 	resolved, err := c.resolveRelative(p)
 	if err != nil {
@@ -378,7 +381,11 @@ func (c *Client) Realpath(p string) (safety.RemotePath, error) {
 	if err != nil {
 		return safety.RemotePath{}, fmt.Errorf("sftp: Realpath %q: %w", p, err)
 	}
-	return safety.NewRemotePathUnchecked(abs), nil
+	rp, err := safety.ValidateRemotePath(abs)
+	if err != nil {
+		return safety.RemotePath{}, fmt.Errorf("sftp: Realpath %q: server returned invalid path %q: %w", p, abs, err)
+	}
+	return rp, nil
 }
 
 // resolveRelative expands '~' and resolves relative paths to absolute ones
