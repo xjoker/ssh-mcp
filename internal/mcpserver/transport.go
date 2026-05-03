@@ -134,97 +134,126 @@ type credResolver struct {
 }
 
 // ResolveServerAuth resolves credentials for srv.
-// Returns the ordered list of gossh.AuthMethod and a human-readable label.
+// Returns the ordered list of gossh.AuthMethod, a human-readable label,
+// a cleanup function that zeros any held secrets (always non-nil), and any
+// error. Callers MUST defer cleanup() immediately after a successful return
+// to release secret material (H03/H04).
 func (r *credResolver) ResolveServerAuth(
 	ctx context.Context,
 	srv config.ServerConfig,
-) ([]gossh.AuthMethod, string, error) {
+) ([]gossh.AuthMethod, string, func(), error) {
+	noop := func() {}
+
 	switch srv.Auth {
 	case "agent":
-		ag := auth.Agent()
+		ag, agentCloser := auth.Agent()
 		if ag == nil {
-			return nil, "", fmt.Errorf("ssh-agent unavailable (SSH_AUTH_SOCK not set or socket unreachable)")
+			return nil, "", noop, fmt.Errorf("ssh-agent unavailable (SSH_AUTH_SOCK not set or socket unreachable)")
 		}
 		signers, err := ag.Signers()
 		if err != nil {
-			return nil, "", fmt.Errorf("ssh-agent: list signers: %w", err)
+			_ = agentCloser.Close()
+			return nil, "", noop, fmt.Errorf("ssh-agent: list signers: %w", err)
 		}
-		return []gossh.AuthMethod{gossh.PublicKeys(signers...)}, "agent", nil
+		cleanup := func() { _ = agentCloser.Close() }
+		return []gossh.AuthMethod{gossh.PublicKeys(signers...)}, "agent", cleanup, nil
 
 	case "key":
 		if srv.KeyPath == "" {
-			return nil, "", fmt.Errorf("server %q: auth=key requires key_path", srv.Name)
+			return nil, "", noop, fmt.Errorf("server %q: auth=key requires key_path", srv.Name)
 		}
 		pemBytes, err := os.ReadFile(srv.KeyPath)
 		if err != nil {
-			return nil, "", fmt.Errorf("server %q: read key_path: %w", srv.Name, err)
+			return nil, "", noop, fmt.Errorf("server %q: read key_path: %w", srv.Name, err)
 		}
 		var passSecret *auth.Secret
 		label := "key"
 		if !srv.KeyPassphrase.IsZero() {
 			passSecret, err = auth.Resolve(ctx, srv.KeyPassphrase, r.allowPlaintext)
 			if err != nil {
-				return nil, "", fmt.Errorf("server %q: resolve key_passphrase: %w", srv.Name, err)
+				return nil, "", noop, fmt.Errorf("server %q: resolve key_passphrase: %w", srv.Name, err)
 			}
-			defer passSecret.Close()
 			label = "key+passphrase"
 		}
 		signer, err := auth.LoadPrivateKey(pemBytes, passSecret)
-		if err != nil {
-			return nil, "", fmt.Errorf("server %q: load private key: %w", srv.Name, err)
+		if passSecret != nil {
+			passSecret.Close()
 		}
-		return []gossh.AuthMethod{gossh.PublicKeys(signer)}, label, nil
+		if err != nil {
+			return nil, "", noop, fmt.Errorf("server %q: load private key: %w", srv.Name, err)
+		}
+		return []gossh.AuthMethod{gossh.PublicKeys(signer)}, label, noop, nil
 
 	case "password":
 		secret, err := auth.Resolve(ctx, srv.Password, r.allowPlaintext)
 		if err != nil {
-			return nil, "", fmt.Errorf("server %q: resolve password: %w", srv.Name, err)
+			return nil, "", noop, fmt.Errorf("server %q: resolve password: %w", srv.Name, err)
 		}
-		defer secret.Close()
-		pw := make([]byte, len(secret.Bytes()))
-		copy(pw, secret.Bytes())
 		label := authLabel(srv.Password)
-		return []gossh.AuthMethod{gossh.Password(string(pw))}, label, nil
+		// Use PasswordCallback so the secret lives in a *auth.Secret until
+		// cleanup() is called. The callback creates a transient string copy
+		// only at SSH handshake time — the inevitable string() conversion
+		// exists solely at that instant and cannot be avoided given the
+		// gossh.PasswordCallback signature.
+		cleanup := func() { secret.Close() }
+		cb := gossh.PasswordCallback(func() (string, error) {
+			b := secret.Bytes()
+			if len(b) == 0 {
+				return "", fmt.Errorf("password secret already closed")
+			}
+			return string(b), nil
+		})
+		return []gossh.AuthMethod{cb}, label, cleanup, nil
 
 	case "quick_setup":
 		if r.quickSetup == nil {
-			return nil, "", fmt.Errorf("server %q: quick_setup registry not wired", srv.Name)
+			return nil, "", noop, fmt.Errorf("server %q: quick_setup registry not wired", srv.Name)
 		}
 		view, ok := r.quickSetup.Lookup(srv.Name)
 		if !ok {
-			return nil, "", fmt.Errorf("server %q: quick_setup entry expired or not found", srv.Name)
+			return nil, "", noop, fmt.Errorf("server %q: quick_setup entry expired or not found", srv.Name)
 		}
-		// Defensive: zero the local copy as soon as we're done.
-		defer func() {
+		// cleanup zeros the local copies of the secret material returned
+		// by Lookup (the registry holds its own *auth.Secret copies separately).
+		cleanup := func() {
 			for i := range view.Secret {
 				view.Secret[i] = 0
 			}
 			for i := range view.Passphrase {
 				view.Passphrase[i] = 0
 			}
-		}()
+		}
 		switch view.AuthKind {
 		case "password":
-			pw := make([]byte, len(view.Secret))
-			copy(pw, view.Secret)
-			return []gossh.AuthMethod{gossh.Password(string(pw))}, "quick_setup", nil
+			// Use PasswordCallback; secret held in closure until cleanup().
+			cb := gossh.PasswordCallback(func() (string, error) {
+				if len(view.Secret) == 0 {
+					return "", fmt.Errorf("quick_setup password secret already zeroed")
+				}
+				return string(view.Secret), nil
+			})
+			return []gossh.AuthMethod{cb}, "quick_setup", cleanup, nil
 		case "key":
 			var passSecret *auth.Secret
 			if len(view.Passphrase) > 0 {
 				passSecret = auth.NewSecret(view.Passphrase)
-				defer passSecret.Close()
 			}
 			signer, err := auth.LoadPrivateKey(view.Secret, passSecret)
-			if err != nil {
-				return nil, "", fmt.Errorf("server %q: load quick_setup key: %w", srv.Name, err)
+			if passSecret != nil {
+				passSecret.Close()
 			}
-			return []gossh.AuthMethod{gossh.PublicKeys(signer)}, "quick_setup", nil
+			if err != nil {
+				cleanup()
+				return nil, "", noop, fmt.Errorf("server %q: load quick_setup key: %w", srv.Name, err)
+			}
+			return []gossh.AuthMethod{gossh.PublicKeys(signer)}, "quick_setup", cleanup, nil
 		default:
-			return nil, "", fmt.Errorf("server %q: quick_setup view has unknown auth kind %q", srv.Name, view.AuthKind)
+			cleanup()
+			return nil, "", noop, fmt.Errorf("server %q: quick_setup view has unknown auth kind %q", srv.Name, view.AuthKind)
 		}
 
 	default:
-		return nil, "", fmt.Errorf("server %q: unsupported auth method %q", srv.Name, srv.Auth)
+		return nil, "", noop, fmt.Errorf("server %q: unsupported auth method %q", srv.Name, srv.Auth)
 	}
 }
 

@@ -44,10 +44,11 @@ type Transport interface {
 
 // SendResult holds the output of a single Send call.
 type SendResult struct {
-	Stdout   string
-	Stderr   string
-	ExitCode int
-	Duration time.Duration
+	Stdout    string
+	Stderr    string
+	ExitCode  int
+	Duration  time.Duration
+	Truncated bool // true when stdout+stderr exceeded sessionOutputMaxBytes
 }
 
 // SessionInfo is a snapshot of session metadata (for List).
@@ -90,17 +91,25 @@ type session struct {
 	closeShell func() error
 
 	// stderrBuf accumulates stderr lines read by the background stderr pump.
-	stderrMu  sync.Mutex
-	stderrBuf strings.Builder
-	stderrDone chan struct{}
+	// stderrBytes counts bytes held in stderrBuf; once the combined output
+	// budget is exceeded, new stderr lines are silently dropped.
+	stderrMu    sync.Mutex
+	stderrBuf   strings.Builder
+	stderrBytes int64
+	stderrDone  chan struct{}
 }
 
-// drainStderrLine is called by the background stderr goroutine for each
-// complete line read from the remote shell's stderr.
+// appendStderr is called by the background stderr goroutine for each
+// complete line read from the remote shell's stderr. Lines are silently
+// dropped once the accumulated stderr exceeds sessionOutputMaxBytes.
 func (s *session) appendStderr(line string) {
 	s.stderrMu.Lock()
 	defer s.stderrMu.Unlock()
+	if s.stderrBytes+int64(len(line)) > sessionOutputMaxBytes {
+		return
+	}
 	s.stderrBuf.WriteString(line)
+	s.stderrBytes += int64(len(line))
 }
 
 // consumeStderr atomically snapshots and clears the accumulated stderr.
@@ -109,6 +118,7 @@ func (s *session) consumeStderr() string {
 	defer s.stderrMu.Unlock()
 	v := s.stderrBuf.String()
 	s.stderrBuf.Reset()
+	s.stderrBytes = 0
 	return v
 }
 
@@ -130,6 +140,12 @@ type Manager struct {
 }
 
 const reaperInterval = 60 * time.Second
+
+// sessionOutputMaxBytes is the per-Send ceiling for stdout+stderr combined.
+// Any output beyond this limit is silently dropped and SendResult.Truncated
+// is set to true. 1 MiB is enough for normal interactive commands while
+// preventing memory/goroutine DoS from a runaway remote process.
+const sessionOutputMaxBytes = 1 << 20 // 1 MiB
 
 // NewManager creates a Manager and starts the idle-session reaper goroutine.
 // Call CloseAll to shut down cleanly.
@@ -302,12 +318,24 @@ func (m *Manager) Send(ctx context.Context, id, command string, timeout time.Dur
 
 	// Read stdout lines until we see the sentinel line.
 	var outputLines []string
-	exitCode, err := scanSentinel(sendCtx, s.stdout, s.sentinel, &outputLines)
+	exitCode, truncated, err := scanSentinel(sendCtx, s.stdout, s.sentinel, &outputLines, sessionOutputMaxBytes)
 	duration := time.Since(start)
 
 	if err != nil {
 		s.state = stateError
 		if isContextErr(err) {
+			// On timeout: close the transport immediately so the scanSentinel
+			// goroutine's blocking ReadString receives an EOF and exits cleanly,
+			// preventing goroutine and memory leaks.
+			// We deliberately do NOT delete from m.sessions here to avoid a
+			// lock-order inversion (Send holds s.mu; Close/ReapIdle hold m.mu
+			// first then s.mu). The stateError flag is enough to make any
+			// subsequent Send return SESSION_DEAD. The entry will be cleaned up
+			// by the next Close(id) or ReapIdle cycle.
+			if s.closeShell != nil {
+				_ = s.closeShell()
+				s.closeShell = nil
+			}
 			return nil, fmt.Errorf("session: Send: TIMEOUT: %w", err)
 		}
 		return nil, fmt.Errorf("session: Send: %w", err)
@@ -321,10 +349,11 @@ func (m *Manager) Send(ctx context.Context, id, command string, timeout time.Dur
 	s.commandCount++
 
 	return &SendResult{
-		Stdout:   strings.Join(outputLines, "\n"),
-		Stderr:   stderrOut,
-		ExitCode: exitCode,
-		Duration: duration,
+		Stdout:    strings.Join(outputLines, "\n"),
+		Stderr:    stderrOut,
+		ExitCode:  exitCode,
+		Duration:  duration,
+		Truncated: truncated,
 	}, nil
 }
 
@@ -433,10 +462,13 @@ func scanUntilLine(ctx context.Context, r *bufio.Reader, target string) error {
 // scanSentinel reads lines from r, accumulates them into outputLines, and
 // returns once it finds a line matching "<sentinel> <decimal>".
 // The sentinel line itself is NOT added to outputLines.
-func scanSentinel(ctx context.Context, r *bufio.Reader, sentinel string, outputLines *[]string) (int, error) {
+// maxBytes caps the total bytes appended to outputLines; lines beyond the cap
+// are discarded and truncated is set to true via the returned flag.
+func scanSentinel(ctx context.Context, r *bufio.Reader, sentinel string, outputLines *[]string, maxBytes int64) (exitCode int, truncated bool, err error) {
 	type scanResult struct {
-		exitCode int
-		err      error
+		exitCode  int
+		truncated bool
+		err       error
 	}
 	done := make(chan scanResult, 1)
 
@@ -444,8 +476,10 @@ func scanSentinel(ctx context.Context, r *bufio.Reader, sentinel string, outputL
 		// We accumulate all lines; trailing empty lines before the sentinel
 		// will be stripped at the end.
 		var lines []string
+		var bytesAccum int64
+		var trunc bool
 		for {
-			line, err := r.ReadString('\n')
+			line, readErr := r.ReadString('\n')
 			line = strings.TrimRight(line, "\r\n")
 
 			// Check for sentinel line: must start with our specific sentinel string.
@@ -463,17 +497,24 @@ func scanSentinel(ctx context.Context, r *bufio.Reader, sentinel string, outputL
 						lines = lines[:len(lines)-1]
 					}
 					*outputLines = lines
-					done <- scanResult{rc, nil}
+					done <- scanResult{rc, trunc, nil}
 					return
 				}
 				// Malformed sentinel line — treat as output.
-				lines = append(lines, line)
-			} else {
-				lines = append(lines, line)
 			}
 
-			if err != nil {
-				done <- scanResult{-1, err}
+			// Accumulate with cap enforcement.
+			lineBytes := int64(len(line) + 1) // +1 for the stripped newline
+			bytesAccum += lineBytes
+			if bytesAccum <= maxBytes {
+				lines = append(lines, line)
+			} else {
+				trunc = true
+				// Still consume the line but don't store it.
+			}
+
+			if readErr != nil {
+				done <- scanResult{-1, trunc, readErr}
 				return
 			}
 		}
@@ -481,9 +522,9 @@ func scanSentinel(ctx context.Context, r *bufio.Reader, sentinel string, outputL
 
 	select {
 	case <-ctx.Done():
-		return -1, ctx.Err()
-	case r := <-done:
-		return r.exitCode, r.err
+		return -1, false, ctx.Err()
+	case res := <-done:
+		return res.exitCode, res.truncated, res.err
 	}
 }
 

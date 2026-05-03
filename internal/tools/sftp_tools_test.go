@@ -5,10 +5,12 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/xjoker/mcp-ssh-bridge/internal/config"
 	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
+	"github.com/xjoker/mcp-ssh-bridge/internal/safety"
 	"github.com/xjoker/mcp-ssh-bridge/internal/tunnel"
 )
 
@@ -496,11 +498,22 @@ func TestParseOctalMode_Empty(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
-// H01 — allowed_paths enforcement tests
+// R2-C01 — symlink-resistant allowed_paths via resolveAndCheckRemotePath
 // --------------------------------------------------------------------------
 
-// restrictedDeps returns Deps with a "restricted" named server whose
-// allowed_paths = ["/tmp"].
+// fakeRealpather implements remoteRealpather for unit tests.
+type fakeRealpather struct {
+	resolveFn func(p string) (safety.RemotePath, error)
+}
+
+func (f *fakeRealpather) Realpath(p string) (safety.RemotePath, error) {
+	if f.resolveFn != nil {
+		return f.resolveFn(p)
+	}
+	rp, err := safety.ValidateRemotePath(p)
+	return rp, err
+}
+
 func restrictedDeps() *Deps {
 	d := minDeps(true)
 	d.Cfg.Servers = map[string]config.ServerConfig{
@@ -515,145 +528,115 @@ func restrictedDeps() *Deps {
 	return d
 }
 
-// TestSftpList_AllowedPaths_Denied: path outside allowed_prefixes → PERMISSION_DENIED.
-func TestSftpList_AllowedPaths_Denied(t *testing.T) {
-	args := mustJSON(map[string]any{
-		"server": "restricted",
-		"path":   "/etc/passwd",
-	})
-	resp := handleSftpList(context.Background(), restrictedDeps(), args)
-	if resp.OK {
-		t.Fatal("expected error, got OK")
+// SDD §13 / Codex R2-C01: a path that is itself inside the allow list
+// but resolves (via symlink) to a path outside MUST be denied. The
+// resolver consults the canonical form before checking the policy.
+func TestResolveAndCheck_SymlinkEscapeDenied(t *testing.T) {
+	deps := restrictedDeps()
+	fr := &fakeRealpather{
+		resolveFn: func(p string) (safety.RemotePath, error) {
+			// /tmp/allowed_link is a symlink → /etc/shadow
+			return safety.ValidateRemotePath("/etc/shadow")
+		},
 	}
-	if sftpErrCode(resp) != envelope.CodePermissionDenied {
-		t.Errorf("code: got %q, want %q", sftpErrCode(resp), envelope.CodePermissionDenied)
+	_, errResp, ok := resolveAndCheckRemotePath(deps, "restricted", fr, "/tmp/allowed_link", false)
+	if ok {
+		t.Fatal("expected denial of resolved /etc/shadow")
+	}
+	if errResp.Error == nil || errResp.Error.Code != envelope.CodePermissionDenied {
+		t.Errorf("got %v want PERMISSION_DENIED", errResp.Error)
 	}
 }
 
-// TestSftpList_AllowedPaths_Allowed: path within allowed_prefixes → does NOT
-// return PERMISSION_DENIED before the pool lookup (the pool lookup itself will
-// panic/error when Pool is nil, so we verify the error is not PERMISSION_DENIED).
-func TestSftpList_AllowedPaths_Allowed(t *testing.T) {
-	args := mustJSON(map[string]any{
-		"server": "restricted",
-		"path":   "/tmp/subdir",
-	})
-	// Use a recover wrapper because Pool == nil will cause a panic in Get.
-	// We only care that enforceAllowedPath did NOT reject the path.
-	var resp envelope.Response
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				// Panic means we got past the allowed_paths check — that's the goal.
-				resp = envelope.Err("CONN_FAILED", "nil pool (expected in unit test)", true)
+// Path inside allowed prefix that resolves to a sibling within prefix → allowed.
+func TestResolveAndCheck_SymlinkInsidePrefixAllowed(t *testing.T) {
+	deps := restrictedDeps()
+	fr := &fakeRealpather{
+		resolveFn: func(p string) (safety.RemotePath, error) {
+			return safety.ValidateRemotePath("/tmp/real_target")
+		},
+	}
+	rp, _, ok := resolveAndCheckRemotePath(deps, "restricted", fr, "/tmp/link_to_target", false)
+	if !ok {
+		t.Fatal("expected allow")
+	}
+	if rp.String() != "/tmp/real_target" {
+		t.Errorf("expected canonicalised path /tmp/real_target, got %s", rp.String())
+	}
+}
+
+// Inline / temp server (allowed_paths empty) must bypass policy but still
+// receive the canonicalised path.
+func TestResolveAndCheck_InlineBypass(t *testing.T) {
+	deps := minDeps(true)
+	fr := &fakeRealpather{}
+	rp, _, ok := resolveAndCheckRemotePath(deps, "", fr, "/etc/passwd", false)
+	if !ok {
+		t.Fatal("inline path must not be denied")
+	}
+	if rp.String() != "/etc/passwd" {
+		t.Errorf("expected canonical /etc/passwd, got %s", rp.String())
+	}
+}
+
+// allowMissing=true: target does not exist; helper falls back to parent
+// realpath then re-applies the policy on parent + basename.
+func TestResolveAndCheck_FallbackParentDenied(t *testing.T) {
+	deps := restrictedDeps()
+	fr := &fakeRealpather{
+		resolveFn: func(p string) (safety.RemotePath, error) {
+			if p == "/tmp/newfile" {
+				return safety.RemotePath{}, fmt.Errorf("no such file")
 			}
-		}()
-		resp = handleSftpList(context.Background(), restrictedDeps(), args)
-	}()
-	if sftpErrCode(resp) == envelope.CodePermissionDenied {
-		t.Errorf("got PERMISSION_DENIED for allowed path /tmp/subdir")
-	}
-}
-
-// TestSftpRead_AllowedPaths_Denied: read outside allowed_prefixes → PERMISSION_DENIED.
-func TestSftpRead_AllowedPaths_Denied(t *testing.T) {
-	args := mustJSON(map[string]any{
-		"server": "restricted",
-		"path":   "/etc/passwd",
-	})
-	resp := handleSftpRead(context.Background(), restrictedDeps(), args)
-	if resp.OK {
-		t.Fatal("expected error, got OK")
-	}
-	if sftpErrCode(resp) != envelope.CodePermissionDenied {
-		t.Errorf("code: got %q, want %q", sftpErrCode(resp), envelope.CodePermissionDenied)
-	}
-}
-
-// TestSftpStat_AllowedPaths_Denied: stat outside allowed_prefixes → PERMISSION_DENIED.
-func TestSftpStat_AllowedPaths_Denied(t *testing.T) {
-	args := mustJSON(map[string]any{
-		"server": "restricted",
-		"path":   "/etc/passwd",
-	})
-	resp := handleSftpStat(context.Background(), restrictedDeps(), args)
-	if resp.OK {
-		t.Fatal("expected error, got OK")
-	}
-	if sftpErrCode(resp) != envelope.CodePermissionDenied {
-		t.Errorf("code: got %q, want %q", sftpErrCode(resp), envelope.CodePermissionDenied)
-	}
-}
-
-// TestSftpOp_Write_AllowedPaths_Denied → PERMISSION_DENIED.
-func TestSftpOp_Write_AllowedPaths_Denied(t *testing.T) {
-	args := mustJSON(map[string]any{
-		"server":  "restricted",
-		"action":  "write",
-		"path":    "/etc/passwd",
-		"content": "bad",
-	})
-	resp := handleSftpOp(context.Background(), restrictedDeps(), args)
-	if resp.OK {
-		t.Fatal("expected error, got OK")
-	}
-	if sftpErrCode(resp) != envelope.CodePermissionDenied {
-		t.Errorf("code: got %q, want %q", sftpErrCode(resp), envelope.CodePermissionDenied)
-	}
-}
-
-// TestSftpOp_Remove_AllowedPaths_Denied → PERMISSION_DENIED.
-func TestSftpOp_Remove_AllowedPaths_Denied(t *testing.T) {
-	args := mustJSON(map[string]any{
-		"server": "restricted",
-		"action": "remove",
-		"path":   "/etc/important",
-	})
-	resp := handleSftpOp(context.Background(), restrictedDeps(), args)
-	if resp.OK {
-		t.Fatal("expected error, got OK")
-	}
-	if sftpErrCode(resp) != envelope.CodePermissionDenied {
-		t.Errorf("code: got %q, want %q", sftpErrCode(resp), envelope.CodePermissionDenied)
-	}
-}
-
-// TestSftpOp_Rename_DestDenied: destination path outside allowed_prefixes → PERMISSION_DENIED.
-func TestSftpOp_Rename_DestDenied(t *testing.T) {
-	args := mustJSON(map[string]any{
-		"server": "restricted",
-		"action": "rename",
-		"path":   "/tmp/allowed_src",
-		"to":     "/etc/target",
-	})
-	resp := handleSftpOp(context.Background(), restrictedDeps(), args)
-	if resp.OK {
-		t.Fatal("expected error, got OK")
-	}
-	if sftpErrCode(resp) != envelope.CodePermissionDenied {
-		t.Errorf("code: got %q, want %q", sftpErrCode(resp), envelope.CodePermissionDenied)
-	}
-}
-
-// TestSftpList_InlineNoAllowedPaths: inline path bypass — allowed_paths check
-// must be skipped; error must NOT be PERMISSION_DENIED.
-func TestSftpList_InlineNoAllowedPaths(t *testing.T) {
-	args := mustJSON(map[string]any{
-		"inline": map[string]any{"host": "x", "user": "u", "password": "p"},
-		"path":   "/etc/passwd",
-	})
-	// Pool == nil → GetAdHoc will panic; recover and verify no PERMISSION_DENIED.
-	var resp envelope.Response
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				// Panic means allowed_paths check was skipped (inline) — correct.
-				resp = envelope.Err("CONN_FAILED", "nil pool (expected in unit test)", true)
+			// parent /tmp resolves to /etc (escape via parent symlink)
+			if p == "/tmp" {
+				return safety.ValidateRemotePath("/etc")
 			}
-		}()
-		resp = handleSftpList(context.Background(), sftpDeps(), args)
-	}()
-	if sftpErrCode(resp) == envelope.CodePermissionDenied {
-		t.Error("inline path must not trigger PERMISSION_DENIED for allowed_paths check")
+			return safety.ValidateRemotePath(p)
+		},
+	}
+	_, errResp, ok := resolveAndCheckRemotePath(deps, "restricted", fr, "/tmp/newfile", true)
+	if ok {
+		t.Fatal("expected denial when parent resolves outside allow list")
+	}
+	if errResp.Error == nil || errResp.Error.Code != envelope.CodePermissionDenied {
+		t.Errorf("got %v want PERMISSION_DENIED", errResp.Error)
+	}
+}
+
+func TestResolveAndCheck_FallbackParentAllowed(t *testing.T) {
+	deps := restrictedDeps()
+	fr := &fakeRealpather{
+		resolveFn: func(p string) (safety.RemotePath, error) {
+			if p == "/tmp/newfile" {
+				return safety.RemotePath{}, fmt.Errorf("no such file")
+			}
+			return safety.ValidateRemotePath(p)
+		},
+	}
+	rp, _, ok := resolveAndCheckRemotePath(deps, "restricted", fr, "/tmp/newfile", true)
+	if !ok {
+		t.Fatal("expected allow when parent /tmp is in allow list")
+	}
+	if rp.String() != "/tmp/newfile" {
+		t.Errorf("got %s want /tmp/newfile", rp.String())
+	}
+}
+
+func TestSplitPath(t *testing.T) {
+	cases := []struct {
+		in           string
+		parent, base string
+	}{
+		{"/tmp/file", "/tmp", "file"},
+		{"/file", "/", "file"},
+		{"file", "", "file"},
+		{"/tmp/sub/leaf", "/tmp/sub", "leaf"},
+	}
+	for _, c := range cases {
+		p, b := splitPath(c.in)
+		if p != c.parent || b != c.base {
+			t.Errorf("splitPath(%q) = (%q,%q); want (%q,%q)", c.in, p, b, c.parent, c.base)
+		}
 	}
 }

@@ -214,6 +214,15 @@ func parseLegacyEnv(path string) ([]legacyEntry, error) {
 			name = "imported"
 		}
 
+		// Validate the derived name before appending. Names that still fail
+		// (e.g. SSH_NAME=evil/name produces "evil/name" which is illegal)
+		// are skipped with a stderr warning rather than producing a malformed
+		// [servers.X] section.
+		if err := validateServerName(name); err != nil {
+			fmt.Fprintf(os.Stderr, "migrate-from-legacy: skipping entry with invalid server name %q: %v\n", name, err)
+			continue
+		}
+
 		entries = append(entries, legacyEntry{
 			name:     name,
 			host:     host,

@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"time"
@@ -101,7 +102,20 @@ func trustCmd(args []string) int {
 // We use a dummy user/auth that may fail authentication — that is expected
 // and acceptable, since we only care about the host key exchange phase.
 func trustHostKey(addr string) error {
-	cb := safety.HostKeyCallback(true)
+	// appended is set to true by the wrapping HostKeyCallback when
+	// safety.HostKeyCallback returns nil (meaning the key was accepted and
+	// written to known_hosts). Only in that case is a subsequent auth failure
+	// treated as success; any other dial error is propagated as-is.
+	appended := false
+	innerCB := safety.HostKeyCallback(true)
+	wrappingCB := gossh.HostKeyCallback(func(hostname string, remote net.Addr, key gossh.PublicKey) error {
+		err := innerCB(hostname, remote, key)
+		if err == nil {
+			// Host key was accepted and persisted to known_hosts.
+			appended = true
+		}
+		return err
+	})
 
 	cfg := &gossh.ClientConfig{
 		User: "mcp-trust-probe",
@@ -110,7 +124,7 @@ func trustHostKey(addr string) error {
 			// to succeed far enough to capture the host key.
 			gossh.Password(""),
 		},
-		HostKeyCallback:   cb,
+		HostKeyCallback:   wrappingCB,
 		HostKeyAlgorithms: safety.ModernHostKeyAlgorithms(),
 		Config:            safety.ModernAlgorithms(nil),
 		Timeout:           15 * time.Second,
@@ -118,14 +132,16 @@ func trustHostKey(addr string) error {
 
 	client, err := gossh.Dial("tcp", addr, cfg)
 	if err != nil {
-		// If the error is specifically an authentication failure, the host key
-		// was already accepted and written to known_hosts — treat as success.
-		errStr := err.Error()
-		if isAuthError(errStr) {
+		if appended {
+			// The host key callback succeeded (key written to known_hosts)
+			// before the auth phase failed — that is the expected outcome
+			// when using a dummy password. Treat as success.
 			return nil
 		}
-		// If the error contains "HOST_KEY_MISMATCH", that is a real problem.
-		if strings.Contains(errStr, "HOST_KEY_MISMATCH") {
+		// appended==false: the handshake itself failed before the host key
+		// was written. This includes algorithm mismatches, early TCP errors,
+		// HOST_KEY_MISMATCH, etc. Always propagate as a real failure.
+		if strings.Contains(err.Error(), "HOST_KEY_MISMATCH") {
 			return fmt.Errorf("host key mismatch for %s — key has changed, manual verification required", addr)
 		}
 		return fmt.Errorf("dial %s: %w", addr, err)
@@ -137,6 +153,8 @@ func trustHostKey(addr string) error {
 
 // isAuthError reports whether an SSH dial error is specifically an
 // authentication failure (meaning the host key exchange already succeeded).
+// Retained for backward compatibility with existing tests but no longer used
+// by trustHostKey — the appended-flag approach is more precise.
 func isAuthError(msg string) bool {
 	authErrorSubstrings := []string{
 		"unable to authenticate",

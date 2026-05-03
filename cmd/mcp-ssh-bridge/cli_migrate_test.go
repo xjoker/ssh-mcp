@@ -192,6 +192,47 @@ func TestParseLegacyEnvMissingHost(t *testing.T) {
 // migratePasswordsCmd — config rewrite path
 // --------------------------------------------------------------------------
 
+// --------------------------------------------------------------------------
+// M01: parseLegacyEnv name validation
+// --------------------------------------------------------------------------
+
+// TestMigrate_LegacyEnvSkipsInvalidName verifies that parseLegacyEnv skips
+// entries whose SSH_NAME produces an invalid server name (e.g. contains '/'),
+// and that the warning is emitted to stderr.
+func TestMigrate_LegacyEnvSkipsInvalidName(t *testing.T) {
+	envContent := strings.Join([]string{
+		"SSH_HOST=test.example.com",
+		"SSH_USER=admin",
+		"SSH_PORT=22",
+		"SSH_AUTH=agent",
+		"SSH_NAME=evil/name", // '/' is not in ^[a-z0-9][a-z0-9_-]*$
+	}, "\n")
+
+	tmpDir := t.TempDir()
+	envFile := filepath.Join(tmpDir, "bad.env")
+	if err := os.WriteFile(envFile, []byte(envContent), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Point config to a temp path.
+	cfgPath := filepath.Join(tmpDir, "config.toml")
+	t.Setenv("MCP_SSH_BRIDGE_CONFIG", cfgPath)
+
+	_, errStr := captureOutput(func() {
+		// parseLegacyEnv skips invalid entries; migrateLegacyCmd will report
+		// "no server entries found" and exit non-zero, which is fine.
+		migrateLegacyCmd([]string{envFile})
+	})
+
+	// The warning must mention the bad name.
+	if !strings.Contains(errStr, "invalid server name") {
+		t.Errorf("expected stderr to warn about invalid server name; got: %q", errStr)
+	}
+	if !strings.Contains(errStr, "evil") {
+		t.Errorf("expected stderr to include the bad name fragment; got: %q", errStr)
+	}
+}
+
 // TestMigratePasswordsCmdNoPlaintext verifies that when a config has no
 // plaintext passwords, the command exits 0 and reports nothing to migrate.
 func TestMigratePasswordsCmdNoPlaintext(t *testing.T) {

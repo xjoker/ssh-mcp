@@ -61,6 +61,12 @@ func allowedPathsForServer(cfg *config.Config, name string) []string {
 //
 // serverName == "" is treated as "inline / no restriction" and always
 // returns (zeroResponse, true).
+//
+// NOTE: this is the syntactic check. To prevent symlink-based TOCTOU
+// bypass (Codex R2-C01) callers handling SFTP/exec operations against
+// configured servers MUST call resolveAndCheckRemotePath after the
+// connection is established, which canonicalises through the remote OS
+// before applying the prefix policy.
 func enforceAllowedPath(cfg *config.Config, serverName string, rp safety.RemotePath) (envelope.Response, bool) {
 	prefixes := allowedPathsForServer(cfg, serverName)
 	if err := safety.CheckAllowed(rp, prefixes); err != nil {
@@ -68,6 +74,112 @@ func enforceAllowedPath(cfg *config.Config, serverName string, rp safety.RemoteP
 		return envelope.Err(envelope.CodePermissionDenied, msg, false), false
 	}
 	return envelope.Response{}, true
+}
+
+// resolveAndCheckRemotePath canonicalises rawPath through the remote
+// SFTP server's Realpath (which follows symlinks) and then enforces the
+// server's allowed_paths policy on the resolved form. Returns the
+// canonical RemotePath that the caller SHOULD use for the actual SFTP
+// or exec operation — using anything other than the canonical path
+// reopens the TOCTOU window.
+//
+// For write/create operations whose target may not exist yet, pass
+// allowMissing=true: the helper falls back to resolving the parent
+// directory and joins the original basename, then checks both the
+// resolved parent and the synthetic full path.
+//
+// inline / temp servers (allowed_paths empty) bypass the policy check
+// but still receive the canonicalised path so handlers can use it
+// uniformly.
+func resolveAndCheckRemotePath(
+	deps *Deps,
+	serverName string,
+	sftpc remoteRealpather,
+	rawPath string,
+	allowMissing bool,
+) (safety.RemotePath, envelope.Response, bool) {
+	resolved, err := sftpc.Realpath(rawPath)
+	if err != nil {
+		if !allowMissing {
+			return safety.RemotePath{},
+				envelope.Err(envelope.CodeNotFound,
+					fmt.Sprintf("realpath %q: %v", rawPath, err), false),
+				false
+		}
+		// Fallback: realpath the parent, append basename, validate.
+		parent, base := splitPath(rawPath)
+		if parent == "" {
+			return safety.RemotePath{},
+				envelope.Err(envelope.CodeInvalidArgument,
+					fmt.Sprintf("realpath %q: %v (no parent to fall back on)", rawPath, err), false),
+				false
+		}
+		parentRP, perr := sftpc.Realpath(parent)
+		if perr != nil {
+			return safety.RemotePath{},
+				envelope.Err(envelope.CodeNotFound,
+					fmt.Sprintf("realpath parent of %q: %v", rawPath, perr), false),
+				false
+		}
+		// Validate the parent is under allowed_paths.
+		if errResp, allowed := enforceAllowedPath(deps.Cfg, serverName, parentRP); !allowed {
+			return safety.RemotePath{}, errResp, false
+		}
+		joined := joinPath(parentRP.String(), base)
+		joinedRP, vErr := safety.ValidateRemotePath(joined)
+		if vErr != nil {
+			return safety.RemotePath{},
+				envelope.Err(envelope.CodeInvalidArgument,
+					fmt.Sprintf("invalid resolved path %q: %v", joined, vErr), false),
+				false
+		}
+		// Re-check the full synthetic path (typically same prefix as parent).
+		if errResp, allowed := enforceAllowedPath(deps.Cfg, serverName, joinedRP); !allowed {
+			return safety.RemotePath{}, errResp, false
+		}
+		return joinedRP, envelope.Response{}, true
+	}
+	if errResp, allowed := enforceAllowedPath(deps.Cfg, serverName, resolved); !allowed {
+		return safety.RemotePath{}, errResp, false
+	}
+	return resolved, envelope.Response{}, true
+}
+
+// remoteRealpather is the subset of internal/sftp.Client used by
+// resolveAndCheckRemotePath; declared as an interface so handlers can
+// inject a fake in tests without spinning up a real SFTP backend.
+type remoteRealpather interface {
+	Realpath(p string) (safety.RemotePath, error)
+}
+
+// splitPath returns (parent, basename). Both empty when path is "" or "/".
+func splitPath(p string) (string, string) {
+	if p == "" || p == "/" {
+		return "", ""
+	}
+	for i := len(p) - 1; i >= 0; i-- {
+		if p[i] == '/' {
+			parent := p[:i]
+			if parent == "" {
+				parent = "/"
+			}
+			return parent, p[i+1:]
+		}
+	}
+	// No slash — relative path with no parent.
+	return "", p
+}
+
+// joinPath joins parent + base with a single slash, idempotent on a
+// trailing slash in parent.
+func joinPath(parent, base string) string {
+	if parent == "" {
+		return base
+	}
+	if parent[len(parent)-1] == '/' {
+		return parent + base
+	}
+	return parent + "/" + base
 }
 
 // resolveClient obtains a *ssh.Client from either a named server or inline

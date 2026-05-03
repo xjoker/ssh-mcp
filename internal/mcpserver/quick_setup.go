@@ -36,18 +36,37 @@ type quickSetupRegistry struct {
 	m       map[string]*quickSetupEntry
 	counter map[string]int // for disambiguation: base → count
 
+	// staticNames is the set of statically-configured server names. Quick-
+	// setup names MUST NOT collide with these — otherwise a malicious
+	// elicitation could "shadow" prod (Codex R2-C02).
+	staticNames map[string]struct{}
+
+	// onEvict is invoked whenever an entry is removed from the registry
+	// (TTL expiry, manual reap, Close). The mcpserver wires this to
+	// ssh.Pool.RemoveTempServer so expired entries do not linger and
+	// continue to mask static servers.
+	onEvict func(name string)
+
 	stopReaper chan struct{}
 	reaperDone chan struct{}
 }
 
 // newQuickSetupRegistry creates and starts a quickSetupRegistry.
+// staticNames is the closed set of configured server names which the
+// registry MUST NOT collide with. onEvict (optional) is fired on every
+// eviction; pass ssh.Pool.RemoveTempServer to keep the pool in sync.
 // The caller must call Close() to stop the reaper goroutine.
-func newQuickSetupRegistry() *quickSetupRegistry {
+func newQuickSetupRegistry(staticNames map[string]struct{}, onEvict func(name string)) *quickSetupRegistry {
+	if staticNames == nil {
+		staticNames = map[string]struct{}{}
+	}
 	r := &quickSetupRegistry{
-		m:          make(map[string]*quickSetupEntry),
-		counter:    make(map[string]int),
-		stopReaper: make(chan struct{}),
-		reaperDone: make(chan struct{}),
+		m:           make(map[string]*quickSetupEntry),
+		counter:     make(map[string]int),
+		staticNames: staticNames,
+		onEvict:     onEvict,
+		stopReaper:  make(chan struct{}),
+		reaperDone:  make(chan struct{}),
 	}
 	go r.reaperLoop()
 	return r
@@ -66,16 +85,33 @@ func (r *quickSetupRegistry) Register(spec tools.QuickSetupSpec) (string, int64,
 	if len(spec.Secret) == 0 {
 		return "", 0, fmt.Errorf("quickSetupRegistry: empty secret")
 	}
+	// H02: registry-level TTL guard (defence-in-depth against callers that
+	// bypass the handler layer, e.g. future internal callers or direct tests).
+	if spec.TTLMinutes < 1 || spec.TTLMinutes > 240 {
+		return "", 0, fmt.Errorf("quickSetupRegistry: ttl_minutes %d out of allowed range 1..240", spec.TTLMinutes)
+	}
 	base := sanitiseName(spec.NameHint, spec.Host)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Disambiguate: if name already exists, append an incrementing suffix.
+	// R2-C02: Disambiguate against BOTH existing temp entries and the
+	// static server set. Walk the suffix counter until we land on a name
+	// that does not collide with either, so a quick_setup registration
+	// can never shadow a configured production server.
 	name := base
-	r.counter[base]++
-	if r.counter[base] > 1 {
-		name = fmt.Sprintf("%s-%d", base, r.counter[base])
+	for {
+		r.counter[base]++
+		if r.counter[base] > 1 {
+			name = fmt.Sprintf("%s-%d", base, r.counter[base])
+		}
+		if _, taken := r.staticNames[name]; taken {
+			continue
+		}
+		if _, taken := r.m[name]; taken {
+			continue
+		}
+		break
 	}
 
 	expiresAt := time.Now().Add(time.Duration(spec.TTLMinutes) * time.Minute)
@@ -189,7 +225,9 @@ func (r *quickSetupRegistry) evictAll() {
 	}
 }
 
-// evict closes the secret and removes the entry from the map.
+// evict closes the secret, removes the entry from the map, and notifies
+// the onEvict callback (which the mcpserver wires to
+// ssh.Pool.RemoveTempServer so the pool entry is dropped in lock-step).
 // Caller must hold r.mu.
 func (r *quickSetupRegistry) evict(name string, e *quickSetupEntry) {
 	if e.secret != nil {
@@ -199,6 +237,14 @@ func (r *quickSetupRegistry) evict(name string, e *quickSetupEntry) {
 		e.passphrase.Close()
 	}
 	delete(r.m, name)
+	if r.onEvict != nil {
+		// Run outside the lock to avoid potential ordering issues with the
+		// pool's own mutex. We're still inside r.mu but Pool.RemoveTempServer
+		// only takes its own private mutex; releasing r.mu here would expose
+		// the half-closed entry to concurrent Lookup. Net: keep it under
+		// r.mu and accept the one-mutex-then-the-other ordering.
+		r.onEvict(name)
+	}
 }
 
 // --------------------------------------------------------------------------
@@ -209,11 +255,16 @@ func (r *quickSetupRegistry) evict(name string, e *quickSetupEntry) {
 var sanitisedRe = regexp.MustCompile(`[^a-z0-9-]`)
 
 // sanitiseName derives a base server name from nameHint or host.
-// Result matches ^[a-z0-9][a-z0-9-]*$ up to 32 chars.
+// Result matches ^qs-[a-z0-9-]*$ up to 32 chars.
+//
+// R2-C02: every quick_setup name lives in the qs- namespace. A user-
+// supplied name_hint that already starts with qs- is preserved (after
+// lowercase + sanitisation); anything else gets the qs- prefix added so
+// it cannot accidentally or maliciously match a static server name.
 func sanitiseName(hint, host string) string {
 	base := hint
 	if base == "" {
-		base = "qs-" + host
+		base = host
 	}
 	// Lowercase first.
 	base = strings.ToLower(base)
@@ -231,10 +282,20 @@ func sanitiseName(hint, host string) string {
 		base = strings.ReplaceAll(base, "--", "-")
 	}
 	if base == "" {
-		base = "qs-temp"
+		base = "temp"
+	}
+	if !strings.HasPrefix(base, "qs-") {
+		base = "qs-" + base
 	}
 	if len(base) > 32 {
 		base = base[:32]
+	}
+	// Ensure the truncation didn't strip the qs- prefix.
+	if !strings.HasPrefix(base, "qs-") {
+		base = "qs-" + base
+		if len(base) > 32 {
+			base = base[:32]
+		}
 	}
 	return base
 }

@@ -161,10 +161,12 @@ func (p *Pool) GetAdHoc(ctx context.Context, params AdHocParams) (*Client, error
 	}
 	addr := fmt.Sprintf("%s:%d", params.Host, port)
 
-	authMethods, err := adHocAuthMethods(params.Auth)
+	authMethods, adHocCleanup, err := adHocAuthMethods(params.Auth)
 	if err != nil {
 		return nil, fmt.Errorf("ssh: GetAdHoc: %w", err)
 	}
+	// Release agent socket / secret material once the dial attempt completes.
+	defer adHocCleanup()
 
 	clientCfg := &gossh.ClientConfig{
 		User:              params.User,
@@ -235,10 +237,14 @@ func (p *Pool) Close() error {
 // dial builds an *gossh.Client for srv. acceptNew controls whether unknown
 // host keys are silently accepted (only true for ad-hoc calls).
 func (p *Pool) dial(ctx context.Context, srv config.ServerConfig, acceptNew bool, visited map[string]struct{}) (*Client, error) {
-	authMethods, authLabel, err := p.resolver.ResolveServerAuth(ctx, srv)
+	authMethods, authLabel, cleanup, err := p.resolver.ResolveServerAuth(ctx, srv)
 	if err != nil {
 		return nil, fmt.Errorf("resolve auth for %q: %w", srv.Name, err)
 	}
+	// Zero secret material (e.g. agent socket, password Secret) once the dial
+	// attempt completes — the ssh.Client retains its connection, not the
+	// credential material, so it is safe to release the secrets here.
+	defer cleanup()
 
 	port := srv.Port
 	if port == 0 {
@@ -299,19 +305,25 @@ func (p *Pool) dialViaProxy(
 	return newClientWithAuthMode(inner, target.Name, authLabel), nil
 }
 
-// adHocAuthMethods converts an AdHocParams.Auth into a []gossh.AuthMethod slice.
-func adHocAuthMethods(am AuthMethod) ([]gossh.AuthMethod, error) {
+// adHocAuthMethods converts an AdHocParams.Auth into a []gossh.AuthMethod
+// slice plus a cleanup function. The cleanup closes any agent socket opened
+// by this call (H04). Callers MUST defer the returned cleanup after a
+// successful call.
+func adHocAuthMethods(am AuthMethod) ([]gossh.AuthMethod, func(), error) {
+	noop := func() {}
 	if am.Agent {
 		// Try to connect to the SSH agent via SSH_AUTH_SOCK.
 		sock, err := net.Dial("unix", sshAuthSock())
 		if err != nil {
-			return nil, fmt.Errorf("cannot connect to SSH agent: %w", err)
+			return nil, noop, fmt.Errorf("cannot connect to SSH agent: %w", err)
 		}
 		ag := agent.NewClient(sock)
-		return []gossh.AuthMethod{gossh.PublicKeysCallback(ag.Signers)}, nil
+		// cleanup closes the socket to release the file descriptor (H04).
+		cleanup := func() { _ = sock.Close() }
+		return []gossh.AuthMethod{gossh.PublicKeysCallback(ag.Signers)}, cleanup, nil
 	}
 	if am.PrivateKey != nil {
-		return []gossh.AuthMethod{gossh.PublicKeys(am.PrivateKey)}, nil
+		return []gossh.AuthMethod{gossh.PublicKeys(am.PrivateKey)}, noop, nil
 	}
 	// H05: PasswordCallback takes precedence over Password to avoid a permanent
 	// string copy. The callback is invoked by the ssh library at handshake time;
@@ -321,7 +333,7 @@ func adHocAuthMethods(am AuthMethod) ([]gossh.AuthMethod, error) {
 		cb := am.PasswordCallback
 		return []gossh.AuthMethod{gossh.PasswordCallback(func() (string, error) {
 			return cb(), nil
-		})}, nil
+		})}, noop, nil
 	}
 	if len(am.Password) > 0 {
 		pw := string(am.Password)
@@ -330,7 +342,7 @@ func adHocAuthMethods(am AuthMethod) ([]gossh.AuthMethod, error) {
 		for i := range am.Password {
 			am.Password[i] = 0
 		}
-		return []gossh.AuthMethod{gossh.Password(pw)}, nil
+		return []gossh.AuthMethod{gossh.Password(pw)}, noop, nil
 	}
-	return nil, fmt.Errorf("AdHocParams.Auth: no authentication method set")
+	return nil, noop, fmt.Errorf("AdHocParams.Auth: no authentication method set")
 }

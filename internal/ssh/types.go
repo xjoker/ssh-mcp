@@ -20,10 +20,16 @@ import (
 // internal/auth provides a concrete implementation that callers wire in.
 type CredResolver interface {
 	// ResolveServerAuth resolves credentials for a given server config.
-	// Returns the ordered list of ssh.AuthMethod to try, plus a human-readable
-	// label describing the auth mode (for logging). The order defines the
-	// attempt sequence: agent first, key second, password last.
-	ResolveServerAuth(ctx context.Context, srv config.ServerConfig) ([]gossh.AuthMethod, string, error)
+	// Returns the ordered list of ssh.AuthMethod to try, a human-readable
+	// label describing the auth mode (for logging), a cleanup function that
+	// zeros any secret material held by the returned methods (MUST be called
+	// after the dial attempt completes, whether or not it succeeds), and any
+	// error. The order of auth methods defines the attempt sequence: agent
+	// first, key second, password last.
+	//
+	// cleanup is always non-nil; callers should defer cleanup() immediately
+	// after a successful return.
+	ResolveServerAuth(ctx context.Context, srv config.ServerConfig) ([]gossh.AuthMethod, string, func(), error)
 }
 
 // AuthMethod specifies credentials for ad-hoc connections.

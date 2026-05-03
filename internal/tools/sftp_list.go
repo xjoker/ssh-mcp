@@ -46,20 +46,16 @@ func handleSftpList(ctx context.Context, deps *Deps, args json.RawMessage) envel
 		return envelope.Err(envelope.CodeInvalidArgument, "path is required", false)
 	}
 
-	rp, err := safety.ValidateRemotePath(a.Path)
-	if err != nil {
+	if _, err := safety.ValidateRemotePath(a.Path); err != nil {
 		return envelope.Err(envelope.CodeInvalidArgument, err.Error(), false)
 	}
 
-	// H01: extract server name for allowed_paths enforcement (inline = no restriction).
+	// extract server name for allowed_paths enforcement (inline = no restriction).
 	var connArgs sftpConnArgs
 	_ = json.Unmarshal(args, &connArgs)
 	serverName := ""
 	if connArgs.Server != nil {
 		serverName = *connArgs.Server
-	}
-	if errResp, allowed := enforceAllowedPath(deps.Cfg, serverName, rp); !allowed {
-		return errResp
 	}
 
 	client, closeFn, errResp, ok := resolveClient(ctx, deps, args)
@@ -78,6 +74,14 @@ func handleSftpList(ctx context.Context, deps *Deps, args json.RawMessage) envel
 		return envelope.Err(envelope.CodeSftpError, "sftp subsystem: "+err.Error(), false)
 	}
 	defer sftpClient.Close()
+
+	// R2-C01: canonicalise through remote OS (follows symlinks) before
+	// applying allowed_paths. Operate on the resolved path so a swap
+	// between check and use cannot escape the policy.
+	rp, errResp, ok := resolveAndCheckRemotePath(deps, serverName, sftpClient, a.Path, false)
+	if !ok {
+		return errResp
+	}
 
 	if !a.Recursive {
 		entries, err := sftpClient.List(rp)

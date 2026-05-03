@@ -103,9 +103,16 @@ func handleSSHQuickSetup(ctx context.Context, deps *Deps, args json.RawMessage) 
 	if port == 0 {
 		port = 22
 	}
+	// H02: enforce TTL range 1..240 regardless of JSON schema.
+	// <=0 is treated as "use default"; >240 is explicitly rejected so that a
+	// client that bypasses schema validation cannot keep a secret in memory
+	// beyond the permitted maximum.
 	ttl := input.TTLMinutes
-	if ttl == 0 {
+	if ttl <= 0 {
 		ttl = 30
+	} else if ttl > 240 {
+		return envelope.Err(envelope.CodeInvalidArgument,
+			"ttl_minutes must be between 1 and 240", false)
 	}
 
 	// 3. Issue MCP elicitation to confirm with user.

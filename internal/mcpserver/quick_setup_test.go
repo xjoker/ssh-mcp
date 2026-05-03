@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -24,7 +25,7 @@ func mkSpec(hint, host, user string, secret []byte, ttl int) tools.QuickSetupSpe
 }
 
 func TestQuickSetupRegistry_RegisterLookup(t *testing.T) {
-	r := newQuickSetupRegistry()
+	r := newQuickSetupRegistry(nil, nil)
 	defer r.Close()
 
 	name, expiresAt, err := r.Register(mkSpec("mytest", "192.168.1.1", "admin", []byte("secret"), 30))
@@ -60,7 +61,7 @@ func TestQuickSetupRegistry_RegisterLookup(t *testing.T) {
 }
 
 func TestQuickSetupRegistry_LookupNotFound(t *testing.T) {
-	r := newQuickSetupRegistry()
+	r := newQuickSetupRegistry(nil, nil)
 	defer r.Close()
 
 	_, ok := r.Lookup("nonexistent")
@@ -70,7 +71,7 @@ func TestQuickSetupRegistry_LookupNotFound(t *testing.T) {
 }
 
 func TestQuickSetupRegistry_Expiry(t *testing.T) {
-	r := newQuickSetupRegistry()
+	r := newQuickSetupRegistry(nil, nil)
 	defer r.Close()
 
 	name, _, err := r.Register(mkSpec("exptest", "1.2.3.4", "user", []byte("pw"), 1))
@@ -91,7 +92,7 @@ func TestQuickSetupRegistry_Expiry(t *testing.T) {
 }
 
 func TestQuickSetupRegistry_ReaperEvicts(t *testing.T) {
-	r := newQuickSetupRegistry()
+	r := newQuickSetupRegistry(nil, nil)
 	defer r.Close()
 
 	name, _, err := r.Register(mkSpec("reaptest", "2.3.4.5", "ubuntu", []byte("key"), 1))
@@ -117,7 +118,7 @@ func TestQuickSetupRegistry_ReaperEvicts(t *testing.T) {
 }
 
 func TestQuickSetupRegistry_Disambiguation(t *testing.T) {
-	r := newQuickSetupRegistry()
+	r := newQuickSetupRegistry(nil, nil)
 	defer r.Close()
 
 	n1, _, _ := r.Register(mkSpec("same", "h1", "u", []byte("s"), 5))
@@ -135,10 +136,11 @@ func TestQuickSetupRegistry_SanitiseName(t *testing.T) {
 		expected string
 	}{
 		{"", "192.168.1.1", "qs-192-168-1-1"},
-		{"My Server", "h", "my-server"},
-		{"UPPER", "h", "upper"},
-		{"a.b.c", "h", "a-b-c"},
+		{"My Server", "h", "qs-my-server"},
+		{"UPPER", "h", "qs-upper"},
+		{"a.b.c", "h", "qs-a-b-c"},
 		{"", "host.example.com", "qs-host-example-com"},
+		{"qs-existing", "h", "qs-existing"},
 	}
 	for _, c := range cases {
 		got := sanitiseName(c.hint, c.host)
@@ -149,7 +151,7 @@ func TestQuickSetupRegistry_SanitiseName(t *testing.T) {
 }
 
 func TestQuickSetupRegistry_SecretZeroedOnEvict(t *testing.T) {
-	r := newQuickSetupRegistry()
+	r := newQuickSetupRegistry(nil, nil)
 	defer r.Close()
 
 	secret := []byte("topsecret")
@@ -193,7 +195,7 @@ func TestSanitiseNameLongInput(t *testing.T) {
 // SDD §6.13 / Codex H02: registering with auth=key + passphrase preserves
 // both fields so the credResolver can later build a working signer.
 func TestQuickSetupRegistry_KeyWithPassphrase(t *testing.T) {
-	r := newQuickSetupRegistry()
+	r := newQuickSetupRegistry(nil, nil)
 	defer r.Close()
 
 	name, _, err := r.Register(tools.QuickSetupSpec{
@@ -230,7 +232,7 @@ func TestQuickSetupRegistry_KeyWithPassphrase(t *testing.T) {
 }
 
 func TestQuickSetupRegistry_RegisterRejectsBadInput(t *testing.T) {
-	r := newQuickSetupRegistry()
+	r := newQuickSetupRegistry(nil, nil)
 	defer r.Close()
 
 	if _, _, err := r.Register(tools.QuickSetupSpec{AuthKind: "password", Secret: nil, TTLMinutes: 5}); err == nil {
@@ -238,5 +240,128 @@ func TestQuickSetupRegistry_RegisterRejectsBadInput(t *testing.T) {
 	}
 	if _, _, err := r.Register(tools.QuickSetupSpec{AuthKind: "weird", Secret: []byte("x"), TTLMinutes: 5}); err == nil {
 		t.Error("expected unknown auth kind rejection")
+	}
+}
+
+// SDD §13 / Codex R2-C02: quick_setup must not allocate a name that
+// shadows a static server.
+func TestQuickSetupRegistry_StaticNameCollisionDisambiguates(t *testing.T) {
+	staticNames := map[string]struct{}{
+		"qs-myhost":   {},
+		"qs-myhost-2": {},
+	}
+	r := newQuickSetupRegistry(staticNames, nil)
+	defer r.Close()
+
+	name, _, err := r.Register(mkSpec("myhost", "h", "u", []byte("x"), 5))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Must skip qs-myhost AND qs-myhost-2 (which is *also* static)
+	// and land on qs-myhost-3 or later.
+	if _, taken := staticNames[name]; taken {
+		t.Fatalf("registered name %q collides with a static server", name)
+	}
+}
+
+// onEvict callback must fire on every eviction so the SSH pool can drop
+// the temp entry in lock-step.
+func TestQuickSetupRegistry_OnEvictFiresOnReap(t *testing.T) {
+	var evicted []string
+	r := newQuickSetupRegistry(nil, func(name string) { evicted = append(evicted, name) })
+	defer r.Close()
+
+	name, _, err := r.Register(mkSpec("ev", "h", "u", []byte("x"), 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Force expiry then reap.
+	r.mu.Lock()
+	r.m[name].expiresAt = time.Now().Add(-time.Minute)
+	r.mu.Unlock()
+	r.reapExpired()
+
+	if len(evicted) != 1 || evicted[0] != name {
+		t.Errorf("expected onEvict([%q]), got %v", name, evicted)
+	}
+}
+
+func TestQuickSetupRegistry_OnEvictFiresOnClose(t *testing.T) {
+	var evicted []string
+	r := newQuickSetupRegistry(nil, func(name string) { evicted = append(evicted, name) })
+
+	name, _, _ := r.Register(mkSpec("clo", "h", "u", []byte("x"), 5))
+	r.Close()
+
+	if len(evicted) == 0 || evicted[0] != name {
+		t.Errorf("expected onEvict to fire on Close, got %v", evicted)
+	}
+}
+
+// All sanitised names start with "qs-" so they live in a fixed namespace.
+func TestSanitiseName_AlwaysQSPrefix(t *testing.T) {
+	for _, in := range []string{"prod", "Production-DB", "internal_node-1", "", "x"} {
+		got := sanitiseName(in, "h")
+		if !strings.HasPrefix(got, "qs-") {
+			t.Errorf("sanitiseName(%q) = %q; missing qs- prefix", in, got)
+		}
+	}
+}
+
+// --------------------------------------------------------------------------
+// H02 — registry-level TTL guard
+// --------------------------------------------------------------------------
+
+// TestQuickSetupRegistry_TTLZeroRejected: TTLMinutes=0 must be rejected by the
+// registry (defence-in-depth; the handler layer has already defaulted it to 30,
+// but future callers must not be able to register a secret with no expiry).
+func TestQuickSetupRegistry_TTLZeroRejected(t *testing.T) {
+	r := newQuickSetupRegistry(nil, nil)
+	defer r.Close()
+
+	_, _, err := r.Register(tools.QuickSetupSpec{
+		AuthKind:   "password",
+		Secret:     []byte("pw"),
+		TTLMinutes: 0,
+	})
+	if err == nil {
+		t.Error("expected error for TTLMinutes=0")
+	}
+}
+
+// TestQuickSetupRegistry_TTLOverMaxRejected: TTLMinutes>240 must be rejected.
+func TestQuickSetupRegistry_TTLOverMaxRejected(t *testing.T) {
+	r := newQuickSetupRegistry(nil, nil)
+	defer r.Close()
+
+	_, _, err := r.Register(tools.QuickSetupSpec{
+		AuthKind:   "password",
+		Secret:     []byte("pw"),
+		TTLMinutes: 9999,
+	})
+	if err == nil {
+		t.Error("expected error for TTLMinutes=9999")
+	}
+}
+
+// TestQuickSetupRegistry_TTLBoundariesAllowed: TTLMinutes=1 and TTLMinutes=240
+// are both within the allowed range and must succeed.
+func TestQuickSetupRegistry_TTLBoundariesAllowed(t *testing.T) {
+	r := newQuickSetupRegistry(nil, nil)
+	defer r.Close()
+
+	for _, ttl := range []int{1, 240} {
+		_, _, err := r.Register(tools.QuickSetupSpec{
+			NameHint:   "boundary",
+			Host:       "h",
+			Port:       22,
+			User:       "u",
+			AuthKind:   "password",
+			Secret:     []byte("pw"),
+			TTLMinutes: ttl,
+		})
+		if err != nil {
+			t.Errorf("TTLMinutes=%d should be allowed, got error: %v", ttl, err)
+		}
 	}
 }

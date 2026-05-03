@@ -13,6 +13,7 @@ import (
 
 	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
 	"github.com/xjoker/mcp-ssh-bridge/internal/safety"
+	internalsftp "github.com/xjoker/mcp-ssh-bridge/internal/sftp"
 	"github.com/xjoker/mcp-ssh-bridge/internal/ssh"
 )
 
@@ -206,28 +207,26 @@ func handleSSHExec(ctx context.Context, deps *Deps, args json.RawMessage) envelo
 			}
 		}
 
-		// Use pkg/sftp RealPath to resolve the absolute path
-		sftpClient, err := client.SFTP()
+		// R2-C01: route cwd through internal/sftp.Realpath which validates
+		// the canonical form (NUL-byte / absolute / length checks) before
+		// applying allowed_paths. This closes the symlink-bypass that the
+		// raw pkg/sftp.RealPath path had.
+		internalSFTP, err := internalsftp.New(client.Underlying())
 		if err != nil {
 			return envelope.Err(envelope.CodeInternalError,
 				"cannot open SFTP sub-system: "+err.Error(), true)
 		}
-		defer sftpClient.Close()
+		defer internalSFTP.Close()
 
-		resolved, err := sftpClient.RealPath(cwdStr)
-		if err != nil {
-			return envelope.Err(envelope.CodeInvalidArgument,
-				fmt.Sprintf("cannot resolve cwd %q: %v", cwdStr, err), false)
-		}
-		absDir = resolved
-
-		// H01: enforce allowed_paths for named servers only (inline = no restriction).
+		serverNameForCheck := ""
 		if hasServer {
-			cwdRP := safety.NewRemotePathUnchecked(absDir)
-			if errResp, allowed := enforceAllowedPath(deps.Cfg, input.Server, cwdRP); !allowed {
-				return errResp
-			}
+			serverNameForCheck = input.Server
 		}
+		cwdRP, errResp, ok := resolveAndCheckRemotePath(deps, serverNameForCheck, internalSFTP, cwdStr, false)
+		if !ok {
+			return errResp
+		}
+		absDir = cwdRP.String()
 	}
 
 	// Build remote command via safety package

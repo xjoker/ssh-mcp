@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,23 @@ import (
 	"github.com/xjoker/mcp-ssh-bridge/internal/safety"
 	sshpkg "github.com/xjoker/mcp-ssh-bridge/internal/ssh"
 )
+
+// cliServerNameRe is a local copy of config.serverNameRe for use in CLI write
+// paths, avoiding a dependency on the unexported symbol. Must stay in sync.
+var cliServerNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+
+// validateServerName returns nil if name is a valid server map key.
+// The pattern is ^[a-z0-9][a-z0-9_-]*$ with length 1-64.
+// Used by CLI write paths to prevent producing malformed [servers.X] sections.
+func validateServerName(name string) error {
+	if len(name) == 0 || len(name) > 64 {
+		return fmt.Errorf("server name length must be 1-64 (got %d)", len(name))
+	}
+	if !cliServerNameRe.MatchString(name) {
+		return fmt.Errorf("server name %q must match ^[a-z0-9][a-z0-9_-]*$", name)
+	}
+	return nil
+}
 
 func init() { registerSubcommand("server", serverCmd) }
 
@@ -124,6 +142,10 @@ func serverAddCmd(args []string) int {
 		return 1
 	}
 	name = strings.ToLower(name)
+	if err := validateServerName(name); err != nil {
+		fmt.Fprintf(os.Stderr, "server add: %v\n", err)
+		return 1
+	}
 
 	cfgPath := pathFlag
 	if cfgPath == "" {
@@ -522,9 +544,9 @@ type cliCredResolver struct {
 func (r *cliCredResolver) ResolveServerAuth(
 	ctx context.Context,
 	srv config.ServerConfig,
-) ([]gossh.AuthMethod, string, error) {
+) ([]gossh.AuthMethod, string, func(), error) {
 	methods, err := resolveAuthForTest(ctx, r.cfg, srv)
-	return methods, srv.Auth, err
+	return methods, srv.Auth, func() {}, err
 }
 
 // resolveAuthForTest resolves authentication methods for a server config.
@@ -534,10 +556,11 @@ func resolveAuthForTest(ctx context.Context, cfg *config.Config, srv config.Serv
 
 	switch srv.Auth {
 	case "agent":
-		ag := auth.Agent()
+		ag, agentCloser := auth.Agent()
 		if ag == nil {
 			return nil, fmt.Errorf("ssh-agent unavailable (SSH_AUTH_SOCK not set or socket unreachable)")
 		}
+		defer func() { _ = agentCloser.Close() }()
 		signers, err := ag.Signers()
 		if err != nil {
 			return nil, fmt.Errorf("ssh-agent: list signers: %w", err)

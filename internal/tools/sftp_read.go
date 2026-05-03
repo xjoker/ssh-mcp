@@ -51,22 +51,16 @@ func handleSftpRead(ctx context.Context, deps *Deps, args json.RawMessage) envel
 	if a.Path == "" {
 		return envelope.Err(envelope.CodeInvalidArgument, "path is required", false)
 	}
-	rp, err := safety.ValidateRemotePath(a.Path)
-	if err != nil {
+	if _, err := safety.ValidateRemotePath(a.Path); err != nil {
 		return envelope.Err(envelope.CodeInvalidArgument, err.Error(), false)
 	}
 
-	// H01: enforce allowed_paths for named servers (inline = no restriction).
-	{
-		var connArgs sftpConnArgs
-		_ = json.Unmarshal(args, &connArgs)
-		serverName := ""
-		if connArgs.Server != nil {
-			serverName = *connArgs.Server
-		}
-		if errResp, allowed := enforceAllowedPath(deps.Cfg, serverName, rp); !allowed {
-			return errResp
-		}
+	// Extract server name for allowed_paths enforcement (inline = no restriction).
+	var connArgs sftpConnArgs
+	_ = json.Unmarshal(args, &connArgs)
+	serverName := ""
+	if connArgs.Server != nil {
+		serverName = *connArgs.Server
 	}
 
 	// Apply defaults.
@@ -99,6 +93,13 @@ func handleSftpRead(ctx context.Context, deps *Deps, args json.RawMessage) envel
 		return envelope.Err(envelope.CodeSftpError, "sftp subsystem: "+err.Error(), false)
 	}
 	defer sftpClient.Close()
+
+	// R2-C01: canonicalise then enforce allowed_paths on the resolved path
+	// so symlinks under allowed prefixes cannot escape via the alias.
+	rp, errResp, ok := resolveAndCheckRemotePath(deps, serverName, sftpClient, a.Path, false)
+	if !ok {
+		return errResp
+	}
 
 	// Get file size via Stat.
 	statEntry, err := sftpClient.Stat(rp)

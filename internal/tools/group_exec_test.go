@@ -10,6 +10,112 @@ import (
 )
 
 // --------------------------------------------------------------------------
+// H01 — cwd / default_dir allowed_paths enforcement (pre-connect syntactic)
+// --------------------------------------------------------------------------
+
+// groupDepsWithAllowedPaths builds a Deps that has server "s1" configured with
+// allowed_paths=["/tmp"].  Pool is intentionally left nil: the syntactic
+// allowed_paths check must fire BEFORE Pool.Get so these tests must never
+// reach the Pool.
+func groupDepsWithAllowedPaths() *Deps {
+	d := minDeps(false)
+	d.Cfg.Servers = map[string]config.ServerConfig{
+		"s1": {
+			Name:         "s1",
+			Host:         "localhost",
+			Port:         22,
+			User:         "u",
+			Auth:         "agent",
+			AllowedPaths: []string{"/tmp"},
+		},
+	}
+	return d
+}
+
+// TestGroupExec_CwdAllowedPathsEnforced: cwd="/etc" with allowed_paths=["/tmp"]
+// must produce PERMISSION_DENIED in the per-server sub-result, not OK.
+// Pool is nil — this test verifies that the allowed_paths check fires BEFORE
+// any connection attempt.
+func TestGroupExec_CwdAllowedPathsEnforced(t *testing.T) {
+	deps := groupDepsWithAllowedPaths()
+	args := mustJSON(map[string]any{
+		"servers": []string{"s1"},
+		"command": "ls",
+		"cwd":     "/etc",
+	})
+	resp := handleSSHGroupExec(context.Background(), deps, args)
+
+	// Top-level response is not OK (partial/total failure).
+	if resp.OK {
+		t.Fatal("expected not-OK when cwd is outside allowed_paths")
+	}
+
+	// Extract the per-server result.
+	output, ok := resp.Data.(groupExecOutput)
+	if !ok {
+		t.Fatalf("expected groupExecOutput, got %T", resp.Data)
+	}
+	if len(output.Results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(output.Results))
+	}
+	r := output.Results[0]
+	if r.OK {
+		t.Fatal("server result should not be OK when cwd is denied")
+	}
+	if r.Error == nil {
+		t.Fatal("server result should carry an error")
+	}
+	if r.Error.Code != envelope.CodePermissionDenied {
+		t.Errorf("expected PERMISSION_DENIED, got %q", r.Error.Code)
+	}
+}
+
+// TestGroupExec_DefaultDirEnforced: server.DefaultDir="/etc" with allowed_paths=["/tmp"],
+// no explicit cwd → the default_dir must be subject to the same check.
+func TestGroupExec_DefaultDirEnforced(t *testing.T) {
+	d := minDeps(false)
+	d.Cfg.Servers = map[string]config.ServerConfig{
+		"s2": {
+			Name:         "s2",
+			Host:         "localhost",
+			Port:         22,
+			User:         "u",
+			Auth:         "agent",
+			AllowedPaths: []string{"/tmp"},
+			DefaultDir:   "/etc",
+		},
+	}
+	args := mustJSON(map[string]any{
+		"servers": []string{"s2"},
+		"command": "ls",
+		// no "cwd" field — default_dir should be used and denied
+	})
+	resp := handleSSHGroupExec(context.Background(), d, args)
+
+	if resp.OK {
+		t.Fatal("expected not-OK when default_dir is outside allowed_paths")
+	}
+
+	output, ok := resp.Data.(groupExecOutput)
+	if !ok {
+		t.Fatalf("expected groupExecOutput, got %T", resp.Data)
+	}
+	if len(output.Results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(output.Results))
+	}
+	r := output.Results[0]
+	if r.OK {
+		t.Fatal("server result should not be OK when default_dir is denied")
+	}
+	if r.Error == nil {
+		t.Fatal("server result should carry an error")
+	}
+	if r.Error.Code != envelope.CodePermissionDenied {
+		t.Errorf("expected PERMISSION_DENIED, got %q", r.Error.Code)
+	}
+}
+
+// --------------------------------------------------------------------------
 // ssh_group_exec tests
 // --------------------------------------------------------------------------
 

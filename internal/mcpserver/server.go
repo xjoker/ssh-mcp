@@ -62,16 +62,25 @@ func New(cfg *config.Config, auditDir string) (*Server, error) {
 		return nil, fmt.Errorf("mcpserver.New: audit health-check failed: %w", err)
 	}
 
-	// 2. QuickSetup registry — created early so the credResolver can
-	//    consult it for ssh_quick_setup-registered servers.
-	qs := newQuickSetupRegistry()
-
-	// 3. Credential resolver + SSH pool.
+	// 2. SSH pool first (no temp servers yet) so the QuickSetup registry
+	//    can hold a reference for evict-callback. We construct credResolver
+	//    with a back-reference; both circular fields are filled in below.
 	resolver := &credResolver{
 		allowPlaintext: cfg.Settings.AllowConfigPlaintextPassword,
-		quickSetup:     qs,
 	}
 	pool := sshpkg.NewPool(cfg, resolver)
+
+	// 3. QuickSetup registry. R2-C02: pass the static server name set so
+	//    quick_setup cannot allocate a name that shadows a configured
+	//    server, and wire onEvict → Pool.RemoveTempServer so a TTL-
+	//    expired entry doesn't linger in the pool and keep masking the
+	//    real server name.
+	staticNames := make(map[string]struct{}, len(cfg.Servers))
+	for n := range cfg.Servers {
+		staticNames[n] = struct{}{}
+	}
+	qs := newQuickSetupRegistry(staticNames, pool.RemoveTempServer)
+	resolver.quickSetup = qs
 
 	// 4. Session manager.
 	transport := &sshTransport{pool: pool}

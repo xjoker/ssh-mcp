@@ -176,3 +176,94 @@ func TestHandleSSHQuickSetup_ElicitError(t *testing.T) {
 		t.Errorf("expected USER_DECLINED, got %s", resp.Error.Code)
 	}
 }
+
+// --------------------------------------------------------------------------
+// H02 — handler-layer TTL clamp/reject
+// --------------------------------------------------------------------------
+
+// TestHandleSSHQuickSetup_TTLZeroDefaultsTo30 verifies that ttl_minutes=0 (or
+// omitted) results in a 30-minute TTL being sent to the registry.
+func TestHandleSSHQuickSetup_TTLZeroDefaultsTo30(t *testing.T) {
+	cfg := &config.Config{Settings: config.Settings{AllowQuickSetup: true}}
+	qs := &fakeQuickSetup{}
+	deps := &Deps{
+		Cfg:        cfg,
+		QuickSetup: qs,
+		Elicit: func(_ context.Context, _ json.RawMessage, _ string) (json.RawMessage, error) {
+			return json.RawMessage(`{"confirm":true}`), nil
+		},
+	}
+
+	// ttl_minutes not supplied → should default to 30.
+	args := json.RawMessage(`{"host":"1.2.3.4","user":"root","password":"pw"}`)
+	resp := handleSSHQuickSetup(context.Background(), deps, args)
+
+	if !resp.OK {
+		t.Fatalf("expected OK, got error: %+v", resp.Error)
+	}
+	if len(qs.registered) == 0 {
+		t.Fatal("expected registration to occur")
+	}
+	if qs.registered[0].spec.TTLMinutes != 30 {
+		t.Errorf("expected TTLMinutes=30, got %d", qs.registered[0].spec.TTLMinutes)
+	}
+}
+
+// TestHandleSSHQuickSetup_TTLOverMaxRejected verifies that ttl_minutes>240
+// returns INVALID_ARGUMENT without reaching elicitation or registration.
+func TestHandleSSHQuickSetup_TTLOverMaxRejected(t *testing.T) {
+	cfg := &config.Config{Settings: config.Settings{AllowQuickSetup: true}}
+	qs := &fakeQuickSetup{}
+	elicitCalled := false
+	deps := &Deps{
+		Cfg:        cfg,
+		QuickSetup: qs,
+		Elicit: func(_ context.Context, _ json.RawMessage, _ string) (json.RawMessage, error) {
+			elicitCalled = true
+			return json.RawMessage(`{"confirm":true}`), nil
+		},
+	}
+
+	args := json.RawMessage(`{"host":"1.2.3.4","user":"root","password":"pw","ttl_minutes":9999}`)
+	resp := handleSSHQuickSetup(context.Background(), deps, args)
+
+	if resp.OK {
+		t.Fatal("expected error for ttl_minutes=9999")
+	}
+	if resp.Error == nil || resp.Error.Code != envelope.CodeInvalidArgument {
+		t.Errorf("expected INVALID_ARGUMENT, got %+v", resp.Error)
+	}
+	if elicitCalled {
+		t.Error("elicitation must not be called when TTL is invalid")
+	}
+	if len(qs.registered) != 0 {
+		t.Error("no registration should occur when TTL is rejected")
+	}
+}
+
+// TestHandleSSHQuickSetup_TTLBoundaryAllowed verifies that ttl_minutes=240
+// (the boundary value) is accepted.
+func TestHandleSSHQuickSetup_TTLBoundaryAllowed(t *testing.T) {
+	cfg := &config.Config{Settings: config.Settings{AllowQuickSetup: true}}
+	qs := &fakeQuickSetup{}
+	deps := &Deps{
+		Cfg:        cfg,
+		QuickSetup: qs,
+		Elicit: func(_ context.Context, _ json.RawMessage, _ string) (json.RawMessage, error) {
+			return json.RawMessage(`{"confirm":true}`), nil
+		},
+	}
+
+	args := json.RawMessage(`{"host":"1.2.3.4","user":"root","password":"pw","ttl_minutes":240}`)
+	resp := handleSSHQuickSetup(context.Background(), deps, args)
+
+	if !resp.OK {
+		t.Fatalf("expected OK for ttl_minutes=240, got error: %+v", resp.Error)
+	}
+	if len(qs.registered) == 0 {
+		t.Fatal("expected registration to occur")
+	}
+	if qs.registered[0].spec.TTLMinutes != 240 {
+		t.Errorf("expected TTLMinutes=240, got %d", qs.registered[0].spec.TTLMinutes)
+	}
+}

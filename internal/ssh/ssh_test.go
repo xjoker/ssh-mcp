@@ -26,16 +26,16 @@ type fakeResolver struct {
 	returnErr error
 }
 
-func (f *fakeResolver) ResolveServerAuth(_ context.Context, _ config.ServerConfig) ([]gossh.AuthMethod, string, error) {
+func (f *fakeResolver) ResolveServerAuth(_ context.Context, _ config.ServerConfig) ([]gossh.AuthMethod, string, func(), error) {
 	f.mu.Lock()
 	f.calls++
 	f.mu.Unlock()
 	if f.returnErr != nil {
-		return nil, "", f.returnErr
+		return nil, "", func() {}, f.returnErr
 	}
 	// Return a trivially-failing password auth so the dial attempt itself can
 	// be intercepted by a fake dialer before it tries to authenticate.
-	return []gossh.AuthMethod{gossh.Password("fake")}, "password", nil
+	return []gossh.AuthMethod{gossh.Password("fake")}, "password", func() {}, nil
 }
 
 func (f *fakeResolver) callCount() int {

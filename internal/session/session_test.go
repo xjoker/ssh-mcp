@@ -637,3 +637,187 @@ func TestSendToClosedSession(t *testing.T) {
 		t.Errorf("expected 'not found' error, got: %v", err)
 	}
 }
+
+// --------------------------------------------------------------------------
+// H05 security tests: output cap + timeout transport close
+// --------------------------------------------------------------------------
+
+// bigOutputTransport is a Transport whose shell floods stdout with data
+// exceeding sessionOutputMaxBytes before writing the sentinel line.
+// This is used to verify the per-Send output cap.
+type bigOutputTransport struct {
+	sh        *fakeShell
+	extraBytes int // bytes of payload to write before the sentinel
+}
+
+func (bt *bigOutputTransport) OpenShell(_ context.Context, _ string) (
+	io.WriteCloser, io.Reader, io.Reader, func() error, error,
+) {
+	return bt.sh.stdinW, bt.sh.stdoutR, bt.sh.stderrR, bt.sh.closeFunc, nil
+}
+
+// startBigOutputShell processes stdin: handles init probe normally, then
+// for any sentinel-wrapped command it writes extraBytes of 'x' followed by
+// the sentinel line so Send can complete.
+func startBigOutputShell(sh *fakeShell, extraBytes int) {
+	go func() {
+		var buf strings.Builder
+		var sentinelVal string
+		tmp := make([]byte, 1)
+		for {
+			n, err := sh.stdinR.Read(tmp)
+			if n > 0 {
+				buf.WriteByte(tmp[0])
+				if tmp[0] == '\n' {
+					line := strings.TrimRight(buf.String(), "\r\n")
+					buf.Reset()
+					if strings.HasPrefix(line, "export __MSB_SENTINEL='") {
+						s := strings.TrimPrefix(line, "export __MSB_SENTINEL='")
+						sentinelVal = strings.TrimSuffix(s, "'")
+					}
+					if strings.HasPrefix(line, "printf '%s\\n' 'init-") {
+						start := strings.Index(line, "'init-")
+						if start >= 0 {
+							echo := line[start+1 : len(line)-1]
+							sh.feedLine(echo)
+						}
+					}
+					if strings.HasPrefix(line, "{ ") && sentinelVal != "" {
+						// Write chunks of data that exceed the budget.
+						written := 0
+						for written < extraBytes {
+							toWrite := 1024
+							if written+toWrite > extraBytes {
+								toWrite = extraBytes - written
+							}
+							sh.feedLine(strings.Repeat("x", toWrite))
+							written += toWrite
+						}
+						// Write the sentinel to terminate scanSentinel.
+						sh.feedLine(fmt.Sprintf("%s 0", sentinelVal))
+					}
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+}
+
+// TestSend_OutputCappedAtBudget verifies that when the remote shell produces
+// more than sessionOutputMaxBytes of stdout, SendResult.Stdout is capped and
+// SendResult.Truncated is true.
+func TestSend_OutputCappedAtBudget(t *testing.T) {
+	const twiceBudget = 2 * sessionOutputMaxBytes
+
+	sh := newFakeShell()
+	startBigOutputShell(sh, twiceBudget)
+
+	m := NewManager(&bigOutputTransport{sh: sh, extraBytes: twiceBudget}, time.Hour)
+	defer m.CloseAll()
+
+	ctx := context.Background()
+	id, err := m.Start(ctx, "test-server")
+	if err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+
+	res, err := m.Send(ctx, id, "bigcmd", 30*time.Second)
+	if err != nil {
+		t.Fatalf("Send error: %v", err)
+	}
+	if int64(len(res.Stdout)) > sessionOutputMaxBytes {
+		t.Errorf("Stdout len %d exceeds cap %d", len(res.Stdout), sessionOutputMaxBytes)
+	}
+	if !res.Truncated {
+		t.Error("expected Truncated=true when output exceeds budget, got false")
+	}
+}
+
+// TestSend_TimeoutClosesTransport verifies that when a Send times out, the
+// underlying shell transport is closed (fakeShell.closed becomes true).
+// After the transport is closed, the scanSentinel goroutine must exit within
+// a reasonable time (no goroutine leak).
+func TestSend_TimeoutClosesTransport(t *testing.T) {
+	sh := newFakeShell()
+	startHangShell(sh) // responds to init probe but never sends sentinel
+
+	m := NewManager(&hangTransport{sh: sh}, time.Hour)
+	defer m.CloseAll()
+
+	ctx := context.Background()
+	id, err := m.Start(ctx, "test-server")
+	if err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+
+	// Trigger timeout.
+	_, err = m.Send(ctx, id, "hang", 50*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected TIMEOUT error, got nil")
+	}
+	if !strings.Contains(err.Error(), "TIMEOUT") {
+		t.Errorf("expected TIMEOUT in error, got: %v", err)
+	}
+
+	// The fakeShell transport must have been closed by the timeout handler.
+	sh.closeMu.Lock()
+	closed := sh.closed
+	sh.closeMu.Unlock()
+	if !closed {
+		t.Error("expected fakeShell.closed=true after timeout, got false")
+	}
+
+	// Allow the scanSentinel goroutine time to observe the EOF and exit.
+	// This is a simple liveness check: if goroutine leaked it would prevent
+	// the test from finishing within the timeout budget.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		sh.closeMu.Lock()
+		c := sh.closed
+		sh.closeMu.Unlock()
+		if c {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestSend_AfterTimeoutReturnsSessionDead verifies that a second Send on a
+// session that already timed out returns SESSION_DEAD immediately.
+func TestSend_AfterTimeoutReturnsSessionDead(t *testing.T) {
+	sh := newFakeShell()
+	startHangShell(sh)
+
+	m := NewManager(&hangTransport{sh: sh}, time.Hour)
+	defer m.CloseAll()
+
+	ctx := context.Background()
+	id, err := m.Start(ctx, "test-server")
+	if err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+
+	// First Send — times out.
+	_, err = m.Send(ctx, id, "hang", 50*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected TIMEOUT error, got nil")
+	}
+
+	// Second Send on the same session — must return SESSION_DEAD immediately.
+	start := time.Now()
+	_, err = m.Send(ctx, id, "anything", 5*time.Second)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected SESSION_DEAD error on second Send, got nil")
+	}
+	if !strings.Contains(err.Error(), "SESSION_DEAD") {
+		t.Errorf("expected SESSION_DEAD in error, got: %v", err)
+	}
+	// Should return essentially instantly (well under 1 second).
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("second Send took %v, expected near-instant SESSION_DEAD", elapsed)
+	}
+}

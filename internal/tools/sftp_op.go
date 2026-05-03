@@ -115,33 +115,11 @@ func handleSftpOp(ctx context.Context, deps *Deps, args json.RawMessage) envelop
 		}
 	}
 
-	// H01: enforce allowed_paths for named servers (inline = no restriction).
-	// Performed after path validation but before connecting.
-	{
-		var connArgs sftpConnArgs
-		_ = json.Unmarshal(args, &connArgs)
-		serverName := ""
-		if connArgs.Server != nil {
-			serverName = *connArgs.Server
-		}
-		// Check primary path for actions that use an absolute path.
-		if a.Action != "realpath" {
-			rp, rpErr := safety.ValidateRemotePath(a.Path)
-			if rpErr == nil { // already validated above; skip if somehow invalid
-				if errResp, allowed := enforceAllowedPath(deps.Cfg, serverName, rp); !allowed {
-					return errResp
-				}
-			}
-		}
-		// For rename: also check the destination path.
-		if a.Action == "rename" && a.To != "" {
-			toRP, rpErr := safety.ValidateRemotePath(a.To)
-			if rpErr == nil {
-				if errResp, allowed := enforceAllowedPath(deps.Cfg, serverName, toRP); !allowed {
-					return errResp
-				}
-			}
-		}
+	var connArgs sftpConnArgs
+	_ = json.Unmarshal(args, &connArgs)
+	serverName := ""
+	if connArgs.Server != nil {
+		serverName = *connArgs.Server
 	}
 
 	client, closeFn, errResp, ok := resolveClient(ctx, deps, args)
@@ -158,19 +136,51 @@ func handleSftpOp(ctx context.Context, deps *Deps, args json.RawMessage) envelop
 
 	authMode := client.AuthMode()
 
+	// R2-C01: canonicalise + enforce allowed_paths after connect. Per-
+	// action policy:
+	//   write / mkdir / symlink   → target may not exist; use parent fallback
+	//   remove / rename-from / chmod → target should exist
+	//   rename-to                → may not exist; use parent fallback
+	//   realpath                 → no policy check (read-only path query)
+	var resolvedPath safety.RemotePath
+	var resolvedTo safety.RemotePath
+	switch a.Action {
+	case "write", "mkdir", "symlink":
+		resolvedPath, errResp, ok = resolveAndCheckRemotePath(deps, serverName, sftpClient, a.Path, true)
+		if !ok {
+			return errResp
+		}
+	case "remove", "chmod":
+		resolvedPath, errResp, ok = resolveAndCheckRemotePath(deps, serverName, sftpClient, a.Path, false)
+		if !ok {
+			return errResp
+		}
+	case "rename":
+		resolvedPath, errResp, ok = resolveAndCheckRemotePath(deps, serverName, sftpClient, a.Path, false)
+		if !ok {
+			return errResp
+		}
+		resolvedTo, errResp, ok = resolveAndCheckRemotePath(deps, serverName, sftpClient, a.To, true)
+		if !ok {
+			return errResp
+		}
+	case "realpath":
+		// no policy check
+	}
+
 	switch a.Action {
 	case "write":
-		return sftpOpWrite(a, sftpClient, deps, authMode)
+		return sftpOpWrite(a, resolvedPath, sftpClient, deps, authMode)
 	case "mkdir":
-		return sftpOpMkdir(a, sftpClient)
+		return sftpOpMkdir(a, resolvedPath, sftpClient)
 	case "remove":
-		return sftpOpRemove(a, sftpClient)
+		return sftpOpRemove(a, resolvedPath, sftpClient)
 	case "rename":
-		return sftpOpRename(a, sftpClient)
+		return sftpOpRename(a, resolvedPath, resolvedTo, sftpClient)
 	case "chmod":
-		return sftpOpChmod(a, sftpClient)
+		return sftpOpChmod(a, resolvedPath, sftpClient)
 	case "symlink":
-		return sftpOpSymlink(a, sftpClient)
+		return sftpOpSymlink(a, resolvedPath, sftpClient)
 	case "realpath":
 		return sftpOpRealpath(a, sftpClient)
 	default:
@@ -184,13 +194,9 @@ func handleSftpOp(ctx context.Context, deps *Deps, args json.RawMessage) envelop
 // action: write
 // --------------------------------------------------------------------------
 
-func sftpOpWrite(a sftpOpArgs, sc *internalsftp.Client, deps *Deps, authMode string) envelope.Response {
-	rp, err := safety.ValidateRemotePath(a.Path)
-	if err != nil {
-		return envelope.Err(envelope.CodeInvalidArgument, err.Error(), false)
-	}
-
+func sftpOpWrite(a sftpOpArgs, rp safety.RemotePath, sc *internalsftp.Client, deps *Deps, authMode string) envelope.Response {
 	// Decode content.
+	var err error
 	encoding := a.Encoding
 	if encoding == "" {
 		encoding = "utf8"
@@ -248,11 +254,7 @@ func sftpOpWrite(a sftpOpArgs, sc *internalsftp.Client, deps *Deps, authMode str
 // action: mkdir
 // --------------------------------------------------------------------------
 
-func sftpOpMkdir(a sftpOpArgs, sc *internalsftp.Client) envelope.Response {
-	rp, err := safety.ValidateRemotePath(a.Path)
-	if err != nil {
-		return envelope.Err(envelope.CodeInvalidArgument, err.Error(), false)
-	}
+func sftpOpMkdir(a sftpOpArgs, rp safety.RemotePath, sc *internalsftp.Client) envelope.Response {
 	mode, modeErr := parseOctalMode(a.Mode, 0755)
 	if modeErr != nil {
 		return envelope.Err(envelope.CodeInvalidArgument, "mode: "+modeErr.Error(), false)
@@ -267,12 +269,7 @@ func sftpOpMkdir(a sftpOpArgs, sc *internalsftp.Client) envelope.Response {
 // action: remove
 // --------------------------------------------------------------------------
 
-func sftpOpRemove(a sftpOpArgs, sc *internalsftp.Client) envelope.Response {
-	rp, err := safety.ValidateRemotePath(a.Path)
-	if err != nil {
-		return envelope.Err(envelope.CodeInvalidArgument, err.Error(), false)
-	}
-
+func sftpOpRemove(a sftpOpArgs, rp safety.RemotePath, sc *internalsftp.Client) envelope.Response {
 	if a.DryRun {
 		// Enumerate what would be removed without actually removing anything.
 		removed, enumErr := enumerateForRemove(sc, rp, a.Recursive)
@@ -334,18 +331,7 @@ func enumerateForRemove(sc *internalsftp.Client, rp safety.RemotePath, recursive
 // action: rename
 // --------------------------------------------------------------------------
 
-func sftpOpRename(a sftpOpArgs, sc *internalsftp.Client) envelope.Response {
-	from, err := safety.ValidateRemotePath(a.Path)
-	if err != nil {
-		return envelope.Err(envelope.CodeInvalidArgument, "path: "+err.Error(), false)
-	}
-	if a.To == "" {
-		return envelope.Err(envelope.CodeInvalidArgument, "to is required for rename", false)
-	}
-	to, err := safety.ValidateRemotePath(a.To)
-	if err != nil {
-		return envelope.Err(envelope.CodeInvalidArgument, "to: "+err.Error(), false)
-	}
+func sftpOpRename(a sftpOpArgs, from, to safety.RemotePath, sc *internalsftp.Client) envelope.Response {
 	if err := sc.Rename(from, to); err != nil {
 		return mapSFTPErr(err)
 	}
@@ -359,11 +345,7 @@ func sftpOpRename(a sftpOpArgs, sc *internalsftp.Client) envelope.Response {
 // action: chmod
 // --------------------------------------------------------------------------
 
-func sftpOpChmod(a sftpOpArgs, sc *internalsftp.Client) envelope.Response {
-	rp, err := safety.ValidateRemotePath(a.Path)
-	if err != nil {
-		return envelope.Err(envelope.CodeInvalidArgument, err.Error(), false)
-	}
+func sftpOpChmod(a sftpOpArgs, rp safety.RemotePath, sc *internalsftp.Client) envelope.Response {
 	if a.Mode == "" {
 		return envelope.Err(envelope.CodeInvalidArgument, "mode is required for chmod", false)
 	}
@@ -383,11 +365,7 @@ func sftpOpChmod(a sftpOpArgs, sc *internalsftp.Client) envelope.Response {
 // action: symlink
 // --------------------------------------------------------------------------
 
-func sftpOpSymlink(a sftpOpArgs, sc *internalsftp.Client) envelope.Response {
-	target, err := safety.ValidateRemotePath(a.Path)
-	if err != nil {
-		return envelope.Err(envelope.CodeInvalidArgument, "path: "+err.Error(), false)
-	}
+func sftpOpSymlink(a sftpOpArgs, target safety.RemotePath, sc *internalsftp.Client) envelope.Response {
 	if a.To == "" {
 		return envelope.Err(envelope.CodeInvalidArgument, "to is required for symlink (link path)", false)
 	}

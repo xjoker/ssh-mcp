@@ -10,6 +10,7 @@ import (
 
 	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
 	"github.com/xjoker/mcp-ssh-bridge/internal/safety"
+	internalsftp "github.com/xjoker/mcp-ssh-bridge/internal/sftp"
 	"github.com/xjoker/mcp-ssh-bridge/internal/ssh"
 )
 
@@ -271,6 +272,40 @@ func handleSSHGroupExec(ctx context.Context, deps *Deps, args json.RawMessage) e
 	return resp
 }
 
+// earlyCwdCheck performs a syntactic allowed_paths check on an absolute cwd/defaultDir
+// BEFORE a connection is established. This catches obvious policy violations (e.g.
+// cwd="/etc" with allowed_paths=["/tmp"]) without needing SSH, and ensures the
+// test suite can verify rejection without a live pool. Paths starting with "~" are
+// skipped here because they require home-dir resolution over SSH first.
+//
+// Returns (errResult, true) when the path is denied; (zero, false) when allowed or
+// when the path needs post-connect resolution (e.g. "~").
+func earlyCwdCheck(deps *Deps, serverName, rawPath string) (groupExecServerResult, bool) {
+	if rawPath == "" || strings.HasPrefix(rawPath, "~") {
+		return groupExecServerResult{}, false
+	}
+	rp, err := safety.ValidateRemotePath(rawPath)
+	if err != nil {
+		return groupExecServerResult{
+			Server: serverName,
+			OK:     false,
+			Error: &envelope.Error{
+				Code:    envelope.CodeInvalidArgument,
+				Message: fmt.Sprintf("invalid cwd %q: %v", rawPath, err),
+			},
+		}, true
+	}
+	errResp, allowed := enforceAllowedPath(deps.Cfg, serverName, rp)
+	if !allowed {
+		return groupExecServerResult{
+			Server: serverName,
+			OK:     false,
+			Error:  errResp.Error,
+		}, true
+	}
+	return groupExecServerResult{}, false
+}
+
 // execOnServer runs command on a single named server and returns a result struct.
 func execOnServer(
 	ctx context.Context,
@@ -279,6 +314,21 @@ func execOnServer(
 	timeout time.Duration,
 	outputMax int,
 ) groupExecServerResult {
+	// Determine what cwd/defaultDir string we intend to use so we can
+	// syntactically validate allowed_paths BEFORE acquiring a connection.
+	// This ensures that even with a nil Pool the early-rejection tests pass
+	// (S-1/S-2) and that we fail fast without consuming a connection slot.
+	rawCwd := cwd
+	if rawCwd == "" {
+		if srv, ok := deps.Cfg.Servers[serverName]; ok {
+			rawCwd = srv.DefaultDir
+		}
+	}
+
+	if result, denied := earlyCwdCheck(deps, serverName, rawCwd); denied {
+		return result
+	}
+
 	client, err := deps.Pool.Get(ctx, serverName)
 	if err != nil {
 		errResp := mapSSHConnErr(err)
@@ -289,10 +339,18 @@ func execOnServer(
 		}
 	}
 
-	// Resolve cwd
+	// Resolve cwd through internal/sftp.Realpath + resolveAndCheckRemotePath
+	// (symlink-resistant, enforces allowed_paths on the canonical form).
 	absDir := ""
-	if cwd != "" {
-		cwdStr := cwd
+	cwdStr := cwd
+	if cwdStr == "" {
+		if srv, ok := deps.Cfg.Servers[serverName]; ok {
+			cwdStr = srv.DefaultDir
+		}
+	}
+
+	if cwdStr != "" {
+		// Expand ~ via ResolveHome if needed (mirrors exec.go behaviour).
 		if strings.HasPrefix(cwdStr, "~") {
 			home, herr := client.ResolveHome(ctx)
 			if herr == nil {
@@ -304,7 +362,7 @@ func execOnServer(
 			}
 		}
 
-		sftpClient, serr := client.SFTP()
+		internalSFTP, serr := internalsftp.New(client.Underlying())
 		if serr != nil {
 			return groupExecServerResult{
 				Server: serverName,
@@ -316,22 +374,17 @@ func execOnServer(
 				},
 			}
 		}
-		defer sftpClient.Close()
+		defer internalSFTP.Close()
 
-		resolved, rerr := sftpClient.RealPath(cwdStr)
-		if rerr != nil {
+		cwdRP, errResp, ok := resolveAndCheckRemotePath(deps, serverName, internalSFTP, cwdStr, false)
+		if !ok {
 			return groupExecServerResult{
 				Server: serverName,
 				OK:     false,
-				Error: &envelope.Error{
-					Code:    envelope.CodeInvalidArgument,
-					Message: fmt.Sprintf("cannot resolve cwd %q on %s: %v", cwdStr, serverName, rerr),
-				},
+				Error:  errResp.Error,
 			}
 		}
-		absDir = resolved
-	} else if srv, ok := deps.Cfg.Servers[serverName]; ok && srv.DefaultDir != "" {
-		absDir = srv.DefaultDir
+		absDir = cwdRP.String()
 	}
 
 	remoteCmd, err := safety.NewRemoteCommand(command, absDir)

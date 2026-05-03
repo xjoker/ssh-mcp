@@ -312,6 +312,51 @@ func TestKeychainSetErrorUnwrappable(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
+// Agent — H04
+// --------------------------------------------------------------------------
+
+// TestAgent_ReturnsCloserAndClosesSocket verifies that Agent() returns both
+// an agent client and an io.Closer. When SSH_AUTH_SOCK is unset or points to
+// an unreachable socket, both return values must be nil (no panic). When the
+// socket IS reachable, calling closer.Close() must not error (socket released).
+func TestAgent_ReturnsCloserAndClosesSocket(t *testing.T) {
+	t.Run("unset_sock", func(t *testing.T) {
+		// SSH_AUTH_SOCK unset → both nil, no panic.
+		t.Setenv("SSH_AUTH_SOCK", "")
+		ag, closer := Agent()
+		if ag != nil || closer != nil {
+			t.Error("expected (nil, nil) when SSH_AUTH_SOCK is unset")
+		}
+	})
+
+	t.Run("nonexistent_sock", func(t *testing.T) {
+		// SSH_AUTH_SOCK points to a nonexistent socket → both nil.
+		t.Setenv("SSH_AUTH_SOCK", "/tmp/ssh-mcp-test-nonexistent.sock")
+		ag, closer := Agent()
+		if ag != nil || closer != nil {
+			t.Error("expected (nil, nil) when socket does not exist")
+		}
+	})
+
+	t.Run("live_agent", func(t *testing.T) {
+		// Live agent test — only run when a real SSH agent is available.
+		// SSH_AUTH_SOCK is inherited from the outer environment here because
+		// t.Setenv in a sibling sub-test does not affect this one.
+		sock := os.Getenv("SSH_AUTH_SOCK")
+		if sock == "" {
+			t.Skip("SSH_AUTH_SOCK not set; skipping live agent test")
+		}
+		ag, closer := Agent()
+		if ag == nil || closer == nil {
+			t.Skip("agent not reachable in this environment")
+		}
+		if err := closer.Close(); err != nil {
+			t.Errorf("closer.Close(): unexpected error: %v", err)
+		}
+	})
+}
+
+// --------------------------------------------------------------------------
 // helpers
 // --------------------------------------------------------------------------
 

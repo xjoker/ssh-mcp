@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"runtime"
@@ -203,19 +204,20 @@ func ListKeychain(service string) ([]string, error) {
 // Agent — SDD §5.3, §8.3
 // --------------------------------------------------------------------------
 
-// Agent returns an ssh-agent client connected to SSH_AUTH_SOCK, or nil if
-// the socket is unset or the connection fails. The returned connection is
-// owned by the caller; close the underlying net.Conn to release resources.
-func Agent() agent.ExtendedAgent {
+// Agent returns an ssh-agent client connected to SSH_AUTH_SOCK and the
+// underlying net.Conn as an io.Closer. Both are nil if SSH_AUTH_SOCK is
+// unset or the connection fails. Callers MUST call closer.Close() when the
+// agent client is no longer needed to release the file descriptor (H04).
+func Agent() (agent.ExtendedAgent, io.Closer) {
 	sock := os.Getenv("SSH_AUTH_SOCK")
 	if sock == "" {
-		return nil
+		return nil, nil
 	}
 	conn, err := net.Dial("unix", sock)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
-	return agent.NewClient(conn)
+	return agent.NewClient(conn), conn
 }
 
 // --------------------------------------------------------------------------

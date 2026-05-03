@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"flag"
 	"fmt"
@@ -112,8 +113,11 @@ func readPasswordConfirmed(account string) ([]byte, error) {
 		return nil, fmt.Errorf("read password (confirm): %w", err)
 	}
 
-	if string(first) != string(second) {
-		// Zero both slices before returning.
+	// Use constant-time comparison to avoid timing side-channels and to
+	// prevent the Go compiler from materialising an extra string copy
+	// (which would be harder to zero from memory).
+	if subtle.ConstantTimeCompare(first, second) != 1 {
+		// Zero both slices before returning the error.
 		for i := range first {
 			first[i] = 0
 		}
@@ -123,7 +127,7 @@ func readPasswordConfirmed(account string) ([]byte, error) {
 		return nil, fmt.Errorf("passwords do not match")
 	}
 
-	// Zero the confirmation copy.
+	// Zero the confirmation copy; caller is responsible for zeroing first.
 	for i := range second {
 		second[i] = 0
 	}

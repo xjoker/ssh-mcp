@@ -202,3 +202,68 @@ func TestServerRemoveNotFound(t *testing.T) {
 		t.Error("server remove: expected non-zero exit for unknown server")
 	}
 }
+
+// --------------------------------------------------------------------------
+// M01: server name validation (cliServerNameRe / validateServerName)
+// --------------------------------------------------------------------------
+
+// TestServerName_ValidateRejectsBadInput verifies that validateServerName
+// rejects names that do not match ^[a-z0-9][a-z0-9_-]*$ or exceed length limits.
+func TestServerName_ValidateRejectsBadInput(t *testing.T) {
+	bad := []string{
+		"Bad-Name",      // uppercase
+		"a*b",           // special char
+		"-leading",      // starts with dash
+		"",              // empty
+		strings.Repeat("a", 65), // > 64 chars
+	}
+	for _, name := range bad {
+		if err := validateServerName(name); err == nil {
+			t.Errorf("validateServerName(%q): expected error, got nil", name)
+		}
+	}
+}
+
+// TestServerName_ValidateAcceptsGoodInput verifies that validateServerName
+// accepts names that match the allowed pattern.
+func TestServerName_ValidateAcceptsGoodInput(t *testing.T) {
+	good := []string{
+		"myserver",
+		"server-1",
+		"server_2",
+		"a",
+		strings.Repeat("a", 64), // exactly 64 chars
+		"my-server-01",
+	}
+	for _, name := range good {
+		if err := validateServerName(name); err != nil {
+			t.Errorf("validateServerName(%q): unexpected error: %v", name, err)
+		}
+	}
+}
+
+// TestServerAdd_RejectsInvalidName verifies that `server add` rejects a name
+// containing an invalid character and does not write the server to the config file.
+func TestServerAdd_RejectsInvalidName(t *testing.T) {
+	cfgPath := writeConfig(t, "[settings]\n")
+
+	code := serverCmd([]string{
+		"add", "evil%name",
+		"--host", "10.0.0.1",
+		"--user", "root",
+		"--auth", "agent",
+		"--port", "22",
+		"--path", cfgPath,
+	})
+	if code == 0 {
+		t.Fatal("server add: expected non-zero exit for invalid server name")
+	}
+
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "evil") {
+		t.Errorf("server add: invalid server was written to config:\n%s", data)
+	}
+}
