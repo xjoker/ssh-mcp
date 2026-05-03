@@ -5,7 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
+
+	gossh "golang.org/x/crypto/ssh"
 
 	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
 	"github.com/xjoker/mcp-ssh-bridge/internal/safety"
@@ -260,6 +264,7 @@ func handleSSHExec(ctx context.Context, deps *Deps, args json.RawMessage) envelo
 		stdoutStr += fmt.Sprintf("...[truncated; %d bytes total]", total)
 	}
 
+	bytesOut := int64(len(result.Stdout) + len(result.Stderr))
 	return envelope.OK(execOutput{
 		Stdout:     stdoutStr,
 		Stderr:     string(result.Stderr),
@@ -269,11 +274,17 @@ func handleSSHExec(ctx context.Context, deps *Deps, args json.RawMessage) envelo
 		Truncated:  result.Truncated,
 		Host:       hostLabel,
 		User:       userLabel,
+	}).WithAudit(envelope.AuditMeta{
+		ExitCode: result.ExitCode,
+		BytesOut: bytesOut,
+		AuthMode: client.AuthMode(),
 	})
 }
 
 // handleSSHExecStreaming handles stream=true by calling ExecStreaming with
-// progress callbacks.
+// progress callbacks. Output is truncated in real-time at outputMax bytes
+// (SDD §6.1). The real exit code and signal are extracted from the error
+// returned by ExecStreaming.
 func handleSSHExecStreaming(
 	ctx context.Context,
 	deps *Deps,
@@ -283,13 +294,44 @@ func handleSSHExecStreaming(
 	host, user string,
 	outputMax int,
 ) envelope.Response {
+	// Shared budget and truncation flag across stdout/stderr callbacks.
+	var remaining atomic.Int64
+	var truncatedFlag atomic.Bool
+	remaining.Store(int64(outputMax))
+
 	var stdoutBuf strings.Builder
 	var stderrBuf strings.Builder
+	var stdoutMu, stderrMu sync.Mutex
+
+	// appendBoundedStr appends up to the remaining budget from chunk into buf.
+	// Always fires the Progress callback with the original chunk so the caller
+	// can still observe the truncated stream.
+	appendBoundedStr := func(buf *strings.Builder, mu *sync.Mutex, chunk []byte) {
+		n := int64(len(chunk))
+		if n == 0 {
+			return
+		}
+		after := remaining.Add(-n)
+		var allowed int64
+		if after >= 0 {
+			allowed = n
+		} else {
+			truncatedFlag.Store(true)
+			if after+n > 0 {
+				allowed = after + n
+			}
+		}
+		if allowed > 0 {
+			mu.Lock()
+			buf.Write(chunk[:allowed])
+			mu.Unlock()
+		}
+	}
 
 	streamErr := client.ExecStreaming(ctx, cmd, ssh.StreamOpts{
 		Timeout: timeout,
 		OnStdout: func(chunk []byte, eof bool) {
-			stdoutBuf.Write(chunk)
+			appendBoundedStr(&stdoutBuf, &stdoutMu, chunk)
 			if deps.Progress != nil && !eof {
 				deps.Progress(map[string]any{
 					"stream": "stdout",
@@ -298,7 +340,7 @@ func handleSSHExecStreaming(
 			}
 		},
 		OnStderr: func(chunk []byte, eof bool) {
-			stderrBuf.Write(chunk)
+			appendBoundedStr(&stderrBuf, &stderrMu, chunk)
 			if deps.Progress != nil && !eof {
 				deps.Progress(map[string]any{
 					"stream": "stderr",
@@ -310,34 +352,92 @@ func handleSSHExecStreaming(
 
 	stdoutStr := stdoutBuf.String()
 	stderrStr := stderrBuf.String()
-	truncated := false
+	truncated := truncatedFlag.Load()
 
-	// Apply output cap (best-effort for streaming)
-	total := len(stdoutStr) + len(stderrStr)
-	if outputMax > 0 && total > outputMax {
-		if len(stdoutStr) > outputMax {
-			stdoutStr = stdoutStr[:outputMax]
-			truncated = true
-		}
-	}
 	if truncated {
+		total := len(stdoutStr) + len(stderrStr)
 		stdoutStr += fmt.Sprintf("...[truncated; %d bytes total]", total)
 	}
 
-	exitCode := 0
-	if streamErr != nil {
-		if ctx.Err() != nil {
-			return envelope.Err(envelope.CodeTimeout,
-				"streaming command timed out: "+streamErr.Error(), true)
+	bytesOut := int64(stdoutBuf.Len() + stderrBuf.Len())
+	resp := buildStreamingEnvelope(ctx, streamErr, stdoutStr, stderrStr, truncated, host, user)
+	if resp.OK {
+		// Only attach AuditMeta on success; error path already loses exit code fidelity.
+		exitCode := 0
+		if resp.Data != nil {
+			if out, ok := resp.Data.(execOutput); ok {
+				exitCode = out.ExitCode
+			}
 		}
-		exitCode = -1
+		resp = resp.WithAudit(envelope.AuditMeta{
+			ExitCode: exitCode,
+			BytesOut: bytesOut,
+			AuthMode: client.AuthMode(),
+		})
+	}
+	return resp
+}
+
+// buildStreamingEnvelope constructs the final envelope.Response for a streaming
+// execution. It maps the error from ExecStreaming to exit_code / signal,
+// matching the semantics of ExecBuffered (SDD §6.1).
+//
+// This helper is unexported so it can be unit-tested in isolation without
+// needing a real SSH connection.
+func buildStreamingEnvelope(
+	ctx context.Context,
+	streamErr error,
+	stdout, stderr string,
+	truncated bool,
+	host, user string,
+) envelope.Response {
+	if streamErr != nil && ctx.Err() != nil {
+		return envelope.Err(envelope.CodeTimeout,
+			"streaming command timed out: "+streamErr.Error(), true)
+	}
+
+	exitCode := 0
+	signal := ""
+
+	if streamErr != nil {
+		var exitErr *gossh.ExitError
+		if e, ok := streamErr.(*gossh.ExitError); ok {
+			exitErr = e
+		}
+		// ExecStreaming wraps the exit error with fmt.Errorf, so also unwrap.
+		if exitErr == nil {
+			cause := streamErr
+			for cause != nil {
+				if e, ok := cause.(*gossh.ExitError); ok {
+					exitErr = e
+					break
+				}
+				// unwrap one level
+				type unwrapper interface{ Unwrap() error }
+				if uw, ok := cause.(unwrapper); ok {
+					cause = uw.Unwrap()
+				} else {
+					break
+				}
+			}
+		}
+		if exitErr != nil {
+			exitCode = exitErr.ExitStatus()
+			if exitErr.Signal() != "" {
+				signal = exitErr.Signal()
+			}
+		} else {
+			// ExitMissingError or other non-exit-code error (e.g. signal kill).
+			exitCode = -1
+			signal = "UNKNOWN"
+		}
 	}
 
 	return envelope.OK(execOutput{
-		Stdout:     stdoutStr,
-		Stderr:     stderrStr,
+		Stdout:     stdout,
+		Stderr:     stderr,
 		ExitCode:   exitCode,
-		Signal:     "",
+		Signal:     signal,
 		DurationMs: 0, // streaming does not track duration separately
 		Truncated:  truncated,
 		Host:       host,

@@ -2160,9 +2160,13 @@ the binary may be distributed). `-s -w` strips debug info for size.
 
 ### 14.4 Go Version Policy
 
-Track the two most recent minor versions of Go (currently 1.22 and 1.23
+Track the two most recent minor versions of Go (currently 1.25 and 1.26
 as of 2026-05). Drop the older when a new minor releases. This matches
 upstream Go support policy.
+
+The minimum is dictated by transitive deps: `github.com/modelcontextprotocol/go-sdk`
+and `golang.org/x/{crypto,sys,term}` already require `go 1.25`, so 1.22/1.23
+support would not be possible without forking those modules.
 
 ---
 

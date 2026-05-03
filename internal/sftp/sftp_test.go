@@ -5,6 +5,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -258,13 +259,16 @@ func (s *seekCapturingFile) Seek(offset int64, whence int) (int64, error) {
 }
 
 // Test 2: Write atomic calls OpenFile(tmp) → Write → PosixRename.
+// The temp path must match the pattern ".<base>.msb-tmp.<8 hex chars>".
 func TestWrite_AtomicCallOrder(t *testing.T) {
 	var openedPath string
+	var openedFlags int
 	var ff *fakeFile
 
 	fb := &fakeBackend{
-		openFileFunc: func(path string, f int) (sftpFile, error) {
-			openedPath = path
+		openFileFunc: func(p string, f int) (sftpFile, error) {
+			openedPath = p
+			openedFlags = f
 			ff = &fakeFile{}
 			return ff, nil
 		},
@@ -278,10 +282,25 @@ func TestWrite_AtomicCallOrder(t *testing.T) {
 		t.Fatalf("Write(atomic): unexpected error: %v", err)
 	}
 
-	// The opened path must be the temp file, not the target.
-	wantTmpPath := "/tmp/.hello.txt.msb-tmp"
-	if openedPath != wantTmpPath {
-		t.Errorf("OpenFile path: got %q, want %q", openedPath, wantTmpPath)
+	// The opened path must be the temp file, not the target, with the new
+	// random-suffix pattern: /tmp/.hello.txt.msb-tmp.<8 hex chars>
+	wantPrefix := "/tmp/.hello.txt.msb-tmp."
+	if !strings.HasPrefix(openedPath, wantPrefix) {
+		t.Errorf("OpenFile path: got %q, want prefix %q", openedPath, wantPrefix)
+	}
+	suffix := openedPath[len(wantPrefix):]
+	if len(suffix) != 8 {
+		t.Errorf("temp suffix len: got %d, want 8 hex chars (got %q)", len(suffix), suffix)
+	}
+	for _, ch := range suffix {
+		if !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')) {
+			t.Errorf("temp suffix contains non-hex char %q in %q", ch, suffix)
+		}
+	}
+
+	// O_EXCL must be set on the open flags.
+	if openedFlags&os.O_EXCL == 0 {
+		t.Errorf("OpenFile flags: O_EXCL not set (flags=0x%x)", openedFlags)
 	}
 
 	// Data must have been written to the temp file.
@@ -309,14 +328,6 @@ func TestWrite_AtomicRenameFailureRemovesTemp(t *testing.T) {
 		},
 		posixRenameErr: errors.New("posix rename not supported"),
 	}
-	// Make plain Rename also fail.
-	errRename := errors.New("rename failed")
-	_ = errRename
-
-	// We need plain Rename to fail too. Override it via a custom backend.
-	type overrideRenameBackend struct {
-		*fakeBackend
-	}
 
 	// Build a backend where both PosixRename and Rename fail.
 	fb2 := &bothRenameFail{fakeBackend: fb}
@@ -329,20 +340,22 @@ func TestWrite_AtomicRenameFailureRemovesTemp(t *testing.T) {
 		t.Fatal("expected error when both renames fail, got nil")
 	}
 
-	// The temp file must have been removed.
+	// The temp file must have been removed. The path matches the pattern
+	// /var/app/.config.yaml.msb-tmp.<8 hex chars>.
 	if fb.removeCallCount == 0 {
 		t.Error("Remove not called after rename failure")
 	}
-	wantTmpPath := "/var/app/.config.yaml.msb-tmp"
+	wantTmpPrefix := "/var/app/.config.yaml.msb-tmp."
 	found := false
 	for _, rp := range fb.removedPaths {
-		if rp == wantTmpPath {
+		if strings.HasPrefix(rp, wantTmpPrefix) {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("Remove not called with temp path %q; removed: %v", wantTmpPath, fb.removedPaths)
+		t.Errorf("Remove not called with temp path matching prefix %q; removed: %v",
+			wantTmpPrefix, fb.removedPaths)
 	}
 }
 
@@ -544,5 +557,112 @@ func TestRealpath_TildeAlone(t *testing.T) {
 	}
 	if got, want := rp.String(), "/root"; got != want {
 		t.Errorf("Realpath(~): got %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// M02 — atomic write: random temp name + O_EXCL retry
+// ---------------------------------------------------------------------------
+
+// Test 11 (M02): O_EXCL failure on first attempt triggers retry with a
+// different random name.
+func TestWrite_AtomicExclRetry(t *testing.T) {
+	callCount := 0
+	var openedPaths []string
+
+	fb := &fakeBackend{
+		openFileFunc: func(p string, f int) (sftpFile, error) {
+			callCount++
+			openedPaths = append(openedPaths, p)
+			if callCount == 1 {
+				// Simulate O_EXCL failure (file already exists).
+				return nil, errors.New("file already exists")
+			}
+			// Second attempt succeeds.
+			return &fakeFile{}, nil
+		},
+	}
+
+	c := &Client{b: fb}
+	p := mustRemotePath(t, "/srv/data/report.txt")
+
+	if err := c.Write(p, []byte("content"), 0644, true, nil); err != nil {
+		t.Fatalf("Write(atomic): unexpected error on retry: %v", err)
+	}
+
+	if callCount < 2 {
+		t.Errorf("expected at least 2 OpenFile calls (retry), got %d", callCount)
+	}
+
+	// Both paths must match the expected prefix.
+	wantPrefix := "/srv/data/.report.txt.msb-tmp."
+	for _, op := range openedPaths {
+		if !strings.HasPrefix(op, wantPrefix) {
+			t.Errorf("opened path %q does not match prefix %q", op, wantPrefix)
+		}
+	}
+
+	// The two attempted paths must be different (different random suffixes).
+	if len(openedPaths) >= 2 && openedPaths[0] == openedPaths[1] {
+		t.Errorf("retry used the same temp path %q instead of a new random name", openedPaths[0])
+	}
+}
+
+// Test 12 (M02): Temp path format is ".<base>.msb-tmp.<8 hex chars>".
+func TestWrite_AtomicTmpNameFormat(t *testing.T) {
+	var openedPath string
+
+	fb := &fakeBackend{
+		openFileFunc: func(p string, f int) (sftpFile, error) {
+			openedPath = p
+			return &fakeFile{}, nil
+		},
+	}
+
+	c := &Client{b: fb}
+	p := mustRemotePath(t, "/opt/app/settings.json")
+
+	if err := c.Write(p, []byte("{}"), 0644, true, nil); err != nil {
+		t.Fatalf("Write(atomic): %v", err)
+	}
+
+	wantPrefix := "/opt/app/.settings.json.msb-tmp."
+	if !strings.HasPrefix(openedPath, wantPrefix) {
+		t.Fatalf("tmp path %q does not start with %q", openedPath, wantPrefix)
+	}
+	hexSuffix := openedPath[len(wantPrefix):]
+	if len(hexSuffix) != 8 {
+		t.Errorf("hex suffix len: got %d, want 8 (got %q)", len(hexSuffix), hexSuffix)
+	}
+	for _, ch := range hexSuffix {
+		if !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')) {
+			t.Errorf("non-hex char %q in suffix %q", ch, hexSuffix)
+		}
+	}
+}
+
+// Test 13 (M02): Multiple concurrent atomic writes to the same target produce
+// unique temp names.
+func TestWrite_AtomicTmpNamesUnique(t *testing.T) {
+	const iterations = 20
+	seen := make(map[string]bool, iterations)
+
+	for i := 0; i < iterations; i++ {
+		var openedPath string
+		fb := &fakeBackend{
+			openFileFunc: func(p string, f int) (sftpFile, error) {
+				openedPath = p
+				return &fakeFile{}, nil
+			},
+		}
+		c := &Client{b: fb}
+		p := mustRemotePath(t, "/tmp/target.bin")
+		if err := c.Write(p, []byte("x"), 0600, true, nil); err != nil {
+			t.Fatalf("Write(atomic) iter %d: %v", i, err)
+		}
+		if seen[openedPath] {
+			t.Errorf("duplicate temp path on iteration %d: %q", i, openedPath)
+		}
+		seen[openedPath] = true
 	}
 }

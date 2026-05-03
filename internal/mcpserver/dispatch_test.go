@@ -1,13 +1,18 @@
 package mcpserver
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/xjoker/mcp-ssh-bridge/internal/audit"
+	"github.com/xjoker/mcp-ssh-bridge/internal/config"
 	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
+	"github.com/xjoker/mcp-ssh-bridge/internal/tools"
 )
 
 // SDD §5.1: every tool returns the unified envelope shape. The dispatcher
@@ -87,5 +92,139 @@ func TestNewCorrelationIDUnique(t *testing.T) {
 		if len(id) != 16 {
 			t.Errorf("expected 16-char hex, got %q", id)
 		}
+	}
+}
+
+// TestMiddlewareChain_AuditMetaEnrichment verifies that when a handler returns
+// a Response with AuditMeta populated, the dispatcher copies ExitCode,
+// BytesIn, BytesOut, and AuthMode into the audit entry. SDD §9.2 / M04.
+func TestMiddlewareChain_AuditMetaEnrichment(t *testing.T) {
+	auditDir := t.TempDir()
+	auditLog, err := audit.New(auditDir, 90)
+	if err != nil {
+		t.Fatalf("audit.New: %v", err)
+	}
+	defer auditLog.Close()
+
+	cfg := &config.Config{
+		Settings: config.Settings{},
+		Servers:  map[string]config.ServerConfig{},
+	}
+	deps := &tools.Deps{
+		Cfg:   cfg,
+		Audit: auditLog,
+	}
+
+	// Fake handler: returns OK with AuditMeta carrying exit 0 + byte counts.
+	fakeHandler := func(_ context.Context, _ *tools.Deps, _ json.RawMessage) envelope.Response {
+		return envelope.OK("result").WithAudit(envelope.AuditMeta{
+			ExitCode: 0,
+			BytesOut: 512,
+			BytesIn:  0,
+			AuthMode: "key",
+		})
+	}
+
+	req := &mcp.CallToolRequest{
+		Params: &mcp.CallToolParamsRaw{
+			Arguments: json.RawMessage(`{"server":"test-server"}`),
+		},
+	}
+
+	_, middlewareErr := middlewareChain(context.Background(), req, "ssh_exec", fakeHandler, deps)
+	if middlewareErr != nil {
+		t.Fatalf("middlewareChain: %v", middlewareErr)
+	}
+
+	// Query the audit log and verify enriched fields.
+	// Give the OS a moment to flush (fsync already happens in Record).
+	time.Sleep(10 * time.Millisecond)
+
+	entries, qErr := auditLog.Query(audit.Filter{Tool: "ssh_exec", Limit: 10})
+	if qErr != nil {
+		t.Fatalf("Query: %v", qErr)
+	}
+
+	// For destructive tool "ssh_exec" there will be 2 entries (pending + completed).
+	// We want the "completed" one.
+	var completed *audit.Entry
+	for i := range entries {
+		if entries[i].Status == "completed" {
+			completed = &entries[i]
+			break
+		}
+	}
+	if completed == nil {
+		// If no completed entry, use the only one (non-destructive path won't have pending).
+		if len(entries) > 0 {
+			completed = &entries[0]
+		}
+	}
+	if completed == nil {
+		t.Fatal("no audit entry found after middlewareChain")
+	}
+
+	if completed.BytesOut != 512 {
+		t.Errorf("BytesOut: got %d, want 512", completed.BytesOut)
+	}
+	if completed.AuthMode != "key" {
+		t.Errorf("AuthMode: got %q, want \"key\"", completed.AuthMode)
+	}
+	// ExitCode=0 on success; dispatcher keeps 0.
+	if completed.ExitCode != 0 {
+		t.Errorf("ExitCode: got %d, want 0", completed.ExitCode)
+	}
+}
+
+// TestMiddlewareChain_AuditMetaNilNoOverride verifies that when a handler
+// does NOT set AuditMeta (nil), the dispatcher falls back to the envelope
+// success/failure mapping: OK → exit 0, error → exit 1.
+func TestMiddlewareChain_AuditMetaNilNoOverride(t *testing.T) {
+	auditDir := t.TempDir()
+	auditLog, err := audit.New(auditDir, 90)
+	if err != nil {
+		t.Fatalf("audit.New: %v", err)
+	}
+	defer auditLog.Close()
+
+	cfg := &config.Config{
+		Settings: config.Settings{},
+		Servers:  map[string]config.ServerConfig{},
+	}
+	deps := &tools.Deps{
+		Cfg:   cfg,
+		Audit: auditLog,
+	}
+
+	fakeHandler := func(_ context.Context, _ *tools.Deps, _ json.RawMessage) envelope.Response {
+		// No WithAudit call — Audit field is nil.
+		return envelope.Err(envelope.CodeInternalError, "boom", false)
+	}
+
+	req := &mcp.CallToolRequest{
+		Params: &mcp.CallToolParamsRaw{
+			Arguments: json.RawMessage(`{}`),
+		},
+	}
+
+	_, middlewareErr := middlewareChain(context.Background(), req, "list_servers", fakeHandler, deps)
+	if middlewareErr != nil {
+		t.Fatalf("middlewareChain: %v", middlewareErr)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+	entries, qErr := auditLog.Query(audit.Filter{Tool: "list_servers", Limit: 10})
+	if qErr != nil {
+		t.Fatalf("Query: %v", qErr)
+	}
+	if len(entries) == 0 {
+		t.Fatal("no audit entry found")
+	}
+	// Error response without AuditMeta → ExitCode should be 1 (envelope mapping).
+	if entries[0].ExitCode != 1 {
+		t.Errorf("ExitCode: got %d, want 1", entries[0].ExitCode)
+	}
+	if entries[0].AuthMode != "" {
+		t.Errorf("AuthMode should be empty when AuditMeta is nil, got %q", entries[0].AuthMode)
 	}
 }

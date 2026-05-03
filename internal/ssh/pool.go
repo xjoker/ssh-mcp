@@ -235,7 +235,7 @@ func (p *Pool) Close() error {
 // dial builds an *gossh.Client for srv. acceptNew controls whether unknown
 // host keys are silently accepted (only true for ad-hoc calls).
 func (p *Pool) dial(ctx context.Context, srv config.ServerConfig, acceptNew bool, visited map[string]struct{}) (*Client, error) {
-	authMethods, _, err := p.resolver.ResolveServerAuth(ctx, srv)
+	authMethods, authLabel, err := p.resolver.ResolveServerAuth(ctx, srv)
 	if err != nil {
 		return nil, fmt.Errorf("resolve auth for %q: %w", srv.Name, err)
 	}
@@ -257,14 +257,14 @@ func (p *Pool) dial(ctx context.Context, srv config.ServerConfig, acceptNew bool
 	addr := fmt.Sprintf("%s:%d", srv.Host, port)
 
 	if srv.ProxyJump != "" {
-		return p.dialViaProxy(ctx, srv, addr, clientCfg, visited)
+		return p.dialViaProxy(ctx, srv, addr, clientCfg, authLabel, visited)
 	}
 
 	inner, err := p.dialer(ctx, "tcp", addr, clientCfg)
 	if err != nil {
 		return nil, err
 	}
-	return newClient(inner, srv.Name), nil
+	return newClientWithAuthMode(inner, srv.Name, authLabel), nil
 }
 
 // dialViaProxy implements ProxyJump: obtain a jump client, open a TCP channel
@@ -274,6 +274,7 @@ func (p *Pool) dialViaProxy(
 	target config.ServerConfig,
 	targetAddr string,
 	targetCfg *gossh.ClientConfig,
+	authLabel string,
 	visited map[string]struct{},
 ) (*Client, error) {
 	jumpClient, err := p.getInternal(ctx, target.ProxyJump, visited)
@@ -295,7 +296,7 @@ func (p *Pool) dialViaProxy(
 	}
 
 	inner := gossh.NewClient(sshConn, chans, reqs)
-	return newClient(inner, target.Name), nil
+	return newClientWithAuthMode(inner, target.Name, authLabel), nil
 }
 
 // adHocAuthMethods converts an AdHocParams.Auth into a []gossh.AuthMethod slice.

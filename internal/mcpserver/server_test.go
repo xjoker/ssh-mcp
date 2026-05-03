@@ -1,7 +1,9 @@
 package mcpserver
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/xjoker/mcp-ssh-bridge/internal/config"
 	"github.com/xjoker/mcp-ssh-bridge/internal/tools"
@@ -124,4 +126,79 @@ func toolNames(ts []tools.Tool) []string {
 		out[i] = t.Name
 	}
 	return out
+}
+
+// TestRunConnReaper_ExitsOnCtxCancel verifies that the connection reaper
+// goroutine exits cleanly when its context is cancelled. This guards against
+// goroutine leaks (SDD §12.3 / M03).
+func TestRunConnReaper_ExitsOnCtxCancel(t *testing.T) {
+	cfg := &config.Config{
+		Settings: config.Settings{
+			ConnIdleSeconds:    1,
+			AuditRetentionDays: 90,
+			SessionIdleSeconds: 3600,
+		},
+		Servers: map[string]config.ServerConfig{},
+	}
+
+	auditDir := t.TempDir()
+	s, err := New(cfg, auditDir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer s.Shutdown()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		s.runConnReaper(ctx)
+		close(done)
+	}()
+
+	// Cancel immediately and verify goroutine exits within 2 seconds.
+	cancel()
+
+	select {
+	case <-done:
+		// goroutine exited — no leak
+	case <-time.After(2 * time.Second):
+		t.Fatal("runConnReaper goroutine did not exit after context cancellation (goroutine leak)")
+	}
+}
+
+// TestRunConnReaper_UsesConnIdleSeconds verifies that a zero ConnIdleSeconds
+// value falls back to the built-in 600-second default (guard against zero-
+// threshold wiping the pool immediately). SDD §12.3 / M03.
+func TestRunConnReaper_UsesConnIdleSeconds(t *testing.T) {
+	cfg := &config.Config{
+		Settings: config.Settings{
+			ConnIdleSeconds:    0, // zero — reaper should use 600s fallback
+			AuditRetentionDays: 90,
+			SessionIdleSeconds: 3600,
+		},
+		Servers: map[string]config.ServerConfig{},
+	}
+
+	auditDir := t.TempDir()
+	s, err := New(cfg, auditDir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer s.Shutdown()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // immediate cancel so the goroutine starts and exits without blocking
+
+	done := make(chan struct{})
+	go func() {
+		s.runConnReaper(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runConnReaper did not exit")
+	}
 }

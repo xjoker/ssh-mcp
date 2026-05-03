@@ -1,6 +1,8 @@
 package sftp
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -183,16 +185,54 @@ func (c *Client) writeDirect(p safety.RemotePath, data []byte, mode os.FileMode,
 	return nil
 }
 
+// atomicTmpMaxRetries is the number of times writeAtomic will retry generating
+// a unique temp-file name when O_EXCL creation fails.
+const atomicTmpMaxRetries = 3
+
+// randHex8 returns 8 random hex characters sourced from crypto/rand.
+func randHex8() (string, error) {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
 func (c *Client) writeAtomic(p safety.RemotePath, data []byte, mode os.FileMode,
 	progressCb func(written, total int64)) error {
 
 	dir := path.Dir(p.String())
 	base := path.Base(p.String())
-	tmpPath := path.Join(dir, "."+base+".msb-tmp")
 
-	f, err := c.b.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
-	if err != nil {
-		return fmt.Errorf("sftp: Write(atomic): open tmp %q: %w", tmpPath, err)
+	// Try up to atomicTmpMaxRetries times to create a uniquely-named temp file
+	// with O_EXCL (exclusive create). This prevents concurrent writes to the
+	// same target from clobbering each other's temp files (SDD §5.6).
+	//
+	// Note: pkg/sftp passes OpenFile flags directly to the SFTP server's
+	// SSH_FXP_OPEN request. O_EXCL (0x0004) is part of the sftp-v3 open flags
+	// and is supported by OpenSSH/sftp-server. If the server does not support
+	// O_EXCL the open will either succeed (treating it as O_CREAT) or return an
+	// error; in the latter case we retry with a fresh random name, which by
+	// itself provides sufficient uniqueness protection.
+	var tmpPath string
+	var f sftpFile
+	for attempt := 0; attempt < atomicTmpMaxRetries; attempt++ {
+		suffix, err := randHex8()
+		if err != nil {
+			return fmt.Errorf("sftp: Write(atomic): rand: %w", err)
+		}
+		candidate := path.Join(dir, "."+base+".msb-tmp."+suffix)
+		fh, openErr := c.b.OpenFile(candidate, os.O_WRONLY|os.O_CREATE|os.O_EXCL)
+		if openErr == nil {
+			tmpPath = candidate
+			f = fh
+			break
+		}
+		// If this was the last attempt, return the error.
+		if attempt == atomicTmpMaxRetries-1 {
+			return fmt.Errorf("sftp: Write(atomic): open tmp (attempt %d): %w", attempt+1, openErr)
+		}
+		// Otherwise retry with a different random name.
 	}
 
 	werr := writeWithProgress(f, data, progressCb)

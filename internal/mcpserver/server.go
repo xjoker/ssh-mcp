@@ -125,12 +125,41 @@ func (s *Server) RegisterAll() error {
 // Serve runs the MCP server over stdio, blocking until ctx is cancelled or
 // the client disconnects. It sets s.cancel so Shutdown() can cancel in-flight
 // requests.
+//
+// Serve also launches the connection reaper goroutine (SDD §12.3) which
+// periodically closes idle SSH pool entries. The goroutine is bound to ctx
+// and exits when ctx is cancelled (i.e. on Shutdown).
 func (s *Server) Serve(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
 	defer cancel()
 
+	// Start the connection idle reaper. SDD §12.3.
+	go s.runConnReaper(ctx)
+
 	return s.mcpSrv.Run(ctx, &mcp.StdioTransport{})
+}
+
+// runConnReaper ticks every 60 seconds and closes pool entries that have been
+// idle for longer than ConnIdleSeconds. The goroutine exits when ctx is done.
+func (s *Server) runConnReaper(ctx context.Context) {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+
+	idleSecs := s.cfg.Settings.ConnIdleSeconds
+	if idleSecs <= 0 {
+		idleSecs = 600 // fallback to 10 minutes if not configured
+	}
+	threshold := time.Duration(idleSecs) * time.Second
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.pool.CloseIdle(threshold)
+		}
+	}
 }
 
 // Shutdown performs an orderly shutdown. SDD §4.5:

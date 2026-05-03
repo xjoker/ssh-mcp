@@ -156,9 +156,11 @@ func handleSftpOp(ctx context.Context, deps *Deps, args json.RawMessage) envelop
 	}
 	defer sftpClient.Close()
 
+	authMode := client.AuthMode()
+
 	switch a.Action {
 	case "write":
-		return sftpOpWrite(a, sftpClient, deps)
+		return sftpOpWrite(a, sftpClient, deps, authMode)
 	case "mkdir":
 		return sftpOpMkdir(a, sftpClient)
 	case "remove":
@@ -182,7 +184,7 @@ func handleSftpOp(ctx context.Context, deps *Deps, args json.RawMessage) envelop
 // action: write
 // --------------------------------------------------------------------------
 
-func sftpOpWrite(a sftpOpArgs, sc *internalsftp.Client, deps *Deps) envelope.Response {
+func sftpOpWrite(a sftpOpArgs, sc *internalsftp.Client, deps *Deps, authMode string) envelope.Response {
 	rp, err := safety.ValidateRemotePath(a.Path)
 	if err != nil {
 		return envelope.Err(envelope.CodeInvalidArgument, err.Error(), false)
@@ -236,6 +238,9 @@ func sftpOpWrite(a sftpOpArgs, sc *internalsftp.Client, deps *Deps) envelope.Res
 	return envelope.OK(map[string]any{
 		"bytes_written": len(data),
 		"path":          rp.String(),
+	}).WithAudit(envelope.AuditMeta{
+		BytesIn:  int64(len(data)),
+		AuthMode: authMode,
 	})
 }
 

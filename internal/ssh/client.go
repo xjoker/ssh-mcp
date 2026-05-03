@@ -20,6 +20,7 @@ import (
 type Client struct {
 	inner    *gossh.Client
 	serverID string // server name or ad-hoc host label
+	authMode string // human-readable auth label (e.g. "key", "password", "agent")
 
 	// keepalive state
 	kaStop chan struct{}
@@ -43,12 +44,29 @@ func (c *Client) Underlying() *gossh.Client { return c.inner }
 // name or ad-hoc host descriptor).
 func (c *Client) ServerID() string { return c.serverID }
 
+// AuthMode returns the human-readable authentication label recorded at dial
+// time (e.g. "key", "password", "agent"). Returns "" for ad-hoc connections
+// or when the auth mode was not captured.
+func (c *Client) AuthMode() string { return c.authMode }
+
 // newClient creates a Client wrapping the given ssh.Client and starts a
 // background keepalive goroutine.
 func newClient(inner *gossh.Client, serverID string) *Client {
 	c := &Client{
 		inner:    inner,
 		serverID: serverID,
+		kaStop:   make(chan struct{}),
+	}
+	go c.keepaliveLoop()
+	return c
+}
+
+// newClientWithAuthMode is like newClient but also records the auth label.
+func newClientWithAuthMode(inner *gossh.Client, serverID, authMode string) *Client {
+	c := &Client{
+		inner:    inner,
+		serverID: serverID,
+		authMode: authMode,
 		kaStop:   make(chan struct{}),
 	}
 	go c.keepaliveLoop()

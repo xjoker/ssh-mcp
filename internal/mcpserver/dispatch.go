@@ -177,6 +177,26 @@ func middlewareChain(
 		auditEntry.CorrelationID = correlationID
 	}
 
+	// If the handler populated AuditMeta, use the richer fields.
+	// These fields carry the real remote exit code, byte counts, and auth label
+	// that the envelope-success/failure mapping cannot provide. SDD §9.2.
+	if resp.Audit != nil {
+		if resp.Audit.ExitCode != 0 || resp.OK {
+			// Overwrite only when audit provides a meaningful value: either a
+			// real non-zero exit code, or the handler succeeded (exit 0 is valid).
+			auditEntry.ExitCode = resp.Audit.ExitCode
+		}
+		if resp.Audit.BytesIn > 0 {
+			auditEntry.BytesIn = resp.Audit.BytesIn
+		}
+		if resp.Audit.BytesOut > 0 {
+			auditEntry.BytesOut = resp.Audit.BytesOut
+		}
+		if resp.Audit.AuthMode != "" {
+			auditEntry.AuthMode = resp.Audit.AuthMode
+		}
+	}
+
 	if auditErr := deps.Audit.Record(auditEntry); auditErr != nil {
 		fmt.Fprintf(getStderr(), "mcpserver: audit post-record failed for tool %q: %v\n", toolName, auditErr)
 		auditFailResp := envelope.Err(envelope.CodeAuditFailed,

@@ -184,6 +184,63 @@ func TestOKDataNilOmitted(t *testing.T) {
 	}
 }
 
+// TestWithAuditNotSerialised verifies that the Audit field is NOT included in
+// the JSON output (json:"-") so audit metadata is never sent to the LLM.
+func TestWithAuditNotSerialised(t *testing.T) {
+	r := OK("payload").WithAudit(AuditMeta{
+		ExitCode: 42,
+		BytesIn:  100,
+		BytesOut: 200,
+		AuthMode: "key",
+	})
+
+	// Audit field must be populated.
+	if r.Audit == nil {
+		t.Fatal("Audit should not be nil after WithAudit")
+	}
+	if r.Audit.ExitCode != 42 {
+		t.Errorf("Audit.ExitCode: got %d, want 42", r.Audit.ExitCode)
+	}
+
+	// JSON serialisation must not include audit metadata.
+	b, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	s := string(b)
+	if strings.Contains(s, "audit") {
+		t.Errorf("JSON must not contain 'audit', got: %s", s)
+	}
+	if strings.Contains(s, "exit_code") {
+		t.Errorf("JSON must not contain 'exit_code', got: %s", s)
+	}
+	if strings.Contains(s, "auth_mode") {
+		t.Errorf("JSON must not contain 'auth_mode', got: %s", s)
+	}
+	// The actual data payload should still be present.
+	if !strings.Contains(s, `"data":"payload"`) {
+		t.Errorf("data payload should still be serialised, got: %s", s)
+	}
+}
+
+// TestWithAuditChaining verifies that calling WithAudit twice replaces the
+// previous AuditMeta (last-write wins) and does not mutate the original.
+func TestWithAuditChaining(t *testing.T) {
+	original := OK("x")
+	first := original.WithAudit(AuditMeta{ExitCode: 1})
+	second := first.WithAudit(AuditMeta{ExitCode: 2})
+
+	if original.Audit != nil {
+		t.Error("WithAudit should not mutate the original response")
+	}
+	if first.Audit == nil || first.Audit.ExitCode != 1 {
+		t.Errorf("first.Audit.ExitCode: got %v, want 1", first.Audit)
+	}
+	if second.Audit == nil || second.Audit.ExitCode != 2 {
+		t.Errorf("second.Audit.ExitCode: got %v, want 2", second.Audit)
+	}
+}
+
 // TestRoundTripErr verifies that an Err response can be unmarshalled back
 // to the same structure values.
 func TestRoundTripErr(t *testing.T) {

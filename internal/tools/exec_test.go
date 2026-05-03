@@ -3,6 +3,10 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
@@ -234,5 +238,225 @@ func TestBuildSFTPAdHocAuth_PasswordZeroedAfterCleanup(t *testing.T) {
 	pwAfter := am.PasswordCallback()
 	if pwAfter != "" {
 		t.Errorf("PasswordCallback after cleanup: got %q, want empty (secret zeroed)", pwAfter)
+	}
+}
+
+// --------------------------------------------------------------------------
+// M01 — buildStreamingEnvelope: exit code mapping
+// --------------------------------------------------------------------------
+
+// TestBuildStreamingEnvelope_NilErr verifies exit_code=0 / signal="" on success.
+func TestBuildStreamingEnvelope_NilErr(t *testing.T) {
+	ctx := context.Background()
+	resp := buildStreamingEnvelope(ctx, nil, "hello", "", false, "host", "user")
+	if !resp.OK {
+		t.Fatalf("expected OK, got error: %v", resp.Error)
+	}
+	out, ok := resp.Data.(execOutput)
+	if !ok {
+		t.Fatalf("expected execOutput, got %T", resp.Data)
+	}
+	if out.ExitCode != 0 {
+		t.Errorf("exit_code: got %d, want 0", out.ExitCode)
+	}
+	if out.Signal != "" {
+		t.Errorf("signal: got %q, want empty", out.Signal)
+	}
+	if out.Stdout != "hello" {
+		t.Errorf("stdout: got %q, want %q", out.Stdout, "hello")
+	}
+}
+
+// TestBuildStreamingEnvelope_NonExitError verifies that a non-ExitError
+// (e.g. ExitMissingError, network error, or signal kill without exit code)
+// results in exit_code=-1 and signal="UNKNOWN".
+// Note: *gossh.ExitError has unexported fields and cannot be constructed in
+// unit tests; ExitError path coverage requires integration tests.
+func TestBuildStreamingEnvelope_NonExitError(t *testing.T) {
+	ctx := context.Background()
+	nonExitErr := errors.New("process killed by signal")
+
+	resp := buildStreamingEnvelope(ctx, nonExitErr, "", "", false, "h", "u")
+	if !resp.OK {
+		t.Fatalf("expected OK envelope, got error: %v", resp.Error)
+	}
+	out, ok := resp.Data.(execOutput)
+	if !ok {
+		t.Fatalf("expected execOutput, got %T", resp.Data)
+	}
+	if out.ExitCode != -1 {
+		t.Errorf("exit_code: got %d, want -1", out.ExitCode)
+	}
+	if out.Signal != "UNKNOWN" {
+		t.Errorf("signal: got %q, want UNKNOWN", out.Signal)
+	}
+}
+
+// TestBuildStreamingEnvelope_ContextTimeout verifies that a context-cancelled
+// error returns CodeTimeout (not an OK envelope with exit_code=-1).
+func TestBuildStreamingEnvelope_ContextTimeout(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled
+
+	resp := buildStreamingEnvelope(ctx, context.DeadlineExceeded, "", "", false, "h", "u")
+	if resp.OK {
+		t.Fatal("expected error envelope for timeout, got OK")
+	}
+	if resp.Error == nil || resp.Error.Code != envelope.CodeTimeout {
+		t.Errorf("expected CodeTimeout, got %+v", resp.Error)
+	}
+}
+
+// TestBuildStreamingEnvelope_Truncated verifies that the truncated flag and
+// stdout value are faithfully passed through to the envelope.
+func TestBuildStreamingEnvelope_Truncated(t *testing.T) {
+	ctx := context.Background()
+	resp := buildStreamingEnvelope(ctx, nil, "partial...[truncated; 100 bytes total]", "", true, "h", "u")
+	if !resp.OK {
+		t.Fatalf("expected OK, got error: %v", resp.Error)
+	}
+	out, ok := resp.Data.(execOutput)
+	if !ok {
+		t.Fatalf("expected execOutput, got %T", resp.Data)
+	}
+	if !out.Truncated {
+		t.Error("expected Truncated=true")
+	}
+}
+
+// --------------------------------------------------------------------------
+// M01 — streaming truncation: budget enforced in callbacks
+// --------------------------------------------------------------------------
+
+// TestStreamingTruncation verifies that when total chunks exceed outputMax,
+// stdout is capped at outputMax bytes and truncated=true.
+// This replicates the appendBoundedStr logic inside handleSSHExecStreaming
+// to verify the budget arithmetic in isolation.
+func TestStreamingTruncation(t *testing.T) {
+	const outputMax = 10
+
+	var remaining atomic.Int64
+	var truncatedFlag atomic.Bool
+	remaining.Store(int64(outputMax))
+
+	var buf strings.Builder
+	var mu sync.Mutex
+
+	appendFn := func(chunk []byte) {
+		n := int64(len(chunk))
+		after := remaining.Add(-n)
+		var allowed int64
+		if after >= 0 {
+			allowed = n
+		} else {
+			truncatedFlag.Store(true)
+			if after+n > 0 {
+				allowed = after + n
+			}
+		}
+		if allowed > 0 {
+			mu.Lock()
+			buf.Write(chunk[:allowed])
+			mu.Unlock()
+		}
+	}
+
+	// Feed 15 bytes total (> outputMax=10).
+	appendFn([]byte("hello"))      // 5 bytes, remaining=5
+	appendFn([]byte("world"))      // 5 bytes, remaining=0
+	appendFn([]byte("extra!!!!!")) // 10 bytes, remaining=-10 → truncated
+
+	if got := buf.String(); got != "helloworld" {
+		t.Errorf("truncated stdout: got %q, want %q", got, "helloworld")
+	}
+	if !truncatedFlag.Load() {
+		t.Error("expected truncated=true")
+	}
+}
+
+// TestStreamingTruncation_PartialChunk verifies that when budget is partially
+// consumed, only the allowed bytes are written (not the full chunk).
+func TestStreamingTruncation_PartialChunk(t *testing.T) {
+	const outputMax = 7
+
+	var remaining atomic.Int64
+	var truncatedFlag atomic.Bool
+	remaining.Store(int64(outputMax))
+
+	var buf strings.Builder
+	var mu sync.Mutex
+
+	appendFn := func(chunk []byte) {
+		n := int64(len(chunk))
+		after := remaining.Add(-n)
+		var allowed int64
+		if after >= 0 {
+			allowed = n
+		} else {
+			truncatedFlag.Store(true)
+			if after+n > 0 {
+				allowed = after + n
+			}
+		}
+		if allowed > 0 {
+			mu.Lock()
+			buf.Write(chunk[:allowed])
+			mu.Unlock()
+		}
+	}
+
+	// 5 bytes → remaining=2
+	appendFn([]byte("hello"))
+	// 5 bytes → remaining=-3 → allowed=2 (partial)
+	appendFn([]byte("world"))
+
+	if got := buf.String(); got != "hellowo" {
+		t.Errorf("partial chunk: got %q, want %q", got, "hellowo")
+	}
+	if !truncatedFlag.Load() {
+		t.Error("expected truncated=true after partial chunk")
+	}
+	// Further writes must be entirely dropped.
+	appendFn([]byte("more data"))
+	if got := buf.String(); got != "hellowo" {
+		t.Errorf("after exhausted budget: got %q, still want %q", got, "hellowo")
+	}
+}
+
+// --------------------------------------------------------------------------
+// M04 — AuditMeta wiring (pre-connection validation paths)
+// --------------------------------------------------------------------------
+
+// TestSSHExec_EarlyErrorAuditNil verifies that responses produced before an
+// SSH connection is acquired (validation failures) do NOT carry AuditMeta,
+// since there is no real exit code or byte count to report.
+func TestSSHExec_EarlyErrorAuditNil(t *testing.T) {
+	deps := minDeps(true)
+	args := mustJSON(map[string]any{
+		"server":  "nonexistent",
+		"command": "ls",
+	})
+	resp := handleSSHExec(context.Background(), deps, args)
+	if resp.OK {
+		t.Fatal("expected not-OK for unknown server")
+	}
+	if resp.Audit != nil {
+		t.Error("early-error response should not have AuditMeta set; got non-nil Audit")
+	}
+}
+
+// TestBuildStreamingEnvelope_AuditNil verifies that buildStreamingEnvelope
+// itself does NOT attach AuditMeta — the wrapping happens in the caller
+// (handleSSHExecStreaming). This keeps buildStreamingEnvelope unit-testable
+// without a real client.
+func TestBuildStreamingEnvelope_AuditNil(t *testing.T) {
+	ctx := context.Background()
+	resp := buildStreamingEnvelope(ctx, nil, "output", "", false, "host", "user")
+	if !resp.OK {
+		t.Fatalf("expected OK, got: %v", resp.Error)
+	}
+	// buildStreamingEnvelope must not touch Audit — the caller does it.
+	if resp.Audit != nil {
+		t.Error("buildStreamingEnvelope should not set AuditMeta; caller is responsible")
 	}
 }

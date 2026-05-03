@@ -148,5 +148,8 @@ func handleSftpRead(ctx context.Context, deps *Deps, args json.RawMessage) envel
 		"bytes_read":        bytesRead,
 		"file_size":         fileSize,
 		"is_truncated_view": bytesRead < fileSize,
+	}).WithAudit(envelope.AuditMeta{
+		BytesOut: bytesRead,
+		AuthMode: client.AuthMode(),
 	})
 }
