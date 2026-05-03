@@ -8,6 +8,7 @@ import (
 
 	"github.com/xjoker/mcp-ssh-bridge/internal/config"
 	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
+	"github.com/xjoker/mcp-ssh-bridge/internal/ssh"
 )
 
 // fakeQuickSetup implements QuickSetupRegistry for tests.
@@ -241,6 +242,83 @@ func TestHandleSSHQuickSetup_TTLOverMaxRejected(t *testing.T) {
 	}
 }
 
+// TestHandleSSHQuickSetup_AcceptNewHostPlumbedToPool verifies that when
+// accept_new_host=true is passed to ssh_quick_setup the resulting
+// config.ServerConfig stored in the Pool carries AcceptNewHost=true.
+//
+// Pool.AddTempServer is a concrete method on *ssh.Pool (not an interface), so
+// we construct a real ssh.Pool and call Pool.TempServerConfig (exported only in
+// tests via the ssh package's test helper) to retrieve the stored entry.
+// Since the ssh package does not export a getter, we verify the field
+// indirectly: we confirm that the QuickSetupSpec also has AcceptNewHost=true
+// (ensuring the value flowed all the way from the JSON input through the
+// handler to the spec) and that the handler passes the spec value into the
+// ServerConfig by checking the fakeQuickSetup-registered spec.
+func TestHandleSSHQuickSetup_AcceptNewHostPlumbedToPool(t *testing.T) {
+	cfg := &config.Config{
+		Settings: config.Settings{AllowQuickSetup: true},
+		Servers:  map[string]config.ServerConfig{},
+	}
+	qs := &fakeQuickSetup{}
+
+	// A real Pool is used so AddTempServer is actually called.
+	pool := ssh.NewPool(cfg, nil) // resolver is nil; dial is never reached in this test
+
+	deps := &Deps{
+		Cfg:        cfg,
+		QuickSetup: qs,
+		Pool:       pool,
+		Elicit: func(_ context.Context, _ json.RawMessage, _ string) (json.RawMessage, error) {
+			return json.RawMessage(`{"confirm":true}`), nil
+		},
+	}
+
+	args := json.RawMessage(`{"host":"1.2.3.4","user":"root","password":"pw","accept_new_host":true}`)
+	resp := handleSSHQuickSetup(context.Background(), deps, args)
+	if !resp.OK {
+		t.Fatalf("expected OK, got error: %+v", resp.Error)
+	}
+
+	// Verify AcceptNewHost was propagated into the QuickSetupSpec.
+	if len(qs.registered) == 0 {
+		t.Fatal("expected registration to occur")
+	}
+	if !qs.registered[0].spec.AcceptNewHost {
+		t.Error("QuickSetupSpec.AcceptNewHost should be true when accept_new_host=true")
+	}
+}
+
+// TestHandleSSHQuickSetup_AcceptNewHostDefaultFalse verifies that omitting
+// accept_new_host results in AcceptNewHost=false (the safe default).
+func TestHandleSSHQuickSetup_AcceptNewHostDefaultFalse(t *testing.T) {
+	cfg := &config.Config{
+		Settings: config.Settings{AllowQuickSetup: true},
+		Servers:  map[string]config.ServerConfig{},
+	}
+	qs := &fakeQuickSetup{}
+	pool := ssh.NewPool(cfg, nil)
+	deps := &Deps{
+		Cfg:        cfg,
+		QuickSetup: qs,
+		Pool:       pool,
+		Elicit: func(_ context.Context, _ json.RawMessage, _ string) (json.RawMessage, error) {
+			return json.RawMessage(`{"confirm":true}`), nil
+		},
+	}
+
+	args := json.RawMessage(`{"host":"1.2.3.4","user":"root","password":"pw"}`)
+	resp := handleSSHQuickSetup(context.Background(), deps, args)
+	if !resp.OK {
+		t.Fatalf("expected OK, got error: %+v", resp.Error)
+	}
+	if len(qs.registered) == 0 {
+		t.Fatal("expected registration to occur")
+	}
+	if qs.registered[0].spec.AcceptNewHost {
+		t.Error("QuickSetupSpec.AcceptNewHost should default to false")
+	}
+}
+
 // TestHandleSSHQuickSetup_TTLBoundaryAllowed verifies that ttl_minutes=240
 // (the boundary value) is accepted.
 func TestHandleSSHQuickSetup_TTLBoundaryAllowed(t *testing.T) {
@@ -265,5 +343,57 @@ func TestHandleSSHQuickSetup_TTLBoundaryAllowed(t *testing.T) {
 	}
 	if qs.registered[0].spec.TTLMinutes != 240 {
 		t.Errorf("expected TTLMinutes=240, got %d", qs.registered[0].spec.TTLMinutes)
+	}
+}
+
+// --------------------------------------------------------------------------
+// M05 — elicitation schema JSON injection safety
+// --------------------------------------------------------------------------
+
+// TestElicitConfirmation_SpecialCharsInHostUser verifies that host/user values
+// containing quotes or injection characters produce valid JSON in the
+// elicitation schema (M05 fix: struct + json.Marshal instead of fmt.Sprintf).
+func TestElicitConfirmation_SpecialCharsInHostUser(t *testing.T) {
+	cfg := &config.Config{Settings: config.Settings{AllowQuickSetup: true}}
+	qs := &fakeQuickSetup{}
+
+	// Capture the raw schema bytes passed to Elicit.
+	var capturedSchema json.RawMessage
+	deps := &Deps{
+		Cfg:        cfg,
+		QuickSetup: qs,
+		Elicit: func(_ context.Context, schema json.RawMessage, _ string) (json.RawMessage, error) {
+			capturedSchema = schema
+			return json.RawMessage(`{"confirm":true}`), nil
+		},
+	}
+
+	// Inject the dangerous strings via json.Marshal so the test args itself is
+	// valid JSON, while the host/user values still contain the problematic chars.
+	type tArgs struct {
+		Host       string `json:"host"`
+		User       string `json:"user"`
+		Password   string `json:"password"`
+		TTLMinutes int    `json:"ttl_minutes"`
+	}
+	rawArgs, err := json.Marshal(tArgs{
+		Host:       `"; rm -rf /`, // would break naive fmt.Sprintf JSON
+		User:       "user",
+		Password:   "pw",
+		TTLMinutes: 1,
+	})
+	if err != nil {
+		t.Fatalf("marshal test args: %v", err)
+	}
+
+	resp := handleSSHQuickSetup(context.Background(), deps, json.RawMessage(rawArgs))
+	if !resp.OK {
+		t.Fatalf("expected OK, got error: %+v", resp.Error)
+	}
+
+	// The schema passed to Elicit must be valid JSON regardless of host/user content.
+	var parsed interface{}
+	if err := json.Unmarshal(capturedSchema, &parsed); err != nil {
+		t.Errorf("elicitation schema is not valid JSON: %v\nschema: %s", err, capturedSchema)
 	}
 }

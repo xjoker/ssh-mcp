@@ -10,6 +10,7 @@ import (
 	"github.com/xjoker/mcp-ssh-bridge/internal/config"
 	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
 	"github.com/xjoker/mcp-ssh-bridge/internal/session"
+	"github.com/xjoker/mcp-ssh-bridge/internal/ssh"
 )
 
 // --------------------------------------------------------------------------
@@ -207,6 +208,13 @@ func TestSessionClose_Idempotent(t *testing.T) {
 	}
 }
 
+// buildFakePool returns a real *ssh.Pool with a nil resolver that is safe to
+// use as long as Pool.Get / Pool.GetAdHoc are never called. AddTempServer does
+// not require a resolver and can be exercised safely.
+func buildFakePool(cfg *config.Config) *ssh.Pool {
+	return ssh.NewPool(cfg, nil)
+}
+
 // SDD §6.2 / Codex H07: session_start MUST accept inline credentials via
 // the oneOf branch and surface a registered name.
 func TestSessionStart_InlineDisabled(t *testing.T) {
@@ -232,6 +240,55 @@ func TestSessionStart_BothServerAndInlineRejected(t *testing.T) {
 	}
 	if resp.Error.Code != envelope.CodeInvalidArgument {
 		t.Errorf("got %s want INVALID_ARGUMENT", resp.Error.Code)
+	}
+}
+
+// TestConfigServerConfigFromInline_AcceptNewHostPropagated verifies that
+// configServerConfigFromInline correctly forwards the acceptNewHost argument
+// into the returned ServerConfig. This is a unit test for the helper itself.
+func TestConfigServerConfigFromInline_AcceptNewHostPropagated(t *testing.T) {
+	got := configServerConfigFromInline("myserver", "1.2.3.4", 22, "root", true)
+	if !got.AcceptNewHost {
+		t.Error("configServerConfigFromInline: AcceptNewHost should be true when acceptNewHost=true")
+	}
+
+	got2 := configServerConfigFromInline("myserver", "1.2.3.4", 22, "root", false)
+	if got2.AcceptNewHost {
+		t.Error("configServerConfigFromInline: AcceptNewHost should be false when acceptNewHost=false")
+	}
+}
+
+// TestSessionStart_InlineAcceptNewHostPlumbed verifies that when session_start
+// receives an inline request with accept_new_host=true the resulting
+// QuickSetupSpec.AcceptNewHost is true (demonstrating end-to-end propagation).
+func TestSessionStart_InlineAcceptNewHostPlumbed(t *testing.T) {
+	cfg := &config.Config{
+		Settings: config.Settings{AllowInlineCredentials: true, SessionIdleSeconds: 60},
+		Servers:  map[string]config.ServerConfig{},
+	}
+	qs := &fakeQuickSetup{}
+	pool := buildFakePool(cfg)
+	// A real SessionMgr is required so Start does not panic; it will fail
+	// because the transport is backed by fakeTransport (no real SSH), but that
+	// happens after registerInlineSession which is what we are testing.
+	mgr := newFakeSessionManager()
+	deps := &Deps{Cfg: cfg, QuickSetup: qs, Pool: pool, SessionMgr: mgr}
+
+	args := json.RawMessage(`{"inline":{"host":"h","user":"u","password":"pw","accept_new_host":true}}`)
+	// Bound the call: registerInlineSession runs synchronously before
+	// SessionMgr.Start is invoked, so by the time the timed-out Start
+	// returns the spec has already been recorded. A short timeout keeps
+	// the test fast; without it the fake shell sentinel scan blocks until
+	// the test framework's outer timeout.
+	tCtx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	handleSessionStart(tCtx, deps, args)
+
+	if len(qs.registered) == 0 {
+		t.Fatal("expected inline session to be registered in QuickSetup")
+	}
+	if !qs.registered[0].spec.AcceptNewHost {
+		t.Error("QuickSetupSpec.AcceptNewHost should be true for inline accept_new_host=true")
 	}
 }
 

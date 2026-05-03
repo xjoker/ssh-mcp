@@ -302,13 +302,18 @@ func handleSSHExecStreaming(
 	var stderrBuf strings.Builder
 	var stdoutMu, stderrMu sync.Mutex
 
+	// M02: progressTruncEmitted guards the single "truncated" progress event
+	// that is emitted once the output budget is exhausted. After that one
+	// event no further progress chunks are sent to the client, so BytesOut
+	// reflects only bytes actually delivered (not the raw remote output total).
+	var progressTruncEmitted atomic.Bool
+
 	// appendBoundedStr appends up to the remaining budget from chunk into buf.
-	// Always fires the Progress callback with the original chunk so the caller
-	// can still observe the truncated stream.
-	appendBoundedStr := func(buf *strings.Builder, mu *sync.Mutex, chunk []byte) {
+	// Returns whether the chunk was within budget (true) or truncated (false).
+	appendBoundedStr := func(buf *strings.Builder, mu *sync.Mutex, chunk []byte) bool {
 		n := int64(len(chunk))
 		if n == 0 {
-			return
+			return true
 		}
 		after := remaining.Add(-n)
 		var allowed int64
@@ -325,26 +330,43 @@ func handleSSHExecStreaming(
 			buf.Write(chunk[:allowed])
 			mu.Unlock()
 		}
+		return after >= 0
 	}
 
 	streamErr := client.ExecStreaming(ctx, cmd, ssh.StreamOpts{
 		Timeout: timeout,
 		OnStdout: func(chunk []byte, eof bool) {
-			appendBoundedStr(&stdoutBuf, &stdoutMu, chunk)
+			withinBudget := appendBoundedStr(&stdoutBuf, &stdoutMu, chunk)
 			if deps.Progress != nil && !eof {
-				deps.Progress(map[string]any{
-					"stream": "stdout",
-					"chunk":  string(chunk),
-				})
+				if withinBudget {
+					deps.Progress(map[string]any{
+						"stream": "stdout",
+						"chunk":  string(chunk),
+					})
+				} else if progressTruncEmitted.CompareAndSwap(false, true) {
+					// M02: budget exceeded — emit exactly one truncated event.
+					deps.Progress(map[string]any{
+						"stream":    "stdout",
+						"truncated": true,
+					})
+				}
 			}
 		},
 		OnStderr: func(chunk []byte, eof bool) {
-			appendBoundedStr(&stderrBuf, &stderrMu, chunk)
+			withinBudget := appendBoundedStr(&stderrBuf, &stderrMu, chunk)
 			if deps.Progress != nil && !eof {
-				deps.Progress(map[string]any{
-					"stream": "stderr",
-					"chunk":  string(chunk),
-				})
+				if withinBudget {
+					deps.Progress(map[string]any{
+						"stream": "stderr",
+						"chunk":  string(chunk),
+					})
+				} else if progressTruncEmitted.CompareAndSwap(false, true) {
+					// M02: budget exceeded — emit exactly one truncated event.
+					deps.Progress(map[string]any{
+						"stream":    "stderr",
+						"truncated": true,
+					})
+				}
 			}
 		},
 	})
@@ -358,6 +380,9 @@ func handleSSHExecStreaming(
 		stdoutStr += fmt.Sprintf("...[truncated; %d bytes total]", total)
 	}
 
+	// M02: BytesOut reflects the bytes actually buffered (and sent to the client),
+	// not the raw remote output total. This is computed before the truncation
+	// suffix is appended to stdoutStr.
 	bytesOut := int64(stdoutBuf.Len() + stderrBuf.Len())
 	resp := buildStreamingEnvelope(ctx, streamErr, stdoutStr, stderrStr, truncated, host, user)
 	if resp.OK {

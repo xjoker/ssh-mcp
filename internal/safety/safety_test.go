@@ -459,6 +459,69 @@ func TestHostKeyCallback_AcceptNewSucceedsAndPersists(t *testing.T) {
 	}
 }
 
+// --------------------------------------------------------------------------
+// M03 — RedactSecret size/depth limits
+// --------------------------------------------------------------------------
+
+// TestRedactSecret_HugeInputUsesByteFallback verifies that inputs larger than
+// redactMaxBytes (1 MiB) do not panic or OOM and return a non-nil result.
+func TestRedactSecret_HugeInputUsesByteFallback(t *testing.T) {
+	// Build a 5 MiB JSON-looking blob. The JSON parser would normally handle
+	// this, but the size limit should force the byte-regex fallback path.
+	const size = 5 * 1024 * 1024
+	big := make([]byte, size)
+	big[0] = '{'
+	for i := 1; i < size-1; i++ {
+		big[i] = 'a'
+	}
+	big[size-1] = '}'
+
+	// Must not panic or return nil.
+	out := RedactSecret(big)
+	if out == nil {
+		t.Fatal("RedactSecret returned nil for huge input")
+	}
+	// Result must be at most redactMaxBytes (the truncated input).
+	if len(out) > redactMaxBytes {
+		t.Errorf("result len %d exceeds redactMaxBytes %d", len(out), redactMaxBytes)
+	}
+}
+
+// TestRedactSecret_DeepNestingTruncated verifies that JSON with nesting deeper
+// than redactMaxDepth is handled without stack overflow, and the deeply-nested
+// value is replaced with the depth-exceeded sentinel.
+func TestRedactSecret_DeepNestingTruncated(t *testing.T) {
+	// Build a JSON object nested 100 levels deep: {"a":{"a":{...}}}
+	// Depth 100 >> redactMaxDepth (32), so the inner value must be truncated.
+	const depth = 100
+	var b strings.Builder
+	for i := 0; i < depth; i++ {
+		b.WriteString(`{"a":`)
+	}
+	b.WriteString(`"deep_value"`)
+	for i := 0; i < depth; i++ {
+		b.WriteString(`}`)
+	}
+
+	out := RedactSecret([]byte(b.String()))
+	if out == nil {
+		t.Fatal("RedactSecret returned nil for deeply-nested input")
+	}
+	// The sentinel must appear somewhere in the output (depth was exceeded).
+	if !strings.Contains(string(out), "DEPTH_EXCEEDED") {
+		t.Errorf("expected DEPTH_EXCEEDED sentinel in output for depth-%d nesting, got: %s",
+			depth, truncateForLog(string(out), 200))
+	}
+}
+
+// truncateForLog truncates s to maxLen for log output.
+func truncateForLog(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "…"
+}
+
 // genTestKey returns an ssh.PublicKey + signer for tests.
 func genTestKey(t *testing.T) (cryptoSSH.PublicKey, cryptoSSH.Signer, error) {
 	t.Helper()

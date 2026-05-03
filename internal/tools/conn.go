@@ -320,6 +320,69 @@ func buildSFTPAdHocAuth(p *sftpInline) (ssh.AuthMethod, func(), error) {
 	return ssh.AuthMethod{Agent: true}, noop, nil
 }
 
+// resolveAndCheckRemotePathWalkUp resolves rawPath by walking up its
+// ancestors until it finds one that the remote SFTP server can canonicalise.
+// It then re-applies the allowed_paths policy against the resolved
+// ancestor + the remaining (synthetic) tail.
+//
+// Used for recursive mkdir where multiple levels of intermediate
+// directories may not exist yet.
+func resolveAndCheckRemotePathWalkUp(
+	deps *Deps,
+	serverName string,
+	sftpc remoteRealpather,
+	rawPath string,
+) (safety.RemotePath, envelope.Response, bool) {
+	// Try the full path first; if it succeeds (target already exists),
+	// canonical form decides everything.
+	if rp, err := sftpc.Realpath(rawPath); err == nil {
+		if errResp, allowed := enforceAllowedPath(deps.Cfg, serverName, rp); !allowed {
+			return safety.RemotePath{}, errResp, false
+		}
+		return rp, envelope.Response{}, true
+	}
+
+	// Walk up from the closest existing ancestor.
+	parts := []string{}
+	cur := rawPath
+	for cur != "/" && cur != "" {
+		parent, base := splitPath(cur)
+		if base != "" {
+			parts = append([]string{base}, parts...)
+		}
+		if parent == "" || parent == "/" {
+			cur = "/"
+			break
+		}
+		// Try parent — if it resolves, we found the existing ancestor.
+		if rp, err := sftpc.Realpath(parent); err == nil {
+			// Validate ancestor inside policy.
+			if errResp, allowed := enforceAllowedPath(deps.Cfg, serverName, rp); !allowed {
+				return safety.RemotePath{}, errResp, false
+			}
+			// Re-attach unresolved tail; check each cumulative path.
+			joined := rp.String()
+			for _, p := range parts {
+				joined = joinPath(joined, p)
+				jrp, vErr := safety.ValidateRemotePath(joined)
+				if vErr != nil {
+					return safety.RemotePath{}, envelope.Err(envelope.CodeInvalidArgument,
+						fmt.Sprintf("invalid resolved path %q: %v", joined, vErr), false), false
+				}
+				if errResp, allowed := enforceAllowedPath(deps.Cfg, serverName, jrp); !allowed {
+					return safety.RemotePath{}, errResp, false
+				}
+			}
+			// Final synthetic full path.
+			full, _ := safety.ValidateRemotePath(joined)
+			return full, envelope.Response{}, true
+		}
+		cur = parent
+	}
+	return safety.RemotePath{}, envelope.Err(envelope.CodeNotFound,
+		fmt.Sprintf("realpath %q: no existing ancestor", rawPath), false), false
+}
+
 // mapSSHConnErr converts an SSH dial/pool error into an envelope.Response.
 // Name differs from exec.go's mapConnError to avoid redeclaration.
 func mapSSHConnErr(err error) envelope.Response {

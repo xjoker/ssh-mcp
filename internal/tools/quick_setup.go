@@ -161,12 +161,13 @@ func handleSSHQuickSetup(ctx context.Context, deps *Deps, args json.RawMessage) 
 	//    "quick_setup" and looks up the in-memory secret.
 	if deps.Pool != nil {
 		deps.Pool.AddTempServer(registeredName, config.ServerConfig{
-			Name: registeredName,
-			Host: input.Host,
-			Port: port,
-			User: input.User,
-			Auth: "quick_setup",
-		})
+			Name:          registeredName,
+			Host:          input.Host,
+			Port:          port,
+			User:          input.User,
+			Auth:          "quick_setup",
+			AcceptNewHost: input.AcceptNewHost,
+		}, time.Unix(expiresAt, 0))
 	}
 
 	// Format expiry as RFC3339 UTC.
@@ -178,6 +179,19 @@ func handleSSHQuickSetup(ctx context.Context, deps *Deps, args json.RawMessage) 
 		Host:           input.Host,
 		User:           input.User,
 	})
+}
+
+// elicitProp is the JSON schema shape for a single elicitation property (M05).
+type elicitProp struct {
+	Type        string `json:"type"`
+	Description string `json:"description"`
+}
+
+// elicitSchemaDoc is the JSON schema sent to the MCP elicitation/create endpoint (M05).
+type elicitSchemaDoc struct {
+	Type       string                `json:"type"`
+	Properties map[string]elicitProp `json:"properties"`
+	Required   []string              `json:"required"`
 }
 
 // elicitConfirmation issues an MCP elicitation/create request asking the user
@@ -193,16 +207,21 @@ func elicitConfirmation(ctx context.Context, deps *Deps, host, user string, ttlM
 	elicitCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	schema := json.RawMessage(fmt.Sprintf(`{
-  "type": "object",
-  "properties": {
-    "confirm": {
-      "type": "boolean",
-      "description": "Register temp server '%s' as user '%s' for %d minutes?"
-    }
-  },
-  "required": ["confirm"]
-}`, host, user, ttlMinutes))
+	// M05: use struct + json.Marshal so that host/user values containing
+	// quotes or control characters cannot produce invalid JSON.
+	desc := fmt.Sprintf("Register temp server %q as user %q for %d minutes?", host, user, ttlMinutes)
+	schemaSrc := elicitSchemaDoc{
+		Type: "object",
+		Properties: map[string]elicitProp{
+			"confirm": {Type: "boolean", Description: desc},
+		},
+		Required: []string{"confirm"},
+	}
+	schemaBytes, marshalErr := json.Marshal(schemaSrc)
+	if marshalErr != nil {
+		return false, fmt.Errorf("elicitConfirmation: marshal schema: %w", marshalErr)
+	}
+	schema := json.RawMessage(schemaBytes)
 
 	msg := fmt.Sprintf("Allow mcp-ssh-bridge to register a temporary connection to %s@%s for %d minutes?",
 		user, host, ttlMinutes)

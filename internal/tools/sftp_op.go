@@ -145,8 +145,35 @@ func handleSftpOp(ctx context.Context, deps *Deps, args json.RawMessage) envelop
 	var resolvedPath safety.RemotePath
 	var resolvedTo safety.RemotePath
 	switch a.Action {
-	case "write", "mkdir", "symlink":
+	case "write":
 		resolvedPath, errResp, ok = resolveAndCheckRemotePath(deps, serverName, sftpClient, a.Path, true)
+		if !ok {
+			return errResp
+		}
+	case "mkdir":
+		if a.Recursive {
+			resolvedPath, errResp, ok = resolveAndCheckRemotePathWalkUp(deps, serverName, sftpClient, a.Path)
+		} else {
+			resolvedPath, errResp, ok = resolveAndCheckRemotePath(deps, serverName, sftpClient, a.Path, true)
+		}
+		if !ok {
+			return errResp
+		}
+	case "symlink":
+		// R3-C01: a.Path is the symlink target (an arbitrary string the
+		// caller wants the link to point to — never created locally), but
+		// a.To is the link itself, written to disk under our policy. Run
+		// the canonical check on a.To. We deliberately do NOT canonicalise
+		// a.Path because resolving it would follow other symlinks and
+		// reject perfectly legitimate dangling-target intents; instead we
+		// keep the syntactic Validate on it and only use it as the link
+		// payload. resolvedPath here aliases a.Path validated by
+		// ValidateRemotePath below in sftpOpSymlink.
+		resolvedPath, _ = safety.ValidateRemotePath(a.Path)
+		if a.To == "" {
+			return envelope.Err(envelope.CodeInvalidArgument, "to is required for symlink (link path)", false)
+		}
+		resolvedTo, errResp, ok = resolveAndCheckRemotePath(deps, serverName, sftpClient, a.To, true)
 		if !ok {
 			return errResp
 		}
@@ -180,7 +207,7 @@ func handleSftpOp(ctx context.Context, deps *Deps, args json.RawMessage) envelop
 	case "chmod":
 		return sftpOpChmod(a, resolvedPath, sftpClient)
 	case "symlink":
-		return sftpOpSymlink(a, resolvedPath, sftpClient)
+		return sftpOpSymlink(a, resolvedPath, resolvedTo, sftpClient)
 	case "realpath":
 		return sftpOpRealpath(a, sftpClient)
 	default:
@@ -365,14 +392,7 @@ func sftpOpChmod(a sftpOpArgs, rp safety.RemotePath, sc *internalsftp.Client) en
 // action: symlink
 // --------------------------------------------------------------------------
 
-func sftpOpSymlink(a sftpOpArgs, target safety.RemotePath, sc *internalsftp.Client) envelope.Response {
-	if a.To == "" {
-		return envelope.Err(envelope.CodeInvalidArgument, "to is required for symlink (link path)", false)
-	}
-	linkPath, err := safety.ValidateRemotePath(a.To)
-	if err != nil {
-		return envelope.Err(envelope.CodeInvalidArgument, "to: "+err.Error(), false)
-	}
+func sftpOpSymlink(a sftpOpArgs, target, linkPath safety.RemotePath, sc *internalsftp.Client) envelope.Response {
 	if err := sc.Symlink(target, linkPath); err != nil {
 		return mapSFTPErr(err)
 	}

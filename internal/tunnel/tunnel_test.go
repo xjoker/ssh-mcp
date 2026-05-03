@@ -547,3 +547,79 @@ func TestTunnelInfo_Fields(t *testing.T) {
 		}
 	}
 }
+
+// --------------------------------------------------------------------------
+// M04: TestRemoteForward_DialContextCancelledOnClose
+// --------------------------------------------------------------------------
+
+// TestRemoteForward_DialContextCancelledOnClose verifies that when a remote
+// tunnel is closed, any in-progress DialContext to the local destination is
+// aborted within 500 ms (M04 fix: use net.Dialer.DialContext instead of
+// net.Dial so the tunnel ctx cancellation propagates to the dial).
+func TestRemoteForward_DialContextCancelledOnClose(t *testing.T) {
+	// Create a TCP listener that accepts connections but never reads/writes,
+	// simulating a "black hole" local destination.  The goal is to ensure
+	// DialContext can connect (SYN+ACK) but never progresses further — this
+	// is sufficient: we just need a reachable address so the OS-level connect
+	// succeeds and we can observe that the goroutine exits after ctx cancel.
+	blackHoleLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer blackHoleLn.Close()
+	// Accept connections silently so they don't block the dialer's SYN.
+	go func() {
+		for {
+			c, err := blackHoleLn.Accept()
+			if err != nil {
+				return
+			}
+			// Hold connection open until listener closes.
+			go func(c net.Conn) { _, _ = io.ReadFull(c, make([]byte, 1)); c.Close() }(c)
+		}
+	}()
+
+	localHost, localPortStr, _ := net.SplitHostPort(blackHoleLn.Addr().String())
+	localPort := 0
+	for _, c := range localPortStr {
+		localPort = localPort*10 + int(c-'0')
+	}
+
+	// Set up a fake remote-side listener.
+	fd := &fakeDialer{}
+	fakeLn := fd.addListener(t)
+	defer fakeLn.Close()
+
+	m := newTestManager(fd)
+	defer m.CloseAll()
+
+	id, err := m.CreateRemote("srv", "127.0.0.1", 0, localHost, localPort)
+	if err != nil {
+		t.Fatalf("CreateRemote: %v", err)
+	}
+
+	// Dial into the fake remote listener to trigger a remoteForward goroutine.
+	remoteClient, err := net.Dial("tcp", fakeLn.Addr().String())
+	if err != nil {
+		t.Fatalf("dial fake listener: %v", err)
+	}
+	defer remoteClient.Close()
+
+	// Give the goroutine time to reach DialContext.
+	time.Sleep(20 * time.Millisecond)
+
+	// Close the tunnel — this cancels the per-tunnel ctx.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = m.Close(id)
+	}()
+
+	// The remoteForward goroutine must exit (DialContext cancelled) within 500 ms.
+	select {
+	case <-done:
+		// Close returned; goroutine exited cleanly.
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Close did not return within 500 ms — DialContext likely did not honour ctx cancel (M04)")
+	}
+}

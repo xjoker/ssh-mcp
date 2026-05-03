@@ -147,6 +147,13 @@ const reaperInterval = 60 * time.Second
 // preventing memory/goroutine DoS from a runaway remote process.
 const sessionOutputMaxBytes = 1 << 20 // 1 MiB
 
+// sessionLineMaxBytes is the per-line cap used by readBoundedLine. Once a
+// logical line exceeds this size the reader forcibly flushes the buffer and
+// discards the remainder of the physical line. This prevents a remote process
+// that never emits a newline from growing an unbounded in-memory buffer
+// (memory DoS via a single huge line).
+const sessionLineMaxBytes = 64 * 1024 // 64 KiB per logical line
+
 // NewManager creates a Manager and starts the idle-session reaper goroutine.
 // Call CloseAll to shut down cleanly.
 func NewManager(transport Transport, idleTimeout time.Duration) *Manager {
@@ -232,13 +239,15 @@ func (m *Manager) Start(ctx context.Context, server string) (string, error) {
 		stderrDone:   make(chan struct{}),
 	}
 
-	// Start background stderr pump.
+	// Start background stderr pump. Each line is capped at sessionLineMaxBytes
+	// to prevent a remote process from streaming a single unbounded line and
+	// growing the stderrBuf without limit.
 	go func() {
 		defer close(s.stderrDone)
 		for {
-			line, err := s.stderr.ReadString('\n')
-			if line != "" {
-				s.appendStderr(line)
+			raw, _, err := readBoundedLine(s.stderr, sessionLineMaxBytes)
+			if len(raw) > 0 {
+				s.appendStderr(string(raw))
 			}
 			if err != nil {
 				return
@@ -434,13 +443,58 @@ func (m *Manager) CloseAll() {
 // Internal helpers
 // --------------------------------------------------------------------------
 
+// readBoundedLine reads one logical line from r, returning at most maxBytes
+// bytes of content (not including any trailing newline that was consumed).
+// The returned slice DOES include the '\n' byte when the line ended normally.
+//
+// truncatedLine is true when the physical line exceeded maxBytes: the caller
+// receives the first maxBytes bytes and all remaining bytes up to (and
+// including) the next '\n' are silently discarded.
+//
+// If EOF is reached before any byte is read, (nil, false, io.EOF) is returned.
+// If EOF is reached mid-line the partial content is returned with err == nil
+// (consistent with bufio.Reader.ReadString behaviour for partial lines).
+func readBoundedLine(r *bufio.Reader, maxBytes int) (line []byte, truncatedLine bool, err error) {
+	var buf []byte
+	for {
+		b, e := r.ReadByte()
+		if e != nil {
+			if len(buf) > 0 {
+				// Partial line before EOF — return what we have.
+				return buf, false, nil
+			}
+			return nil, false, e
+		}
+		if b == '\n' {
+			return append(buf, '\n'), false, nil
+		}
+		if len(buf) >= maxBytes {
+			// Forced flush: drain remainder of this physical line, then return.
+			for {
+				b2, e2 := r.ReadByte()
+				if e2 != nil {
+					return buf, true, nil
+				}
+				if b2 == '\n' {
+					return buf, true, nil
+				}
+				// Discard bytes beyond the cap.
+			}
+		}
+		buf = append(buf, b)
+	}
+}
+
 // scanUntilLine reads lines from r until one matches target or ctx is done.
+// Each line is capped at sessionLineMaxBytes to prevent memory DoS from a
+// remote process emitting a single unbounded line (e.g. a malicious shell
+// startup banner).
 func scanUntilLine(ctx context.Context, r *bufio.Reader, target string) error {
 	done := make(chan error, 1)
 	go func() {
 		for {
-			line, err := r.ReadString('\n')
-			line = strings.TrimRight(line, "\r\n")
+			raw, _, err := readBoundedLine(r, sessionLineMaxBytes)
+			line := strings.TrimRight(string(raw), "\r\n")
 			if line == target {
 				done <- nil
 				return
@@ -479,11 +533,18 @@ func scanSentinel(ctx context.Context, r *bufio.Reader, sentinel string, outputL
 		var bytesAccum int64
 		var trunc bool
 		for {
-			line, readErr := r.ReadString('\n')
-			line = strings.TrimRight(line, "\r\n")
+			raw, lineTrunc, readErr := readBoundedLine(r, sessionLineMaxBytes)
+			// A truncated physical line still counts toward the output cap and
+			// sets the overall truncation flag.
+			if lineTrunc {
+				trunc = true
+			}
+			line := strings.TrimRight(string(raw), "\r\n")
 
 			// Check for sentinel line: must start with our specific sentinel string.
-			if strings.HasPrefix(line, sentinel+" ") {
+			// Sentinel lines are never truncated in practice (they are short), but
+			// we only match when lineTrunc is false to be safe.
+			if !lineTrunc && strings.HasPrefix(line, sentinel+" ") {
 				rest := line[len(sentinel)+1:]
 				var rc int
 				_, scanErr := fmt.Sscanf(rest, "%d", &rc)

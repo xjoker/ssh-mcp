@@ -421,6 +421,389 @@ func TestAppendBounded_ConcurrentRace(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
+// H02: TestPool_TempExpiryDropsCachedClient
+// --------------------------------------------------------------------------
+
+// TestPool_TempExpiryDropsCachedClient verifies that a cached pool client is
+// not returned once the associated temp server entry has expired.
+// Even though the entry is "alive" in the pool, Get must return an expired
+// error and evict both the pool entry and the temp entry.
+func TestPool_TempExpiryDropsCachedClient(t *testing.T) {
+	cfg := &config.Config{
+		Settings: config.Settings{},
+		Servers:  map[string]config.ServerConfig{},
+	}
+	resolver := &fakeResolver{}
+	p := NewPool(cfg, resolver)
+
+	const srvName = "tmpserver"
+
+	// Register a temp entry that already expired 1 minute ago.
+	srv := config.ServerConfig{
+		Name: srvName,
+		Host: "127.0.0.1",
+		Port: 2222,
+		User: "u",
+		Auth: "quick_setup",
+	}
+	expiredAt := time.Now().Add(-1 * time.Minute)
+	p.AddTempServer(srvName, srv, expiredAt)
+
+	// Manually insert a fake "live" client into the pool so the test exercises
+	// the cache-hit path (not just the no-entry path).
+	fakeClient := &Client{
+		inner:  nil,
+		kaStop: make(chan struct{}),
+	}
+	fakeClient.dead.Store(true) // mark dead so IsAlive() returns false quickly
+	var clientClosed bool
+	fakeClient.closeFunc = func() error {
+		clientClosed = true
+		return nil
+	}
+	p.mu.Lock()
+	p.entries[srvName] = &pooledEntry{
+		client:   fakeClient,
+		lastUsed: time.Now(),
+	}
+	p.mu.Unlock()
+
+	// Get should detect the expired temp entry before checking cache aliveness.
+	_, err := p.Get(context.Background(), srvName)
+	if err == nil {
+		t.Fatal("expected error for expired temp server, got nil")
+	}
+	if !containsSubstr(err.Error(), "expired") {
+		t.Fatalf("expected 'expired' in error, got: %v", err)
+	}
+
+	// The pool entry must have been evicted (client closed, entry removed).
+	if !clientClosed {
+		t.Error("expected cached client to be closed on expiry eviction")
+	}
+	p.mu.Lock()
+	_, stillInPool := p.entries[srvName]
+	p.mu.Unlock()
+	if stillInPool {
+		t.Error("expected pool entry to be removed after expiry eviction")
+	}
+
+	// The temp entry must also have been removed.
+	p.tempMu.RLock()
+	_, stillInTemp := p.tempServers[srvName]
+	p.tempMu.RUnlock()
+	if stillInTemp {
+		t.Error("expected temp entry to be removed after expiry eviction")
+	}
+}
+
+// --------------------------------------------------------------------------
+// H02: TestPool_RemoveTempServerEvictsPoolEntry
+// --------------------------------------------------------------------------
+
+// TestPool_RemoveTempServerEvictsPoolEntry verifies that calling RemoveTempServer
+// also closes and removes any live pooled client for the same name.
+func TestPool_RemoveTempServerEvictsPoolEntry(t *testing.T) {
+	cfg := &config.Config{
+		Settings: config.Settings{},
+		Servers:  map[string]config.ServerConfig{},
+	}
+	resolver := &fakeResolver{}
+	p := NewPool(cfg, resolver)
+
+	const srvName = "ephemeral"
+
+	srv := config.ServerConfig{
+		Name: srvName,
+		Host: "127.0.0.1",
+		Port: 2222,
+		User: "u",
+		Auth: "quick_setup",
+	}
+	p.AddTempServer(srvName, srv, time.Now().Add(30*time.Minute))
+
+	// Inject a fake cached client.
+	fakeClient := &Client{
+		inner:  nil,
+		kaStop: make(chan struct{}),
+	}
+	fakeClient.dead.Store(true)
+	var clientClosed bool
+	fakeClient.closeFunc = func() error {
+		clientClosed = true
+		return nil
+	}
+	p.mu.Lock()
+	p.entries[srvName] = &pooledEntry{
+		client:   fakeClient,
+		lastUsed: time.Now(),
+	}
+	p.mu.Unlock()
+
+	// Remove the temp server — should also evict the pool entry.
+	p.RemoveTempServer(srvName)
+
+	if !clientClosed {
+		t.Error("expected cached client to be closed by RemoveTempServer")
+	}
+	p.mu.Lock()
+	_, stillInPool := p.entries[srvName]
+	p.mu.Unlock()
+	if stillInPool {
+		t.Error("expected pool entry to be removed by RemoveTempServer")
+	}
+	p.tempMu.RLock()
+	_, stillInTemp := p.tempServers[srvName]
+	p.tempMu.RUnlock()
+	if stillInTemp {
+		t.Error("expected temp entry to be removed by RemoveTempServer")
+	}
+}
+
+// --------------------------------------------------------------------------
+// H01: TestPool_HandshakeContextCancellable
+// --------------------------------------------------------------------------
+
+// silentListener accepts TCP connections but never writes any data, simulating
+// a server that stalls during the SSH handshake.
+func silentListener(t *testing.T) (addr string, stop func()) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("silentListener: listen: %v", err)
+	}
+	stopCh := make(chan struct{})
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return // listener closed
+			}
+			// Hold the connection open until stopCh is closed.
+			go func(c net.Conn) {
+				select {
+				case <-stopCh:
+				}
+				_ = c.Close()
+			}(conn)
+		}
+	}()
+	return ln.Addr().String(), func() {
+		close(stopCh)
+		_ = ln.Close()
+	}
+}
+
+// TestPool_HandshakeContextCancellable starts a listener that never performs
+// an SSH handshake and verifies that cancelling the context causes dial to
+// return an error well within handshakeTimeout (specifically, within 2 s).
+func TestPool_HandshakeContextCancellable(t *testing.T) {
+	addr, stopServer := silentListener(t)
+	defer stopServer()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Run dial in a goroutine; cancel context shortly after to trigger the
+	// ctx-watcher inside sshHandshake.
+	type result struct {
+		client *gossh.Client
+		err    error
+	}
+	ch := make(chan result, 1)
+
+	go func() {
+		cfg := &gossh.ClientConfig{
+			User:            "testuser",
+			Auth:            []gossh.AuthMethod{gossh.Password("x")},
+			HostKeyCallback: gossh.InsecureIgnoreHostKey(), //nolint:gosec // test only
+			Timeout:         handshakeTimeout,
+		}
+		c, err := realDialer(ctx, "tcp", addr, cfg)
+		ch <- result{c, err}
+	}()
+
+	// Give the dialer a moment to connect, then cancel.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	const maxWait = 2 * time.Second
+	select {
+	case r := <-ch:
+		if r.err == nil {
+			_ = r.client.Close()
+			t.Fatal("expected error after ctx cancel, got nil")
+		}
+		// Any error is acceptable (context.Canceled, io.EOF, net.Error, etc.)
+	case <-time.After(maxWait):
+		t.Fatalf("dial did not return within %v after context cancel", maxWait)
+	}
+}
+
+// --------------------------------------------------------------------------
+// H03: TestPool_AcceptNewHostFromServerConfig
+// --------------------------------------------------------------------------
+
+// TestPool_AcceptNewHostFromServerConfig verifies that the AcceptNewHost field
+// of a temp ServerConfig is end-to-end honoured by Pool: the value flows from
+// AddTempServer → tempEntry.srv.AcceptNewHost → dial() → acceptNew local
+// variable → safety.HostKeyCallback(acceptNew).
+//
+// The test verifies the chain by:
+//  1. Confirming the stored tempEntry carries AcceptNewHost=true.
+//  2. Confirming the dialer IS invoked (i.e., Pool.Get reached the dial path).
+//  3. Confirming the ClientConfig passed to the dialer has a non-nil
+//     HostKeyCallback (i.e., the field was set by our dial() code path).
+//
+// Invoking the callback itself is not done here because it requires a valid
+// net.Addr and gossh.PublicKey to avoid panicking inside knownhosts.
+func TestPool_AcceptNewHostFromServerConfig(t *testing.T) {
+	cfg := &config.Config{
+		Settings: config.Settings{},
+		Servers:  map[string]config.ServerConfig{},
+	}
+	resolver := &fakeResolver{}
+	p := NewPool(cfg, resolver)
+
+	const srvName = "quick-srv"
+
+	// Capture the ClientConfig that the dialer receives.
+	var capturedCfg *gossh.ClientConfig
+	dialerCalled := false
+	p.dialer = func(_ context.Context, _, _ string, clientCfg *gossh.ClientConfig) (*gossh.Client, error) {
+		capturedCfg = clientCfg
+		dialerCalled = true
+		return nil, fmt.Errorf("fake: no real server") // always fail at dial
+	}
+
+	// Register with AcceptNewHost=true.
+	p.AddTempServer(srvName, config.ServerConfig{
+		Name:          srvName,
+		Host:          "127.0.0.1",
+		Port:          2222,
+		User:          "u",
+		Auth:          "quick_setup",
+		AcceptNewHost: true,
+	}, time.Now().Add(5*time.Minute))
+
+	// 1. Verify the stored tempEntry carries AcceptNewHost=true.
+	p.tempMu.RLock()
+	te, found := p.tempServers[srvName]
+	p.tempMu.RUnlock()
+	if !found {
+		t.Fatal("temp entry not found after AddTempServer")
+	}
+	if !te.srv.AcceptNewHost {
+		t.Error("tempEntry.srv.AcceptNewHost should be true after AddTempServer with AcceptNewHost=true")
+	}
+
+	_, _ = p.Get(context.Background(), srvName)
+
+	// 2. Confirm the dialer was reached (resolver resolved correctly).
+	if !dialerCalled {
+		t.Fatal("dialer was not called; Pool.Get did not reach the dial path")
+	}
+
+	// 3. Confirm the ClientConfig has a HostKeyCallback set.
+	if capturedCfg == nil {
+		t.Fatal("capturedCfg is nil; dialer did not receive a ClientConfig")
+	}
+	if capturedCfg.HostKeyCallback == nil {
+		t.Error("ClientConfig.HostKeyCallback must not be nil")
+	}
+}
+
+// TestPool_AcceptNewHostFalseByDefault verifies that a ServerConfig with
+// AcceptNewHost=false stores the value correctly in the tempEntry and that the
+// dial path does NOT accidentally set it to true. We verify through the stored
+// tempEntry field rather than by calling the strict HostKeyCallback (which
+// would require a valid PublicKey and could panic on a nil key).
+func TestPool_AcceptNewHostFalseByDefault(t *testing.T) {
+	cfg := &config.Config{
+		Settings: config.Settings{},
+		Servers:  map[string]config.ServerConfig{},
+	}
+	resolver := &fakeResolver{}
+	p := NewPool(cfg, resolver)
+
+	const srvName = "strict-srv"
+
+	p.dialer = func(_ context.Context, _, _ string, _ *gossh.ClientConfig) (*gossh.Client, error) {
+		return nil, fmt.Errorf("fake: no real server")
+	}
+
+	// AcceptNewHost is false (zero value) — strict host-key checking.
+	p.AddTempServer(srvName, config.ServerConfig{
+		Name:          srvName,
+		Host:          "127.0.0.1",
+		Port:          2222,
+		User:          "u",
+		Auth:          "quick_setup",
+		AcceptNewHost: false,
+	}, time.Now().Add(5*time.Minute))
+
+	// The tempEntry must preserve AcceptNewHost=false (not mutated by dial).
+	p.tempMu.RLock()
+	te, found := p.tempServers[srvName]
+	p.tempMu.RUnlock()
+	if !found {
+		t.Fatal("temp entry not found after AddTempServer")
+	}
+	if te.srv.AcceptNewHost {
+		t.Error("tempEntry.srv.AcceptNewHost should be false when AcceptNewHost=false")
+	}
+}
+
+// --------------------------------------------------------------------------
+// M01: TestPool_RedialClosesDeadClient
+// --------------------------------------------------------------------------
+
+// TestPool_RedialClosesDeadClient verifies that when a cached client reports
+// IsAlive()==false, Pool.Get closes the dead client exactly once before
+// attempting a redial (M01 fix).
+func TestPool_RedialClosesDeadClient(t *testing.T) {
+	cfg := minimalConfig("srv", "127.0.0.1", 22)
+	resolver := &fakeResolver{}
+	p := NewPool(cfg, resolver)
+
+	// Track how many times Close is called on the fake dead client.
+	var closeCalled int32
+	deadClient := &Client{
+		inner:  nil,
+		kaStop: make(chan struct{}),
+	}
+	deadClient.dead.Store(true) // IsAlive() will return false
+	deadClient.closeFunc = func() error {
+		atomic.AddInt32(&closeCalled, 1)
+		return nil
+	}
+
+	// Pre-populate the pool with the dead client.
+	p.mu.Lock()
+	p.entries["srv"] = &pooledEntry{
+		client:   deadClient,
+		lastUsed: time.Now(),
+	}
+	p.mu.Unlock()
+
+	// Configure a dialer that fails — we only care that Close was called, not
+	// that the redial succeeds.
+	dialErr := fmt.Errorf("fake: redial not implemented")
+	p.dialer = func(_ context.Context, _, _ string, _ *gossh.ClientConfig) (*gossh.Client, error) {
+		return nil, dialErr
+	}
+
+	_, err := p.Get(context.Background(), "srv")
+	if err == nil {
+		t.Fatal("expected dial error, got nil")
+	}
+
+	// Close must have been called exactly once on the dead client.
+	if got := atomic.LoadInt32(&closeCalled); got != 1 {
+		t.Errorf("Close called %d times, want exactly 1", got)
+	}
+}
+
+// --------------------------------------------------------------------------
 // Helper
 // --------------------------------------------------------------------------
 

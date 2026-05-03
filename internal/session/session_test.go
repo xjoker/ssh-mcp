@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -819,5 +820,198 @@ func TestSend_AfterTimeoutReturnsSessionDead(t *testing.T) {
 	// Should return essentially instantly (well under 1 second).
 	if elapsed > 500*time.Millisecond {
 		t.Errorf("second Send took %v, expected near-instant SESSION_DEAD", elapsed)
+	}
+}
+
+// --------------------------------------------------------------------------
+// H04 security tests: per-line cap via readBoundedLine
+// --------------------------------------------------------------------------
+
+// TestReadBoundedLine_Cases is a unit-test for the readBoundedLine helper
+// covering: short line, line exactly at cap, line exceeding cap (truncation),
+// EOF mid-line with no newline, and empty reader.
+func TestReadBoundedLine_Cases(t *testing.T) {
+	const cap = 8
+
+	cases := []struct {
+		name         string
+		input        string
+		wantLine     string // expected content WITHOUT trailing '\n' (for readability)
+		wantNewline  bool   // whether we expect a '\n' at end of returned slice
+		wantTrunc    bool
+		wantErrOnEOF bool // true if we expect io.EOF (empty reader)
+	}{
+		{
+			name:        "short line with newline",
+			input:       "hello\n",
+			wantLine:    "hello",
+			wantNewline: true,
+			wantTrunc:   false,
+		},
+		{
+			name:        "line exactly at cap with newline",
+			input:       "12345678\n",
+			wantLine:    "12345678",
+			wantNewline: true,
+			wantTrunc:   false,
+		},
+		{
+			name:        "line exceeds cap — truncated",
+			input:       "123456789abcde\n",
+			wantLine:    "12345678",
+			wantNewline: false,
+			wantTrunc:   true,
+		},
+		{
+			name:        "EOF mid-line (no trailing newline)",
+			input:       "partial",
+			wantLine:    "partial",
+			wantNewline: false,
+			wantTrunc:   false,
+		},
+		{
+			name:         "empty reader returns io.EOF",
+			input:        "",
+			wantErrOnEOF: true,
+		},
+		{
+			name:        "line exceeds cap then another line",
+			input:       "123456789XXXX\nshort\n",
+			wantLine:    "12345678",
+			wantNewline: false,
+			wantTrunc:   true,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			r := bufio.NewReader(strings.NewReader(tc.input))
+			line, trunc, err := readBoundedLine(r, cap)
+
+			if tc.wantErrOnEOF {
+				if err == nil {
+					t.Errorf("expected error (io.EOF), got nil; line=%q", line)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			// Strip trailing newline for comparison, but record whether it was there.
+			gotNewline := len(line) > 0 && line[len(line)-1] == '\n'
+			content := strings.TrimRight(string(line), "\n")
+
+			if content != tc.wantLine {
+				t.Errorf("line content = %q, want %q", content, tc.wantLine)
+			}
+			if gotNewline != tc.wantNewline {
+				t.Errorf("trailing newline = %v, want %v", gotNewline, tc.wantNewline)
+			}
+			if trunc != tc.wantTrunc {
+				t.Errorf("truncated = %v, want %v", trunc, tc.wantTrunc)
+			}
+		})
+	}
+}
+
+// longLineTransport is a Transport whose shell writes a single giant line
+// (no newline until the very end, after the sentinel) to test that
+// readBoundedLine prevents OOM before the newline arrives.
+type longLineTransport struct {
+	sh         *fakeShell
+	lineBytes  int // how many bytes to write before the sentinel (no internal newlines)
+}
+
+func (lt *longLineTransport) OpenShell(_ context.Context, _ string) (
+	io.WriteCloser, io.Reader, io.Reader, func() error, error,
+) {
+	return lt.sh.stdinW, lt.sh.stdoutR, lt.sh.stderrR, lt.sh.closeFunc, nil
+}
+
+// startLongLineShell handles init probe normally. For any sentinel-wrapped
+// command it writes lineBytes of 'x' with NO intermediate newline, then
+// immediately writes the sentinel on its own line.
+func startLongLineShell(sh *fakeShell, lineBytes int) {
+	go func() {
+		var buf strings.Builder
+		var sentinelVal string
+		tmp := make([]byte, 1)
+		for {
+			n, err := sh.stdinR.Read(tmp)
+			if n > 0 {
+				buf.WriteByte(tmp[0])
+				if tmp[0] == '\n' {
+					line := strings.TrimRight(buf.String(), "\r\n")
+					buf.Reset()
+					if strings.HasPrefix(line, "export __MSB_SENTINEL='") {
+						s := strings.TrimPrefix(line, "export __MSB_SENTINEL='")
+						sentinelVal = strings.TrimSuffix(s, "'")
+					}
+					if strings.HasPrefix(line, "printf '%s\\n' 'init-") {
+						start := strings.Index(line, "'init-")
+						if start >= 0 {
+							echo := line[start+1 : len(line)-1]
+							sh.feedLine(echo)
+						}
+					}
+					if strings.HasPrefix(line, "{ ") && sentinelVal != "" {
+						// Write a single huge line with no embedded newline.
+						chunk := strings.Repeat("x", 4096)
+						written := 0
+						for written < lineBytes {
+							toWrite := len(chunk)
+							if written+toWrite > lineBytes {
+								toWrite = lineBytes - written
+							}
+							_, _ = sh.stdoutW.Write([]byte(chunk[:toWrite]))
+							written += toWrite
+						}
+						// Terminate the long line with a newline, then write sentinel.
+						_, _ = sh.stdoutW.Write([]byte("\n"))
+						sh.feedLine(fmt.Sprintf("%s 0", sentinelVal))
+					}
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+}
+
+// TestSend_LongLineWithoutNewlineDoesNotOverflow verifies that a remote process
+// emitting a single line far exceeding sessionLineMaxBytes (5 MiB, no embedded
+// newline) does not cause OOM. Send must:
+//   - complete within the test timeout,
+//   - return Truncated=true,
+//   - return Stdout whose length is bounded by sessionLineMaxBytes.
+func TestSend_LongLineWithoutNewlineDoesNotOverflow(t *testing.T) {
+	const fiveMiB = 5 * 1024 * 1024
+
+	sh := newFakeShell()
+	startLongLineShell(sh, fiveMiB)
+
+	m := NewManager(&longLineTransport{sh: sh, lineBytes: fiveMiB}, time.Hour)
+	defer m.CloseAll()
+
+	ctx := context.Background()
+	id, err := m.Start(ctx, "test-server")
+	if err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+
+	res, err := m.Send(ctx, id, "bigline", 30*time.Second)
+	if err != nil {
+		t.Fatalf("Send error: %v", err)
+	}
+
+	// Stdout content must be bounded by sessionLineMaxBytes (the per-line cap).
+	if len(res.Stdout) > sessionLineMaxBytes {
+		t.Errorf("Stdout len %d exceeds sessionLineMaxBytes %d", len(res.Stdout), sessionLineMaxBytes)
+	}
+	if !res.Truncated {
+		t.Error("expected Truncated=true for a 5 MiB no-newline line, got false")
 	}
 }

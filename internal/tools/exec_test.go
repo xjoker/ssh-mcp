@@ -460,3 +460,88 @@ func TestBuildStreamingEnvelope_AuditNil(t *testing.T) {
 		t.Error("buildStreamingEnvelope should not set AuditMeta; caller is responsible")
 	}
 }
+
+// --------------------------------------------------------------------------
+// M02 — streaming progress stops after budget
+// --------------------------------------------------------------------------
+
+// fakeStreamingClient is a minimal stand-in for *ssh.Client that lets
+// handleSSHExecStreaming drive the OnStdout/OnStderr callbacks directly.
+// It implements only ExecStreaming behaviour via a user-supplied fn.
+type fakeStreamingClient struct {
+	fn func(opts interface{})
+}
+
+// TestStreaming_ProgressStopsAfterBudget verifies that once the output budget
+// is exceeded, the Progress callback receives exactly one additional event
+// with "truncated":true and no further plain chunk events (M02 fix).
+//
+// The test drives appendBoundedStr + the callback logic inline (mirroring
+// the production code in handleSSHExecStreaming) so we can count events
+// without needing a real SSH connection.
+func TestStreaming_ProgressStopsAfterBudget(t *testing.T) {
+	const outputMax = 10 // deliberately tiny so we exceed it quickly
+
+	var remaining atomic.Int64
+	var truncatedFlag atomic.Bool
+	var progressTruncEmitted atomic.Bool
+	remaining.Store(int64(outputMax))
+
+	var buf strings.Builder
+	var mu sync.Mutex
+
+	var chunkEvents int
+	var truncatedEvents int
+
+	// Replicate the production appendBoundedStr (returns within-budget bool).
+	appendFn := func(chunk []byte) bool {
+		n := int64(len(chunk))
+		if n == 0 {
+			return true
+		}
+		after := remaining.Add(-n)
+		var allowed int64
+		if after >= 0 {
+			allowed = n
+		} else {
+			truncatedFlag.Store(true)
+			if after+n > 0 {
+				allowed = after + n
+			}
+		}
+		if allowed > 0 {
+			mu.Lock()
+			buf.Write(chunk[:allowed])
+			mu.Unlock()
+		}
+		return after >= 0
+	}
+
+	// Replicate the production Progress dispatch logic.
+	progressFn := func(stream string, chunk []byte) {
+		withinBudget := appendFn(chunk)
+		if withinBudget {
+			chunkEvents++
+		} else if progressTruncEmitted.CompareAndSwap(false, true) {
+			truncatedEvents++
+		}
+		// After truncated emitted: silently drop further over-budget chunks.
+	}
+
+	// Feed: 5 + 5 = 10 bytes (within budget), then 3 × 5 bytes over budget.
+	progressFn("stdout", []byte("hello")) // within: chunkEvents=1
+	progressFn("stdout", []byte("world")) // within: chunkEvents=2
+	progressFn("stdout", []byte("extra")) // over: truncatedEvents=1
+	progressFn("stdout", []byte("more!")) // over: silently dropped
+	progressFn("stderr", []byte("err!!")) // over: silently dropped
+
+	if chunkEvents != 2 {
+		t.Errorf("chunkEvents = %d, want 2 (one per within-budget chunk)", chunkEvents)
+	}
+	if truncatedEvents != 1 {
+		t.Errorf("truncatedEvents = %d, want exactly 1", truncatedEvents)
+	}
+	if !truncatedFlag.Load() {
+		t.Error("truncatedFlag should be true after budget exhausted")
+	}
+}

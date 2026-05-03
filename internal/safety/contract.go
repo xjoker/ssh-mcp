@@ -160,6 +160,11 @@ var sensitiveContainerNames = []string{
 // redactedPlaceholder is the value substituted for any matched secret.
 const redactedPlaceholder = "***REDACTED***"
 
+// redactMaxBytes is the maximum input size for JSON-aware redaction.
+// Inputs larger than this skip the JSON walk and fall back to the byte-regex
+// sweep on a truncated copy, bounding CPU/memory consumption (M03).
+const redactMaxBytes = 1 << 20 // 1 MiB
+
 // RedactSecret scans b for known secret patterns and returns a new byte
 // slice with matches replaced. The input slice is never modified.
 //
@@ -178,15 +183,27 @@ const redactedPlaceholder = "***REDACTED***"
 // JSON-aware redaction is critical because handler args reach the audit
 // logger as `json.RawMessage`; the regex path alone would miss
 // `"password":"…"` entirely (S-6 / S-14).
+//
+// M03: inputs larger than redactMaxBytes bypass the JSON walk and fall back
+// to the byte-regex sweep on a truncated copy to bound CPU/stack usage.
 func RedactSecret(b []byte) []byte {
 	if len(b) == 0 {
 		return b
+	}
+	// M03: large inputs skip the recursive JSON walk entirely.
+	if len(b) > redactMaxBytes {
+		return redactBytes(b[:redactMaxBytes])
 	}
 	if redacted, ok := tryRedactJSON(b); ok {
 		return redacted
 	}
 	return redactBytes(b)
 }
+
+// redactMaxDepth is the maximum JSON nesting depth for redactJSONValue.
+// Values nested beyond this depth are replaced with a sentinel string to
+// prevent stack exhaustion from deeply-nested inputs (M03).
+const redactMaxDepth = 32
 
 // tryRedactJSON returns (redactedJSON, true) if b parses as JSON;
 // otherwise (nil, false). Whitespace-only input is treated as non-JSON.
@@ -207,7 +224,7 @@ func tryRedactJSON(b []byte) ([]byte, bool) {
 	if err := dec.Decode(&v); err != nil {
 		return nil, false
 	}
-	v = redactJSONValue(v)
+	v = redactJSONValue(v, 0)
 	out, err := json.Marshal(v)
 	if err != nil {
 		return nil, false
@@ -216,7 +233,13 @@ func tryRedactJSON(b []byte) ([]byte, bool) {
 }
 
 // redactJSONValue walks a decoded JSON value and rewrites secrets.
-func redactJSONValue(v any) any {
+// depth tracks the current nesting level; values beyond redactMaxDepth are
+// replaced with a sentinel string rather than recursed into (M03).
+func redactJSONValue(v any, depth int) any {
+	// M03: guard against deeply-nested inputs consuming excessive stack/CPU.
+	if depth > redactMaxDepth {
+		return "***DEPTH_EXCEEDED***"
+	}
 	switch x := v.(type) {
 	case map[string]any:
 		for k, val := range x {
@@ -229,12 +252,12 @@ func redactJSONValue(v any) any {
 				x[k] = redactedPlaceholder
 				continue
 			}
-			x[k] = redactJSONValue(val)
+			x[k] = redactJSONValue(val, depth+1)
 		}
 		return x
 	case []any:
 		for i := range x {
-			x[i] = redactJSONValue(x[i])
+			x[i] = redactJSONValue(x[i], depth+1)
 		}
 		return x
 	case string:

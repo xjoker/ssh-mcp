@@ -623,6 +623,80 @@ func TestResolveAndCheck_FallbackParentAllowed(t *testing.T) {
 	}
 }
 
+// --------------------------------------------------------------------------
+// H05 — resolveAndCheckRemotePathWalkUp tests
+// --------------------------------------------------------------------------
+
+// TestMkdirRecursive_DeepNonExistent_AllInAllowed: /tmp exists, /tmp/a and
+// /tmp/a/b do not. walkUp("/tmp/a/b/c") should resolve ancestor /tmp (inside
+// allowed prefix /tmp) then synthesise /tmp/a, /tmp/a/b, /tmp/a/b/c and
+// check each segment — all are under /tmp, so it must be allowed.
+func TestMkdirRecursive_DeepNonExistent_AllInAllowed(t *testing.T) {
+	deps := restrictedDeps()
+	fr := &fakeRealpather{
+		resolveFn: func(p string) (safety.RemotePath, error) {
+			switch p {
+			case "/tmp":
+				return safety.ValidateRemotePath("/tmp")
+			default:
+				return safety.RemotePath{}, fmt.Errorf("no such file or directory")
+			}
+		},
+	}
+	rp, _, ok := resolveAndCheckRemotePathWalkUp(deps, "restricted", fr, "/tmp/a/b/c")
+	if !ok {
+		t.Fatal("expected allow for deep path fully inside allowed prefix")
+	}
+	if rp.String() != "/tmp/a/b/c" {
+		t.Errorf("got %s want /tmp/a/b/c", rp.String())
+	}
+}
+
+// TestMkdirRecursive_DeepNonExistent_EscapesAllowed: ancestor /tmp resolves
+// to /etc (symlink escape), causing every synthetic sub-path to land under
+// /etc — must be denied.
+func TestMkdirRecursive_DeepNonExistent_EscapesAllowed(t *testing.T) {
+	deps := restrictedDeps()
+	fr := &fakeRealpather{
+		resolveFn: func(p string) (safety.RemotePath, error) {
+			switch p {
+			case "/tmp":
+				// /tmp is a symlink to /etc — escape attempt
+				return safety.ValidateRemotePath("/etc")
+			default:
+				return safety.RemotePath{}, fmt.Errorf("no such file or directory")
+			}
+		},
+	}
+	_, errResp, ok := resolveAndCheckRemotePathWalkUp(deps, "restricted", fr, "/tmp/a/b/c")
+	if ok {
+		t.Fatal("expected denial when ancestor resolves outside allowed prefix")
+	}
+	if errResp.Error == nil || errResp.Error.Code != envelope.CodePermissionDenied {
+		t.Errorf("got code %v, want PERMISSION_DENIED", errResp.Error)
+	}
+}
+
+// TestMkdirRecursive_TargetExists_FollowsCanonical: the full path resolves
+// successfully (target already exists). Should follow the canonical check path
+// and allow if within prefix.
+func TestMkdirRecursive_TargetExists_FollowsCanonical(t *testing.T) {
+	deps := restrictedDeps()
+	fr := &fakeRealpather{
+		resolveFn: func(p string) (safety.RemotePath, error) {
+			// Full path exists and canonicalises to /tmp/existing
+			return safety.ValidateRemotePath("/tmp/existing")
+		},
+	}
+	rp, _, ok := resolveAndCheckRemotePathWalkUp(deps, "restricted", fr, "/tmp/existing")
+	if !ok {
+		t.Fatal("expected allow for existing canonical path inside prefix")
+	}
+	if rp.String() != "/tmp/existing" {
+		t.Errorf("got %s want /tmp/existing", rp.String())
+	}
+}
+
 func TestSplitPath(t *testing.T) {
 	cases := []struct {
 		in           string

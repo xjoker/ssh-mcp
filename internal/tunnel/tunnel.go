@@ -306,8 +306,11 @@ func (m *Manager) remoteAcceptLoop(ctx context.Context, e *tunnelEntry, localHos
 func (m *Manager) remoteForward(ctx context.Context, e *tunnelEntry, remote net.Conn, localHost string, localPort int) {
 	defer remote.Close()
 
+	// M04: use DialContext so that tunnel cancel/close aborts the dial
+	// promptly instead of waiting for the OS-level connect timeout.
 	localAddr := net.JoinHostPort(localHost, strconv.Itoa(localPort))
-	local, err := net.Dial("tcp", localAddr)
+	var d net.Dialer
+	local, err := d.DialContext(ctx, "tcp", localAddr)
 	if err != nil {
 		return
 	}

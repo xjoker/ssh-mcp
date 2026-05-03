@@ -13,13 +13,16 @@ import (
 // configServerConfigFromInline builds a minimal ServerConfig used when an
 // inline session_start request is registered as a temp server. Auth is
 // "quick_setup" so the credResolver consults the QuickSetup registry.
-func configServerConfigFromInline(name, host string, port int, user string) config.ServerConfig {
+// acceptNewHost is forwarded from the inline.accept_new_host argument so that
+// the SSH pool honours the caller's host-key policy for this ephemeral entry.
+func configServerConfigFromInline(name, host string, port int, user string, acceptNewHost bool) config.ServerConfig {
 	return config.ServerConfig{
-		Name: name,
-		Host: host,
-		Port: port,
-		User: user,
-		Auth: "quick_setup",
+		Name:          name,
+		Host:          host,
+		Port:          port,
+		User:          user,
+		Auth:          "quick_setup",
+		AcceptNewHost: acceptNewHost,
 	}
 }
 
@@ -174,13 +177,13 @@ func registerInlineSession(deps *Deps, in *sftpInline) (string, envelope.Respons
 			spec.Passphrase = []byte(in.Passphrase)
 		}
 	}
-	name, _, err := deps.QuickSetup.Register(spec)
+	name, expiresAt, err := deps.QuickSetup.Register(spec)
 	if err != nil {
 		return "", envelope.Err(envelope.CodeInternalError,
 			"register inline session: "+err.Error(), false), false
 	}
 
-	deps.Pool.AddTempServer(name, configServerConfigFromInline(name, in.Host, port, in.User))
+	deps.Pool.AddTempServer(name, configServerConfigFromInline(name, in.Host, port, in.User, in.AcceptNewHost), time.Unix(expiresAt, 0))
 	return name, envelope.Response{}, true
 }
 

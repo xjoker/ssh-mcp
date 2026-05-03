@@ -635,6 +635,25 @@ allowed_paths = ["/var/log", "/tmp", "/"]
 	}
 }
 
+// TestServerConfig_AcceptNewHostNotFromToml verifies that the AcceptNewHost
+// field is excluded from TOML deserialisation (toml:"-"). A config file that
+// sets accept_new_host = true must not propagate the value into the loaded
+// ServerConfig; the field is a runtime-only injection point for ssh_quick_setup
+// and session_start inline registrations.
+func TestServerConfig_AcceptNewHostNotFromToml(t *testing.T) {
+	cfg := mustLoad(t, `
+[servers.myserver]
+host           = "example.com"
+user           = "deploy"
+auth           = "agent"
+accept_new_host = true
+`)
+	srv := cfg.Servers["myserver"]
+	if srv.AcceptNewHost {
+		t.Error("AcceptNewHost must not be deserialised from TOML (toml:\"-\" tag); got true")
+	}
+}
+
 func TestLoad_KeyPathTildeExpanded(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {

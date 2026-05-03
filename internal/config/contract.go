@@ -64,6 +64,17 @@ type ServerConfig struct {
 	ProxyJump     string   `toml:"proxy_jump"`
 	AllowedPaths  []string `toml:"allowed_paths"`
 	Tags          []string `toml:"tags"`
+
+	// AcceptNewHost is a runtime-only field (not deserialised from TOML) that
+	// lets the SSH pool accept an unknown host key on first contact for this
+	// specific server. It is populated by ssh_quick_setup / session_start
+	// inline registrations to honour their accept_new_host argument.
+	//
+	// Static config entries always leave this false; trust grants for static
+	// servers go through `mcp-ssh-bridge trust <name>` which writes the key
+	// to known_hosts in advance. Setting accept_new_host in config.toml has
+	// no effect because the toml:"-" tag prevents deserialisation.
+	AcceptNewHost bool `toml:"-"`
 }
 
 // Config is the top-level configuration object. SDD §5.2.

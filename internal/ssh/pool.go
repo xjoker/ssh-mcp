@@ -22,6 +22,19 @@ type pooledEntry struct {
 	mu sync.Mutex
 }
 
+// tempEntry holds a dynamically registered ad-hoc server together with its
+// expiry time so that Pool.getInternal can reject stale entries on cache hits.
+type tempEntry struct {
+	srv       config.ServerConfig
+	expiresAt time.Time
+}
+
+// handshakeTimeout is the maximum time allowed for the SSH handshake phase
+// (after the TCP connection is established). The ctx deadline is used if it
+// fires sooner. 30 s is generous enough for slow links while still bounding
+// the exposure window for hung endpoints.
+const handshakeTimeout = 30 * time.Second
+
 // Pool manages a collection of reusable SSH clients keyed by server name.
 type Pool struct {
 	cfg      *config.Config
@@ -34,7 +47,7 @@ type Pool struct {
 	// registered via ssh_quick_setup. Entries here take precedence over cfg.Servers
 	// during Get lookups.
 	tempMu      sync.RWMutex
-	tempServers map[string]config.ServerConfig
+	tempServers map[string]tempEntry
 
 	// dialer is an internal hook for testing: it replaces the real SSH dial.
 	dialer dialerFunc
@@ -52,12 +65,47 @@ func realDialer(ctx context.Context, network, addr string, cfg *gossh.ClientConf
 	if err != nil {
 		return nil, err
 	}
-	sshConn, chans, reqs, err := gossh.NewClientConn(conn, addr, cfg)
-	if err != nil {
-		conn.Close()
-		return nil, err
+	return sshHandshake(ctx, conn, addr, cfg)
+}
+
+// sshHandshake wraps gossh.NewClientConn with a deadline and a context-watcher
+// goroutine so that the handshake is always bounded. It is used by both
+// realDialer (direct path) and dialViaProxy (ProxyJump path).
+//
+// The deadline is the minimum of handshakeTimeout and the ctx deadline (if
+// any). Once the handshake completes the deadline is cleared so keepalive
+// probes are not affected.
+func sshHandshake(ctx context.Context, conn net.Conn, addr string, cfg *gossh.ClientConfig) (*gossh.Client, error) {
+	// Compute handshake deadline: respect context deadline when it fires sooner.
+	deadline := time.Now().Add(handshakeTimeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
 	}
-	return gossh.NewClient(sshConn, chans, reqs), nil
+	_ = conn.SetDeadline(deadline)
+
+	// ctx watcher: if the caller cancels ctx before NewClientConn returns,
+	// close conn so the blocking read inside NewClientConn is unblocked
+	// immediately rather than waiting for the deadline.
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-done:
+		}
+	}()
+
+	clientConn, chans, reqs, err := gossh.NewClientConn(conn, addr, cfg)
+	close(done) // stop watcher regardless of outcome
+	if err != nil {
+		_ = conn.Close() // ensure conn is closed on handshake failure
+		return nil, fmt.Errorf("handshake: %w", err)
+	}
+
+	// Clear deadline so subsequent keepalive probes are not time-bounded.
+	_ = conn.SetDeadline(time.Time{})
+
+	return gossh.NewClient(clientConn, chans, reqs), nil
 }
 
 // NewPool creates a new Pool using the supplied config and credential resolver.
@@ -66,30 +114,56 @@ func NewPool(cfg *config.Config, resolver CredResolver) *Pool {
 		cfg:         cfg,
 		resolver:    resolver,
 		entries:     make(map[string]*pooledEntry),
-		tempServers: make(map[string]config.ServerConfig),
+		tempServers: make(map[string]tempEntry),
 		dialer:      realDialer,
 	}
 }
 
 // AddTempServer registers an ad-hoc server configuration under the given name.
-// The entry is immediately visible to subsequent Get calls. Callers (such as the
-// ssh_quick_setup tool flow) are responsible for removing or expiring the entry
-// by calling RemoveTempServer when the TTL expires.
+// expiresAt records when the entry should be considered expired; Pool.Get will
+// return an error for any cache hit whose expiry has passed. Pass a zero value
+// to disable expiry checking (entry lives until RemoveTempServer is called).
 //
-// If a server with the same name already exists in cfg.Servers, the temporary
-// entry shadows it for the lifetime of the registration.
-func (p *Pool) AddTempServer(name string, srv config.ServerConfig) {
+// The entry is immediately visible to subsequent Get calls. If a server with
+// the same name already exists in cfg.Servers, the temporary entry shadows it
+// for the lifetime of the registration.
+func (p *Pool) AddTempServer(name string, srv config.ServerConfig, expiresAt time.Time) {
 	p.tempMu.Lock()
-	p.tempServers[name] = srv
+	p.tempServers[name] = tempEntry{srv: srv, expiresAt: expiresAt}
 	p.tempMu.Unlock()
 }
 
-// RemoveTempServer removes a previously registered temporary server entry.
-// It is safe to call even if the entry does not exist.
+// RemoveTempServer removes a previously registered temporary server entry and
+// evicts any live pooled client for the same name (closing the underlying SSH
+// connection). It is safe to call even if the entry does not exist.
 func (p *Pool) RemoveTempServer(name string) {
 	p.tempMu.Lock()
 	delete(p.tempServers, name)
 	p.tempMu.Unlock()
+
+	p.evictByName(name)
+}
+
+// evictByName closes and removes the pooled entry for name (if any). It does
+// NOT touch tempServers; callers that need both must manage tempServers
+// separately (e.g. RemoveTempServer).
+func (p *Pool) evictByName(name string) {
+	p.mu.Lock()
+	entry, ok := p.entries[name]
+	if ok {
+		delete(p.entries, name)
+	}
+	p.mu.Unlock()
+
+	if ok {
+		entry.mu.Lock()
+		client := entry.client
+		entry.client = nil
+		entry.mu.Unlock()
+		if client != nil {
+			_ = client.Close()
+		}
+	}
 }
 
 // Get returns a live Client for the named server, reusing a cached connection
@@ -113,9 +187,21 @@ func (p *Pool) getInternal(ctx context.Context, name string, visited map[string]
 
 	// Resolve server config: temp servers take precedence over static config.
 	p.tempMu.RLock()
-	srv, ok := p.tempServers[name]
+	te, isTemp := p.tempServers[name]
 	p.tempMu.RUnlock()
-	if !ok {
+
+	var srv config.ServerConfig
+	var ok bool
+	if isTemp {
+		// Check expiry before returning or caching.
+		if !te.expiresAt.IsZero() && time.Now().After(te.expiresAt) {
+			// Expired: evict the pool entry + temp entry so future calls also fail fast.
+			p.RemoveTempServer(name)
+			return nil, fmt.Errorf("ssh: server %q: quick_setup entry expired", name)
+		}
+		srv = te.srv
+		ok = true
+	} else {
 		srv, ok = p.cfg.Servers[name]
 	}
 	if !ok {
@@ -136,9 +222,15 @@ func (p *Pool) getInternal(ctx context.Context, name string, visited map[string]
 	defer entry.mu.Unlock()
 
 	// Check again under the per-entry lock (another goroutine may have dialled).
-	if entry.client != nil && entry.client.IsAlive() {
-		entry.lastUsed = time.Now()
-		return entry.client, nil
+	if entry.client != nil {
+		if entry.client.IsAlive() {
+			entry.lastUsed = time.Now()
+			return entry.client, nil
+		}
+		// M01: old client is dead — close it explicitly before redialling so
+		// the underlying TCP connection is released promptly.
+		_ = entry.client.Close()
+		entry.client = nil
 	}
 
 	// Need to dial.
@@ -251,6 +343,13 @@ func (p *Pool) dial(ctx context.Context, srv config.ServerConfig, acceptNew bool
 		port = 22
 	}
 
+	// For named/temp servers the host-key policy comes from the ServerConfig
+	// field populated at registration time (e.g. by ssh_quick_setup or
+	// session_start inline). The acceptNew parameter is kept for callers that
+	// override it directly; named server dials also consult srv.AcceptNewHost
+	// so that quick_setup's accept_new_host argument is honoured end-to-end.
+	acceptNew = acceptNew || srv.AcceptNewHost
+
 	clientCfg := &gossh.ClientConfig{
 		User:              srv.User,
 		Auth:              authMethods,
@@ -294,14 +393,13 @@ func (p *Pool) dialViaProxy(
 		return nil, fmt.Errorf("proxy jump: dial target %s: %w", targetAddr, err)
 	}
 
-	// Complete SSH handshake over the proxied connection.
-	sshConn, chans, reqs, err := gossh.NewClientConn(tcpConn, targetAddr, targetCfg)
+	// Complete SSH handshake over the proxied connection with deadline +
+	// ctx-cancellation support (H01: ProxyJump path).
+	inner, err := sshHandshake(ctx, tcpConn, targetAddr, targetCfg)
 	if err != nil {
-		tcpConn.Close()
 		return nil, fmt.Errorf("proxy jump: SSH handshake to %s: %w", targetAddr, err)
 	}
 
-	inner := gossh.NewClient(sshConn, chans, reqs)
 	return newClientWithAuthMode(inner, target.Name, authLabel), nil
 }
 
