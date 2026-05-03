@@ -1,0 +1,42 @@
+# mcp-ssh-bridge example configuration — two servers
+#
+# WARNING: Do not add autoApprove for any of mcp-ssh-bridge tools.
+# The tools provided (ssh_exec, sftp_op, ssh_group_exec, etc.) can have
+# unbounded effects on remote systems and must not be auto-approved.
+#
+# Copy this file to the platform config path and adjust values:
+#   macOS/Linux : ~/.config/mcp-ssh-bridge/config.toml
+#   Windows     : %APPDATA%\mcp-ssh-bridge\config.toml
+
+[settings]
+# Uncomment to allow plaintext passwords in config (NOT recommended).
+# allow_config_plaintext_password = false
+
+default_timeout_ms           = 120000
+max_timeout_ms               = 1800000
+output_max_bytes             = 65536
+session_idle_seconds         = 3600
+conn_idle_seconds            = 600
+audit_retention_days         = 90
+
+# ---- Server 1: SSH agent authentication ----
+[servers.webserver]
+host        = "web.example.com"
+port        = 22
+user        = "deploy"
+auth        = "agent"
+description = "Production web server (agent auth)"
+tags        = ["prod", "web"]
+
+# ---- Server 2: Keychain-backed password authentication ----
+[servers.dbserver]
+host        = "db.internal.example.com"
+port        = 2222
+user        = "dbadmin"
+auth        = "password"
+# Store the password in the OS keychain:
+#   mcp-ssh-bridge auth set-keychain mcp-ssh-bridge ssh-password:dbserver
+password    = "keychain:mcp-ssh-bridge:ssh-password:dbserver"
+description = "Internal database server (keychain auth)"
+tags        = ["prod", "db"]
+allowed_paths = ["/var/lib/postgresql", "/tmp"]

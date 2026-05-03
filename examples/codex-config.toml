@@ -1,0 +1,11 @@
+# Codex MCP server configuration for mcp-ssh-bridge
+#
+# WARNING: Do not add autoApprove for any of mcp-ssh-bridge tools.
+# The tools provided (ssh_exec, sftp_op, ssh_group_exec, etc.) can have
+# unbounded effects on remote systems and must not be auto-approved.
+#
+# Add this block to your Codex configuration file.
+
+[mcp_servers.ssh-bridge]
+command = "/usr/local/bin/mcp-ssh-bridge"
+args    = []

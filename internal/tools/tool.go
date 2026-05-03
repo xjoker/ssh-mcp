@@ -1,0 +1,86 @@
+// Package tools defines the tool layer contract used by every MCP tool
+// in this project. Each tool is a function that consumes raw JSON args
+// and returns a unified envelope.Response.
+//
+// The mcpserver package wires concrete dependencies (Deps) and registers
+// tools via Registry.
+package tools
+
+import (
+	"context"
+	"encoding/json"
+
+	"github.com/xjoker/mcp-ssh-bridge/internal/audit"
+	"github.com/xjoker/mcp-ssh-bridge/internal/config"
+	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
+	"github.com/xjoker/mcp-ssh-bridge/internal/session"
+	"github.com/xjoker/mcp-ssh-bridge/internal/ssh"
+	"github.com/xjoker/mcp-ssh-bridge/internal/tunnel"
+)
+
+// HandlerFunc is the signature implemented by every tool.
+//
+// args carries the raw JSON of the tool input. The handler MUST return a
+// fully-formed envelope.Response; framework-level concerns (panic recovery,
+// audit logging) are handled by middleware in the mcpserver package.
+type HandlerFunc func(ctx context.Context, deps *Deps, args json.RawMessage) envelope.Response
+
+// Tool is the descriptor registered with the MCP layer.
+type Tool struct {
+	Name        string
+	Description string
+	InputSchema json.RawMessage
+	Handle      HandlerFunc
+}
+
+// Registry collects tools produced by individual files in this package.
+type Registry struct {
+	tools []Tool
+}
+
+func NewRegistry() *Registry { return &Registry{} }
+
+func (r *Registry) Register(t Tool) { r.tools = append(r.tools, t) }
+
+func (r *Registry) All() []Tool { return r.tools }
+
+// Deps is the bundle of long-lived dependencies injected into every tool.
+// Concrete instances are constructed in the mcpserver bootstrap.
+type Deps struct {
+	Cfg          *config.Config
+	Pool         *ssh.Pool
+	SessionMgr   *session.Manager
+	TunnelMgr    *tunnel.Manager
+	Audit        *audit.Logger
+	QuickSetup   QuickSetupRegistry
+
+	// AllowPlaintext mirrors Cfg.Settings.AllowConfigPlaintextPassword,
+	// passed to auth.Resolve when handling CredRefPlaintext.
+	AllowPlaintext bool
+
+	// Elicit issues an MCP elicitation/create request. Returns the user's
+	// response or an error. Used by ssh_quick_setup.
+	Elicit ElicitFunc
+
+	// Progress emits an MCP progress notification with the given message
+	// payload. Returns nil if no progress token is associated with the
+	// current request (i.e., client did not request streaming).
+	Progress ProgressFunc
+
+	// SessionID is the MCP session identifier injected by the server.
+	SessionID string
+}
+
+// QuickSetupRegistry is the interface for ad-hoc server registry used by
+// ssh_quick_setup. Implementation lives in mcpserver.
+type QuickSetupRegistry interface {
+	Register(name, host string, port int, user string, secret []byte, ttlMinutes int) (registeredName string, expiresAt int64, err error)
+	Lookup(name string) (host string, port int, user string, secret []byte, ok bool)
+}
+
+// ElicitFunc requests user confirmation via MCP elicitation/create.
+type ElicitFunc func(ctx context.Context, schema json.RawMessage, message string) (json.RawMessage, error)
+
+// ProgressFunc sends a progress notification. value is an arbitrary
+// JSON-encodable payload (e.g., {bytes_read, total} or stdout chunk).
+type ProgressFunc func(value any)
