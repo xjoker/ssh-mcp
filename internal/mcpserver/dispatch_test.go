@@ -58,3 +58,34 @@ func TestEnvelopeWrapsOnError(t *testing.T) {
 		t.Errorf("missing error code: %s", tc.Text)
 	}
 }
+
+// SDD §9.3 / Codex C02: destructive tools MUST pre-record a "pending"
+// entry. If the pre-record fails the handler MUST NOT be invoked and the
+// caller MUST receive AUDIT_FAILED.
+
+func TestIsDestructive(t *testing.T) {
+	for _, name := range []string{"ssh_exec", "ssh_group_exec", "sftp_op", "session_send", "session_start", "session_close", "tunnel", "ssh_quick_setup"} {
+		if !isDestructive(name) {
+			t.Errorf("expected %q to be destructive", name)
+		}
+	}
+	for _, name := range []string{"sftp_list", "sftp_read", "sftp_stat", "list_servers", "audit_query"} {
+		if isDestructive(name) {
+			t.Errorf("expected %q to be read-only", name)
+		}
+	}
+}
+
+func TestNewCorrelationIDUnique(t *testing.T) {
+	seen := map[string]bool{}
+	for i := 0; i < 100; i++ {
+		id := newCorrelationID()
+		if seen[id] {
+			t.Fatalf("duplicate correlation id at iteration %d: %q", i, id)
+		}
+		seen[id] = true
+		if len(id) != 16 {
+			t.Errorf("expected 16-char hex, got %q", id)
+		}
+	}
+}

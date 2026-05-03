@@ -34,18 +34,25 @@ const defaultLimit = 100
 const maxLimit = 1000
 
 // Entry is a single audit log record. SDD §5.9 / §9.2.
+//
+// Status / CorrelationID extend SDD §9.2 to support the fail-closed
+// pre-record semantics described in §9.3: destructive tools emit a
+// "pending" entry before invocation and a "completed" entry after,
+// both bearing the same CorrelationID for forensic matching.
 type Entry struct {
-	Timestamp    time.Time `json:"timestamp"`
-	SessionID    string    `json:"session_id"`
-	Tool         string    `json:"tool"`
-	Server       string    `json:"server,omitempty"`
-	AuthMode     string    `json:"auth_mode,omitempty"`
-	ArgsRedacted string    `json:"args_redacted,omitempty"`
-	ExitCode     int       `json:"exit_code,omitempty"`
-	DurationMs   int64     `json:"duration_ms"`
-	BytesIn      int64     `json:"bytes_in,omitempty"`
-	BytesOut     int64     `json:"bytes_out,omitempty"`
-	ErrorCode    string    `json:"error_code,omitempty"`
+	Timestamp     time.Time `json:"timestamp"`
+	SessionID     string    `json:"session_id"`
+	Tool          string    `json:"tool"`
+	Server        string    `json:"server,omitempty"`
+	AuthMode      string    `json:"auth_mode,omitempty"`
+	ArgsRedacted  string    `json:"args_redacted,omitempty"`
+	ExitCode      int       `json:"exit_code,omitempty"`
+	DurationMs    int64     `json:"duration_ms"`
+	BytesIn       int64     `json:"bytes_in,omitempty"`
+	BytesOut      int64     `json:"bytes_out,omitempty"`
+	ErrorCode     string    `json:"error_code,omitempty"`
+	Status        string    `json:"status,omitempty"`
+	CorrelationID string    `json:"correlation_id,omitempty"`
 }
 
 // Filter specifies predicates for Query. SDD §5.9.

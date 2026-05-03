@@ -4,6 +4,7 @@
 package safety
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -121,38 +122,196 @@ var (
 
 	// AWS access key patterns (AKIA... or ASIA... + 16 uppercase alphanumeric chars).
 	reAWSKey = regexp.MustCompile(`(?:AKIA|ASIA)[0-9A-Z]{16}`)
+
+	// CLI flag forms that embed a password inline. SDD §5.9 calls these
+	// out specifically (mysql -p, sshpass -p). Match the flag + glued or
+	// space-separated value, capture flag with the equals/space.
+	reCLIFlagPwd = regexp.MustCompile(`(?:^|\s)(--password=|-p=?)\S+`)
+
+	// `sshpass -p VALUE` (space form, separate from above which also covers it).
+	reSshpass = regexp.MustCompile(`(?i)\bsshpass\s+-p\s+\S+`)
 )
 
-// RedactSecret scans b for known secret patterns and returns a new
-// byte slice with matches replaced. The input slice is never modified.
-// Patterns (SDD §9.4):
+// sensitiveFieldNames is the canonical set of JSON field names whose values
+// must never be retained in audit logs, regardless of nesting depth.
+// Comparison is case-insensitive and matches as a substring of the key
+// (so "ssh_password", "user_passphrase", "private_key_pem" all hit).
+var sensitiveFieldNames = []string{
+	"password",
+	"passwd",
+	"passphrase",
+	"private_key_pem",
+	"key_pem",
+	"private_key",
+	"secret",
+	"token",
+	"apikey",
+	"api_key",
+	"authorization",
+}
+
+// sensitiveContainerNames are entire object/array values that must be
+// replaced wholesale (e.g. inline.{host,user,password,...}) — too risky
+// to walk field-by-field.
+var sensitiveContainerNames = []string{
+	"inline",
+}
+
+// redactedPlaceholder is the value substituted for any matched secret.
+const redactedPlaceholder = "***REDACTED***"
+
+// RedactSecret scans b for known secret patterns and returns a new byte
+// slice with matches replaced. The input slice is never modified.
+//
+// SDD §5.4 / §9.4. The redactor operates in two modes:
+//
+//  1. JSON-aware (preferred). If b parses as JSON, recursively walk the
+//     value and replace any field whose name matches sensitiveFieldNames
+//     (substring match, case-insensitive). Fields named in
+//     sensitiveContainerNames have their entire value replaced with
+//     {"redacted":true}.
+//
+//  2. Byte regex (fallback). Used when b is not JSON (e.g. a remote
+//     command body). Catches PEM blocks, key=value/key:value patterns,
+//     URL userinfo, and AWS access key prefixes.
+//
+// JSON-aware redaction is critical because handler args reach the audit
+// logger as `json.RawMessage`; the regex path alone would miss
+// `"password":"…"` entirely (S-6 / S-14).
+func RedactSecret(b []byte) []byte {
+	if len(b) == 0 {
+		return b
+	}
+	if redacted, ok := tryRedactJSON(b); ok {
+		return redacted
+	}
+	return redactBytes(b)
+}
+
+// tryRedactJSON returns (redactedJSON, true) if b parses as JSON;
+// otherwise (nil, false). Whitespace-only input is treated as non-JSON.
+func tryRedactJSON(b []byte) ([]byte, bool) {
+	trimmed := bytes_TrimSpace(b)
+	if len(trimmed) == 0 {
+		return nil, false
+	}
+	switch trimmed[0] {
+	case '{', '[', '"':
+		// likely JSON
+	default:
+		return nil, false
+	}
+	var v any
+	dec := json.NewDecoder(strings.NewReader(string(b)))
+	dec.UseNumber()
+	if err := dec.Decode(&v); err != nil {
+		return nil, false
+	}
+	v = redactJSONValue(v)
+	out, err := json.Marshal(v)
+	if err != nil {
+		return nil, false
+	}
+	return out, true
+}
+
+// redactJSONValue walks a decoded JSON value and rewrites secrets.
+func redactJSONValue(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		for k, val := range x {
+			lk := strings.ToLower(k)
+			if matchesAny(lk, sensitiveContainerNames) {
+				x[k] = map[string]any{"redacted": true}
+				continue
+			}
+			if matchesAny(lk, sensitiveFieldNames) {
+				x[k] = redactedPlaceholder
+				continue
+			}
+			x[k] = redactJSONValue(val)
+		}
+		return x
+	case []any:
+		for i := range x {
+			x[i] = redactJSONValue(x[i])
+		}
+		return x
+	case string:
+		// Run the byte-regex sweep on string values as a second line of
+		// defence (e.g. command bodies that happen to be passed in JSON).
+		out := redactBytes([]byte(x))
+		return string(out)
+	default:
+		return v
+	}
+}
+
+func matchesAny(lowerKey string, patterns []string) bool {
+	for _, p := range patterns {
+		if strings.Contains(lowerKey, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// bytes_TrimSpace returns b with leading/trailing ASCII whitespace removed.
+// Avoids importing the `bytes` package only for this one helper.
+func bytes_TrimSpace(b []byte) []byte {
+	start, end := 0, len(b)
+	for start < end {
+		c := b[start]
+		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
+			break
+		}
+		start++
+	}
+	for end > start {
+		c := b[end-1]
+		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
+			break
+		}
+		end--
+	}
+	return b[start:end]
+}
+
+// redactBytes runs the legacy regex sweep over a byte slice. SDD §9.4:
 //   - PEM blocks
 //   - key=value / key:value for password/passwd/secret/token/apikey/api_key
 //   - URLs with userinfo (https://user:pass@host)
 //   - AWS access key prefixes (AKIA/ASIA + 16 chars)
-func RedactSecret(b []byte) []byte {
+func redactBytes(b []byte) []byte {
 	out := b
-
-	// PEM blocks → -----BEGIN REDACTED-----
 	out = rePEM.ReplaceAll(out, []byte("-----BEGIN REDACTED-----"))
-
-	// key=value → key=***REDACTED*** (keep separator character)
 	out = reKV.ReplaceAllFunc(out, func(m []byte) []byte {
 		s := string(m)
 		for i, c := range s {
 			if c == ':' || c == '=' {
-				return []byte(s[:i+1] + "***REDACTED***")
+				return []byte(s[:i+1] + redactedPlaceholder)
 			}
 		}
-		return []byte("***REDACTED***")
+		return []byte(redactedPlaceholder)
 	})
-
-	// URL userinfo: https://user:pass@host → https://***:***@host
 	out = reURL.ReplaceAll(out, []byte("${1}***:***@"))
-
-	// AWS keys
-	out = reAWSKey.ReplaceAll(out, []byte("***REDACTED***"))
-
+	out = reAWSKey.ReplaceAll(out, []byte(redactedPlaceholder))
+	out = reCLIFlagPwd.ReplaceAllFunc(out, func(m []byte) []byte {
+		// preserve leading whitespace + flag, replace the value portion.
+		s := string(m)
+		// find where flag ends: "--password=" or "-p=" or "-p"
+		flagEnd := strings.IndexAny(s, "=")
+		if flagEnd >= 0 {
+			return []byte(s[:flagEnd+1] + redactedPlaceholder)
+		}
+		// "-p" glued form (no '=' separator): keep through "-p"
+		idx := strings.Index(s, "-p")
+		if idx < 0 {
+			return []byte(redactedPlaceholder)
+		}
+		return []byte(s[:idx+2] + redactedPlaceholder)
+	})
+	out = reSshpass.ReplaceAll(out, []byte("sshpass -p "+redactedPlaceholder))
 	return out
 }
 
@@ -175,33 +334,38 @@ var khWriteMu sync.Mutex
 // HostKeyCallback returns a callback for ssh.ClientConfig.HostKeyCallback
 // that reads from ~/.ssh/known_hosts and rejects mismatches.
 //
+// Fail-closed contract (SDD §13 / S-3):
+//
 //   - Known and matching key → return nil
-//   - Known host, different key (mismatch) → error containing "HOST_KEY_MISMATCH"
-//     (always rejected, regardless of acceptNew)
-//   - Unknown host, acceptNew=false → error containing "HOST_KEY_UNKNOWN"
-//   - Unknown host, acceptNew=true → append entry to known_hosts, return nil
+//   - Known host, different key (mismatch) → HOST_KEY_MISMATCH (always
+//     rejected, regardless of acceptNew)
+//   - Unknown host, acceptNew=false → HOST_KEY_UNKNOWN
+//   - Unknown host, acceptNew=true → APPEND to known_hosts, then nil ONLY
+//     on a successful, fsync'd append. Any failure (cannot resolve path,
+//     read existing file, create .ssh dir, open / write / sync the file)
+//     MUST be surfaced to the caller; we never silently allow an
+//     unverified host on the back of a filesystem error.
 func HostKeyCallback(acceptNew bool) cryptoSSH.HostKeyCallback {
 	khPath, pathErr := knownHostsFilePath()
 
 	return func(hostname string, remote net.Addr, key cryptoSSH.PublicKey) error {
+		// Path resolution failure is always fail-closed. Even with
+		// acceptNew=true we cannot persist trust without knowing where
+		// the file lives.
 		if pathErr != nil {
-			if !acceptNew {
-				return fmt.Errorf("HOST_KEY_UNKNOWN: cannot load known_hosts: %w", pathErr)
-			}
-			fmt.Fprintf(os.Stderr, "safety: HostKeyCallback: cannot resolve known_hosts path: %v\n", pathErr)
-			return nil
+			return fmt.Errorf("HOST_KEY_UNKNOWN: cannot resolve known_hosts path: %w", pathErr)
 		}
 
 		cb, khErr := knownhosts.New(khPath)
 		if khErr != nil {
 			if !os.IsNotExist(khErr) {
-				if !acceptNew {
-					return fmt.Errorf("HOST_KEY_UNKNOWN: cannot read known_hosts: %w", khErr)
-				}
-				fmt.Fprintf(os.Stderr, "safety: HostKeyCallback: cannot read known_hosts: %v\n", khErr)
-				return nil
+				// Read failure is fail-closed regardless of acceptNew —
+				// we have no way to verify the host is genuinely
+				// unknown vs. mismatched against an unreadable file.
+				return fmt.Errorf("HOST_KEY_UNKNOWN: cannot read known_hosts: %w", khErr)
 			}
-			// File does not exist — treat as empty.
+			// File does not exist — treat as empty (acceptable; will be
+			// created in the append path below if acceptNew=true).
 			cb = nil
 		}
 
@@ -227,24 +391,35 @@ func HostKeyCallback(acceptNew bool) cryptoSSH.HostKeyCallback {
 			}
 		}
 
-		// acceptNew=true and host is unknown — append to known_hosts atomically.
+		// acceptNew=true and host is unknown — append to known_hosts.
+		// Every step is fail-closed: if we cannot persist the trust
+		// decision, we do not pretend to have done so.
 		khWriteMu.Lock()
 		defer khWriteMu.Unlock()
 
 		sshDir := path.Dir(khPath)
-		if mkErr := os.MkdirAll(sshDir, 0700); mkErr != nil {
-			return fmt.Errorf("safety: cannot create .ssh dir: %w", mkErr)
+		if mkErr := os.MkdirAll(sshDir, 0o700); mkErr != nil {
+			return fmt.Errorf("HOST_KEY_UNKNOWN: cannot create .ssh dir: %w", mkErr)
 		}
 
-		f, openErr := os.OpenFile(khPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		f, openErr := os.OpenFile(khPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 		if openErr != nil {
-			return fmt.Errorf("safety: cannot open known_hosts for append: %w", openErr)
+			return fmt.Errorf("HOST_KEY_UNKNOWN: cannot open known_hosts for append: %w", openErr)
 		}
-		defer f.Close()
 
 		line := knownhosts.Line([]string{hostname}, key) + "\n"
 		if _, writeErr := f.WriteString(line); writeErr != nil {
-			return fmt.Errorf("safety: cannot write known_hosts entry: %w", writeErr)
+			_ = f.Close()
+			return fmt.Errorf("HOST_KEY_UNKNOWN: cannot write known_hosts entry: %w", writeErr)
+		}
+		// fsync to disk before closing so a crash between Write and
+		// Close cannot leave us thinking the host is trusted.
+		if syncErr := f.Sync(); syncErr != nil {
+			_ = f.Close()
+			return fmt.Errorf("HOST_KEY_UNKNOWN: cannot fsync known_hosts: %w", syncErr)
+		}
+		if closeErr := f.Close(); closeErr != nil {
+			return fmt.Errorf("HOST_KEY_UNKNOWN: cannot close known_hosts: %w", closeErr)
 		}
 		return nil
 	}

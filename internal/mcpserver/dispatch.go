@@ -5,6 +5,8 @@ package mcpserver
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"runtime/debug"
@@ -17,6 +19,34 @@ import (
 	"github.com/xjoker/mcp-ssh-bridge/internal/safety"
 	"github.com/xjoker/mcp-ssh-bridge/internal/tools"
 )
+
+// destructiveTools lists tool names whose invocations have side effects on
+// remote systems. SDD §9.3 fail-closed: each call MUST emit a "pending"
+// audit record before the handler runs; if that record cannot be written,
+// the handler is refused and the caller receives AUDIT_FAILED.
+var destructiveTools = map[string]struct{}{
+	"ssh_exec":       {},
+	"ssh_group_exec": {},
+	"sftp_op":        {},
+	"session_send":   {},
+	"session_start":  {},
+	"session_close":  {},
+	"tunnel":         {},
+	"ssh_quick_setup": {},
+}
+
+func isDestructive(name string) bool {
+	_, ok := destructiveTools[name]
+	return ok
+}
+
+// newCorrelationID returns a 16-byte hex token for matching pending /
+// completed audit records.
+func newCorrelationID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
 
 // registerAll iterates over tools.All() and registers each tool with the
 // MCP SDK server. It wires the middleware chain around every handler.
@@ -90,24 +120,47 @@ func middlewareChain(
 	reqDeps.Progress = buildProgressFunc(ctx, req)
 	reqDeps.Elicit = buildElicitFunc(req)
 
-	// 3. Invoke the tool handler.
 	rawArgs := req.Params.Arguments
+	argsRedacted := string(safety.RedactSecret(rawArgs))
+	serverName := extractServerName(rawArgs)
+	correlationID := newCorrelationID()
+
+	// 3. Pre-record (fail-closed) — destructive tools only.
+	//    SDD §9.3: if the pending entry cannot be persisted we refuse to
+	//    invoke the handler. Read-only tools (list_servers, audit_query,
+	//    sftp_list, sftp_read, sftp_stat) skip this step to keep audit
+	//    volume manageable.
+	if isDestructive(toolName) {
+		pendingEntry := audit.Entry{
+			Timestamp:     time.Now().UTC(),
+			SessionID:     deps.SessionID,
+			Tool:          toolName,
+			Server:        serverName,
+			ArgsRedacted:  argsRedacted,
+			Status:        "pending",
+			CorrelationID: correlationID,
+		}
+		if auditErr := deps.Audit.Record(pendingEntry); auditErr != nil {
+			fmt.Fprintf(getStderr(), "mcpserver: audit pre-record failed for tool %q: %v\n", toolName, auditErr)
+			auditFailResp := envelope.Err(envelope.CodeAuditFailed,
+				"audit log unavailable; refusing to execute destructive operation", false)
+			return envelopeToCallToolResult(auditFailResp), nil
+		}
+	}
+
+	// 4. Invoke the tool handler.
 	resp := handler(ctx, &reqDeps, rawArgs)
 
-	// 4. Audit: record the completed call.
-	//    Redact arguments before storage.
-	argsRedacted := string(safety.RedactSecret(rawArgs))
+	// 5. Post-record: every tool emits a completion entry.
+	//    For destructive tools the Status field disambiguates from the
+	//    earlier "pending" line and they share CorrelationID.
 	durationMs := time.Since(start).Milliseconds()
-
 	exitCode := 0
 	errorCode := ""
 	if !resp.OK && resp.Error != nil {
 		exitCode = 1
 		errorCode = resp.Error.Code
 	}
-
-	// Determine server name from arguments best-effort (tool may not have one).
-	serverName := extractServerName(rawArgs)
 
 	auditEntry := audit.Entry{
 		Timestamp:    time.Now().UTC(),
@@ -119,15 +172,15 @@ func middlewareChain(
 		DurationMs:   durationMs,
 		ErrorCode:    errorCode,
 	}
+	if isDestructive(toolName) {
+		auditEntry.Status = "completed"
+		auditEntry.CorrelationID = correlationID
+	}
 
 	if auditErr := deps.Audit.Record(auditEntry); auditErr != nil {
-		// Fail-closed: we cannot guarantee the audit trail is intact.
-		// Log to stderr and return AUDIT_FAILED. The underlying tool action has
-		// already completed at this point (unavoidable race), but we signal
-		// the failure to the caller so the LLM can handle it.
-		fmt.Fprintf(getStderr(), "mcpserver: audit.Record failed for tool %q: %v\n", toolName, auditErr)
+		fmt.Fprintf(getStderr(), "mcpserver: audit post-record failed for tool %q: %v\n", toolName, auditErr)
 		auditFailResp := envelope.Err(envelope.CodeAuditFailed,
-			"audit log write failed; action may have been executed but cannot be confirmed", false)
+			"audit log write failed after action; outcome cannot be confirmed", false)
 		return envelopeToCallToolResult(auditFailResp), nil
 	}
 

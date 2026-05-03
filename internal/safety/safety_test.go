@@ -4,9 +4,35 @@
 package safety
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
+	"net"
+	"os"
 	"strings"
 	"testing"
+
+	cryptoSSH "golang.org/x/crypto/ssh"
 )
+
+// ed25519GenerateKey returns (publicKeyAuthorizedFormat, privateKeyPEM).
+func ed25519GenerateKey() ([]byte, []byte, error) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, nil, err
+	}
+	privDER, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		return nil, nil, err
+	}
+	privPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privDER})
+	sshPub, err := cryptoSSH.NewPublicKey(pub)
+	if err != nil {
+		return nil, nil, err
+	}
+	return cryptoSSH.MarshalAuthorizedKey(sshPub), privPEM, nil
+}
 
 // --------------------------------------------------------------------------
 // S-1 / S-2: NewRemoteCommand — shell injection via dir
@@ -328,4 +354,125 @@ func TestRedactSecret_DoesNotModifyInput(t *testing.T) {
 	if string(input) != string(original) {
 		t.Error("RedactSecret modified its input slice")
 	}
+}
+
+// SDD §9.4 + S-6 / S-14: JSON-aware redaction must remove inline credential
+// blocks and any sensitive field name regardless of nesting.
+func TestRedactSecret_JSONInlineContainerWiped(t *testing.T) {
+	input := []byte(`{"server":"prod","inline":{"host":"1.2.3.4","user":"root","password":"SECRET-MARKER-XYZ"}}`)
+	out := RedactSecret(input)
+	if strings.Contains(string(out), "SECRET-MARKER-XYZ") {
+		t.Errorf("inline.password leaked: %s", out)
+	}
+	if strings.Contains(string(out), "1.2.3.4") {
+		t.Errorf("inline.host leaked: %s", out)
+	}
+	if !strings.Contains(string(out), `"redacted":true`) {
+		t.Errorf("expected inline replacement marker: %s", out)
+	}
+}
+
+func TestRedactSecret_JSONNestedPasswordField(t *testing.T) {
+	input := []byte(`{"args":{"server":"prod","ssh_password":"PWD-MARKER","nested":{"passphrase":"PASS-MARKER","private_key_pem":"-----BEGIN RSA-----\nKEY-MARKER\n-----END RSA-----"}}}`)
+	out := RedactSecret(input)
+	for _, marker := range []string{"PWD-MARKER", "PASS-MARKER", "KEY-MARKER"} {
+		if strings.Contains(string(out), marker) {
+			t.Errorf("marker %q leaked: %s", marker, out)
+		}
+	}
+	if !strings.Contains(string(out), "***REDACTED***") {
+		t.Errorf("expected ***REDACTED*** placeholder: %s", out)
+	}
+}
+
+func TestRedactSecret_JSONArrayWalked(t *testing.T) {
+	input := []byte(`{"servers":[{"name":"a","password":"P1"},{"name":"b","token":"T1"}]}`)
+	out := RedactSecret(input)
+	for _, marker := range []string{"P1", "T1"} {
+		if strings.Contains(string(out), `"`+marker+`"`) {
+			t.Errorf("array element marker %q leaked: %s", marker, out)
+		}
+	}
+}
+
+func TestRedactSecret_JSONStringValueAlsoSwept(t *testing.T) {
+	// command body that happens to embed a credential — string values get
+	// the byte-regex sweep as defence in depth.
+	input := []byte(`{"command":"mysql -uroot -pSWEEP-MARKER db"}`)
+	out := RedactSecret(input)
+	if strings.Contains(string(out), "SWEEP-MARKER") {
+		t.Errorf("command body marker leaked: %s", out)
+	}
+}
+
+// SDD §13 / S-3 / Codex C03: HostKeyCallback acceptNew=true MUST NOT
+// fall back to "return nil" on filesystem errors. We exercise the path
+// where MkdirAll / OpenFile fail by pointing HOME at a non-writable
+// location.
+
+func TestHostKeyCallback_AcceptNewFailsClosedOnReadOnlyHome(t *testing.T) {
+	// Create a directory and remove all permissions so MkdirAll inside it fails.
+	roDir := t.TempDir()
+	if err := os.Chmod(roDir, 0o500); err != nil {
+		t.Skipf("chmod not effective on this fs: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(roDir, 0o700) })
+
+	t.Setenv("HOME", roDir)
+	cb := HostKeyCallback(true)
+
+	// Build a fake remote addr + key.
+	pub, _, err := genTestKey(t)
+	if err != nil {
+		t.Fatalf("genTestKey: %v", err)
+	}
+	addr := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 22}
+	err = cb("example.test:22", addr, pub)
+	if err == nil {
+		t.Fatal("expected error when known_hosts is unwritable, got nil (fail-open!)")
+	}
+	if !strings.Contains(err.Error(), "HOST_KEY_UNKNOWN") {
+		t.Errorf("expected HOST_KEY_UNKNOWN, got: %v", err)
+	}
+}
+
+func TestHostKeyCallback_AcceptNewSucceedsAndPersists(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	cb := HostKeyCallback(true)
+
+	pub, _, err := genTestKey(t)
+	if err != nil {
+		t.Fatalf("genTestKey: %v", err)
+	}
+	addr := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 22}
+	if err := cb("example.test:22", addr, pub); err != nil {
+		t.Fatalf("expected success, got: %v", err)
+	}
+	khPath := dir + "/.ssh/known_hosts"
+	st, err := os.Stat(khPath)
+	if err != nil {
+		t.Fatalf("known_hosts not created: %v", err)
+	}
+	if st.Size() == 0 {
+		t.Error("known_hosts is empty after acceptNew append")
+	}
+}
+
+// genTestKey returns an ssh.PublicKey + signer for tests.
+func genTestKey(t *testing.T) (cryptoSSH.PublicKey, cryptoSSH.Signer, error) {
+	t.Helper()
+	pubBytes, privBytes, err := ed25519GenerateKey()
+	if err != nil {
+		return nil, nil, err
+	}
+	signer, err := cryptoSSH.ParsePrivateKey(privBytes)
+	if err != nil {
+		return nil, nil, err
+	}
+	pub, _, _, _, err := cryptoSSH.ParseAuthorizedKey(pubBytes)
+	if err != nil {
+		return nil, nil, err
+	}
+	return pub, signer, nil
 }
