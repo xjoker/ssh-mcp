@@ -71,11 +71,39 @@ type Deps struct {
 	SessionID string
 }
 
+// QuickSetupSpec describes a temporary server registration request.
+// SDD §6.13: quick_setup persists credentials only in memory for the
+// declared TTL, then zeroes them.
+type QuickSetupSpec struct {
+	NameHint      string
+	Host          string
+	Port          int
+	User          string
+	AuthKind      string // "password" or "key"
+	Secret        []byte // password bytes or PEM key bytes (caller may zero after Register)
+	Passphrase    []byte // optional, for encrypted PEM keys
+	AcceptNewHost bool
+	TTLMinutes    int
+}
+
+// QuickSetupView is the read-side projection returned by Lookup. Secret /
+// Passphrase fields are fresh copies; the registry retains its own
+// scrubbing-on-evict copy.
+type QuickSetupView struct {
+	Host          string
+	Port          int
+	User          string
+	AuthKind      string
+	Secret        []byte
+	Passphrase    []byte
+	AcceptNewHost bool
+}
+
 // QuickSetupRegistry is the interface for ad-hoc server registry used by
 // ssh_quick_setup. Implementation lives in mcpserver.
 type QuickSetupRegistry interface {
-	Register(name, host string, port int, user string, secret []byte, ttlMinutes int) (registeredName string, expiresAt int64, err error)
-	Lookup(name string) (host string, port int, user string, secret []byte, ok bool)
+	Register(spec QuickSetupSpec) (registeredName string, expiresAt int64, err error)
+	Lookup(name string) (view QuickSetupView, ok bool)
 }
 
 // ElicitFunc requests user confirmation via MCP elicitation/create.

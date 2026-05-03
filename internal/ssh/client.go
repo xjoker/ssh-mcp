@@ -169,6 +169,45 @@ func (c *Client) execSimple(ctx context.Context, cmd string) ([]byte, error) {
 	}
 }
 
+// appendBounded writes p into buf, consuming up to the current remaining budget
+// tracked by atomicRemaining. If the budget runs out, the excess bytes are
+// discarded and atomicTruncated is set to true.
+//
+// This helper is unexported so it can be tested in isolation with -race.
+// Each buf has its own mutex (bufMu) because two goroutines never share a
+// single buffer; the mu is provided by the caller for clarity.
+func appendBounded(buf *bytes.Buffer, bufMu *sync.Mutex, p []byte, atomicRemaining *atomic.Int64, atomicTruncated *atomic.Bool) {
+	n := int64(len(p))
+	if n == 0 {
+		return
+	}
+	// Atomically subtract n from the remaining budget.
+	after := atomicRemaining.Add(-n)
+	// How many bytes are we actually allowed to write?
+	var allowed int64
+	if after >= 0 {
+		// Budget was sufficient: write all n bytes.
+		allowed = n
+	} else {
+		// Budget partially or fully exhausted.
+		atomicTruncated.Store(true)
+		// after = remaining_after_subtraction; remaining before = after + n.
+		// allowed = max(0, (after + n)) = max(0, remaining_before).
+		// But remaining_before may have already been negative if another
+		// goroutine raced us, so clamp at 0.
+		if after+n > 0 {
+			allowed = after + n
+		} else {
+			allowed = 0
+		}
+	}
+	if allowed > 0 {
+		bufMu.Lock()
+		buf.Write(p[:allowed])
+		bufMu.Unlock()
+	}
+}
+
 // ExecBuffered runs cmd on the remote host, buffering stdout and stderr.
 // SDD §5.5.
 func (c *Client) ExecBuffered(ctx context.Context, cmd safety.RemoteCommand, opts ExecOpts) (*ExecResult, error) {
@@ -201,37 +240,31 @@ func (c *Client) ExecBuffered(ctx context.Context, cmd safety.RemoteCommand, opt
 	}
 
 	var (
-		stdoutBuf bytes.Buffer
-		stderrBuf bytes.Buffer
-		truncated bool
+		stdoutBuf   bytes.Buffer
+		stdoutBufMu sync.Mutex
+		stderrBuf   bytes.Buffer
+		stderrBufMu sync.Mutex
 	)
 
-	// Shared budget across both streams.
-	remaining := maxBytes
+	// Shared budget across both streams — managed with atomics so concurrent
+	// reader goroutines never race on remaining / truncated (H04).
+	var atomicRemaining atomic.Int64
+	var atomicTruncated atomic.Bool
+	atomicRemaining.Store(int64(maxBytes))
 
 	type readResult struct {
 		err error
 	}
 
-	// Reader goroutine: reads from r into buf, honouring the byte budget.
-	startReader := func(r io.Reader, buf *bytes.Buffer) chan readResult {
+	// Reader goroutine: reads from r into buf, honouring the shared byte budget.
+	startReader := func(r io.Reader, buf *bytes.Buffer, bufMu *sync.Mutex) chan readResult {
 		ch := make(chan readResult, 1)
 		go func() {
 			tmp := make([]byte, 4096)
 			for {
 				n, readErr := r.Read(tmp)
 				if n > 0 {
-					if remaining > 0 {
-						take := n
-						if take > remaining {
-							take = remaining
-							truncated = true
-						}
-						buf.Write(tmp[:take])
-						remaining -= take
-					} else {
-						truncated = true
-					}
+					appendBounded(buf, bufMu, tmp[:n], &atomicRemaining, &atomicTruncated)
 				}
 				if readErr != nil {
 					if readErr == io.EOF {
@@ -246,8 +279,8 @@ func (c *Client) ExecBuffered(ctx context.Context, cmd safety.RemoteCommand, opt
 		return ch
 	}
 
-	stdoutDone := startReader(stdoutPipe, &stdoutBuf)
-	stderrDone := startReader(stderrPipe, &stderrBuf)
+	stdoutDone := startReader(stdoutPipe, &stdoutBuf, &stdoutBufMu)
+	stderrDone := startReader(stderrPipe, &stderrBuf, &stderrBufMu)
 
 	if err := sess.Start(cmd.Raw()); err != nil {
 		return nil, fmt.Errorf("ssh: ExecBuffered: Start: %w", err)
@@ -284,7 +317,7 @@ func (c *Client) ExecBuffered(ctx context.Context, cmd safety.RemoteCommand, opt
 	res := &ExecResult{
 		Stdout:    stdoutBuf.Bytes(),
 		Stderr:    stderrBuf.Bytes(),
-		Truncated: truncated,
+		Truncated: atomicTruncated.Load(),
 		Duration:  duration,
 	}
 

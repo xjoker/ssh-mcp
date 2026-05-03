@@ -102,7 +102,13 @@ func (d *sshDialer) SSHDial(ctx context.Context, server, network, addr string) (
 }
 
 // SSHListen opens a remote listener on bind:port via the named server.
+// S-9 (defence-in-depth): if bind is empty it defaults to 127.0.0.1 so the
+// remote listener is never accidentally opened on a wildcard address even if
+// an upper layer forgot to apply the default.
 func (d *sshDialer) SSHListen(ctx context.Context, server, bind string, port int) (net.Listener, error) {
+	if bind == "" {
+		bind = "127.0.0.1"
+	}
 	cl, err := d.pool.Get(ctx, server)
 	if err != nil {
 		return nil, fmt.Errorf("sshDialer.SSHListen: get client for %q: %w", server, err)
@@ -120,9 +126,11 @@ func (d *sshDialer) SSHListen(ctx context.Context, server, bind string, port int
 // --------------------------------------------------------------------------
 
 // credResolver resolves per-server authentication from config using
-// internal/auth helpers.
+// internal/auth helpers. quickSetup is consulted when srv.Auth ==
+// "quick_setup" (servers registered via ssh_quick_setup at runtime).
 type credResolver struct {
 	allowPlaintext bool
+	quickSetup     *quickSetupRegistry
 }
 
 // ResolveServerAuth resolves credentials for srv.
@@ -177,6 +185,43 @@ func (r *credResolver) ResolveServerAuth(
 		copy(pw, secret.Bytes())
 		label := authLabel(srv.Password)
 		return []gossh.AuthMethod{gossh.Password(string(pw))}, label, nil
+
+	case "quick_setup":
+		if r.quickSetup == nil {
+			return nil, "", fmt.Errorf("server %q: quick_setup registry not wired", srv.Name)
+		}
+		view, ok := r.quickSetup.Lookup(srv.Name)
+		if !ok {
+			return nil, "", fmt.Errorf("server %q: quick_setup entry expired or not found", srv.Name)
+		}
+		// Defensive: zero the local copy as soon as we're done.
+		defer func() {
+			for i := range view.Secret {
+				view.Secret[i] = 0
+			}
+			for i := range view.Passphrase {
+				view.Passphrase[i] = 0
+			}
+		}()
+		switch view.AuthKind {
+		case "password":
+			pw := make([]byte, len(view.Secret))
+			copy(pw, view.Secret)
+			return []gossh.AuthMethod{gossh.Password(string(pw))}, "quick_setup", nil
+		case "key":
+			var passSecret *auth.Secret
+			if len(view.Passphrase) > 0 {
+				passSecret = auth.NewSecret(view.Passphrase)
+				defer passSecret.Close()
+			}
+			signer, err := auth.LoadPrivateKey(view.Secret, passSecret)
+			if err != nil {
+				return nil, "", fmt.Errorf("server %q: load quick_setup key: %w", srv.Name, err)
+			}
+			return []gossh.AuthMethod{gossh.PublicKeys(signer)}, "quick_setup", nil
+		default:
+			return nil, "", fmt.Errorf("server %q: quick_setup view has unknown auth kind %q", srv.Name, view.AuthKind)
+		}
 
 	default:
 		return nil, "", fmt.Errorf("server %q: unsupported auth method %q", srv.Name, srv.Auth)

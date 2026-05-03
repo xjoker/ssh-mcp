@@ -51,6 +51,17 @@ func handleSftpList(ctx context.Context, deps *Deps, args json.RawMessage) envel
 		return envelope.Err(envelope.CodeInvalidArgument, err.Error(), false)
 	}
 
+	// H01: extract server name for allowed_paths enforcement (inline = no restriction).
+	var connArgs sftpConnArgs
+	_ = json.Unmarshal(args, &connArgs)
+	serverName := ""
+	if connArgs.Server != nil {
+		serverName = *connArgs.Server
+	}
+	if errResp, allowed := enforceAllowedPath(deps.Cfg, serverName, rp); !allowed {
+		return errResp
+	}
+
 	client, closeFn, errResp, ok := resolveClient(ctx, deps, args)
 	if !ok {
 		return errResp

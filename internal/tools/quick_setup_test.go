@@ -13,38 +13,42 @@ import (
 // fakeQuickSetup implements QuickSetupRegistry for tests.
 type fakeQuickSetup struct {
 	registered []struct {
-		name string
-		host string
-		port int
-		user string
+		name     string
+		spec     QuickSetupSpec
 	}
 	failWith error
 }
 
-func (f *fakeQuickSetup) Register(name, host string, port int, user string, secret []byte, ttlMinutes int) (string, int64, error) {
+func (f *fakeQuickSetup) Register(spec QuickSetupSpec) (string, int64, error) {
 	if f.failWith != nil {
 		return "", 0, f.failWith
 	}
-	regName := name
+	regName := spec.NameHint
 	if regName == "" {
-		regName = fmt.Sprintf("qs-%s-1", host)
+		regName = fmt.Sprintf("qs-%s-1", spec.Host)
 	}
 	f.registered = append(f.registered, struct {
 		name string
-		host string
-		port int
-		user string
-	}{regName, host, port, user})
+		spec QuickSetupSpec
+	}{regName, spec})
 	return regName, 9999999999, nil
 }
 
-func (f *fakeQuickSetup) Lookup(name string) (string, int, string, []byte, bool) {
+func (f *fakeQuickSetup) Lookup(name string) (QuickSetupView, bool) {
 	for _, e := range f.registered {
 		if e.name == name {
-			return e.host, e.port, e.user, nil, true
+			return QuickSetupView{
+				Host:          e.spec.Host,
+				Port:          e.spec.Port,
+				User:          e.spec.User,
+				AuthKind:      e.spec.AuthKind,
+				Secret:        append([]byte(nil), e.spec.Secret...),
+				Passphrase:    append([]byte(nil), e.spec.Passphrase...),
+				AcceptNewHost: e.spec.AcceptNewHost,
+			}, true
 		}
 	}
-	return "", 0, "", nil, false
+	return QuickSetupView{}, false
 }
 
 func TestHandleSSHQuickSetup_Disabled(t *testing.T) {

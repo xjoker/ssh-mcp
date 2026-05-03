@@ -10,10 +10,13 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/xjoker/mcp-ssh-bridge/internal/auth"
+	"github.com/xjoker/mcp-ssh-bridge/internal/config"
 	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
+	"github.com/xjoker/mcp-ssh-bridge/internal/safety"
 	"github.com/xjoker/mcp-ssh-bridge/internal/ssh"
 )
 
@@ -33,6 +36,38 @@ type sftpInline struct {
 type sftpConnArgs struct {
 	Server *string     `json:"server,omitempty"`
 	Inline *sftpInline `json:"inline,omitempty"`
+}
+
+// allowedPathsForServer returns the allowed_prefixes list for a configured
+// server name, or nil for inline / quick_setup / temp servers (those entries
+// are not in cfg.Servers so we cannot retrieve their AllowedPaths).
+// An empty slice means "all paths allowed" (no restriction).
+func allowedPathsForServer(cfg *config.Config, name string) []string {
+	if cfg == nil || name == "" {
+		return nil
+	}
+	srv, ok := cfg.Servers[name]
+	if !ok {
+		// Inline or temp server — no allowed_paths to enforce.
+		return nil
+	}
+	return srv.AllowedPaths
+}
+
+// enforceAllowedPath validates rp against the server's allowed_paths list.
+// Returns (zeroResponse, true) when allowed (or when server is inline/temp).
+// Returns (PERMISSION_DENIED response, false) when the path is outside the
+// configured prefixes.
+//
+// serverName == "" is treated as "inline / no restriction" and always
+// returns (zeroResponse, true).
+func enforceAllowedPath(cfg *config.Config, serverName string, rp safety.RemotePath) (envelope.Response, bool) {
+	prefixes := allowedPathsForServer(cfg, serverName)
+	if err := safety.CheckAllowed(rp, prefixes); err != nil {
+		msg := fmt.Sprintf("path %q not in allowed_prefixes for server %q", rp.String(), serverName)
+		return envelope.Err(envelope.CodePermissionDenied, msg, false), false
+	}
+	return envelope.Response{}, true
 }
 
 // resolveClient obtains a *ssh.Client from either a named server or inline
@@ -82,7 +117,7 @@ func resolveClient(
 			return
 		}
 
-		am, buildErr := buildSFTPAdHocAuth(in)
+		am, cleanup, buildErr := buildSFTPAdHocAuth(in)
 		if buildErr != nil {
 			resp = envelope.Err(envelope.CodeInvalidArgument,
 				"inline auth: "+buildErr.Error(), false)
@@ -101,6 +136,7 @@ func resolveClient(
 			Auth:          am,
 			AcceptNewHost: in.AcceptNewHost,
 		})
+		cleanup() // zero the secret immediately after the dial attempt
 		if err != nil {
 			resp = mapSSHConnErr(err)
 			return
@@ -128,25 +164,48 @@ func resolveClient(
 	return
 }
 
-// buildSFTPAdHocAuth converts sftpInline into an ssh.AuthMethod.
+// buildSFTPAdHocAuth converts sftpInline into an ssh.AuthMethod plus a cleanup
+// function that zeros any secret material held by the returned method.
+// Callers MUST invoke cleanup() after the connection attempt completes.
+//
+// H05 fix: inline passwords are wrapped in *auth.Secret and exposed via
+// ssh.AuthMethod.PasswordCallback so that the ssh pool uses PasswordCallback
+// (which calls Secret.Bytes() at dial time) rather than a plain []byte /
+// string copy. cleanup() calls Secret.Close() to zero the buffer.
+//
 // Name differs from exec.go's buildAdHocAuth to avoid redeclaration.
-func buildSFTPAdHocAuth(p *sftpInline) (ssh.AuthMethod, error) {
+func buildSFTPAdHocAuth(p *sftpInline) (ssh.AuthMethod, func(), error) {
+	noop := func() {}
+
 	if p.PrivateKeyPEM != "" {
 		var passSecret *auth.Secret
 		if p.Passphrase != "" {
 			passSecret = auth.NewSecret([]byte(p.Passphrase))
-			defer passSecret.Close()
 		}
 		signer, err := auth.LoadPrivateKey([]byte(p.PrivateKeyPEM), passSecret)
-		if err != nil {
-			return ssh.AuthMethod{}, err
+		if passSecret != nil {
+			passSecret.Close()
 		}
-		return ssh.AuthMethod{PrivateKey: signer}, nil
+		if err != nil {
+			return ssh.AuthMethod{}, noop, err
+		}
+		return ssh.AuthMethod{PrivateKey: signer}, noop, nil
 	}
 	if p.Password != "" {
-		return ssh.AuthMethod{Password: []byte(p.Password)}, nil
+		secret := auth.NewSecret([]byte(p.Password))
+		cleanup := func() { secret.Close() }
+		am := ssh.AuthMethod{
+			PasswordCallback: func() string {
+				b := secret.Bytes()
+				if len(b) == 0 {
+					return ""
+				}
+				return string(b)
+			},
+		}
+		return am, cleanup, nil
 	}
-	return ssh.AuthMethod{Agent: true}, nil
+	return ssh.AuthMethod{Agent: true}, noop, nil
 }
 
 // mapSSHConnErr converts an SSH dial/pool error into an envelope.Response.

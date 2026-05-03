@@ -139,8 +139,13 @@ func tunnelCreateRemote(a tunnelArgs, server string, deps *Deps) envelope.Respon
 		localHost = "127.0.0.1"
 	}
 
-	// remote_bind: pass as-is; empty → tunnel.Manager will use 127.0.0.1 implicitly.
+	// S-9: default remote_bind to 127.0.0.1 explicitly (never wildcard).
+	// internal/tunnel also enforces this, but we apply it here too for
+	// defence-in-depth and symmetric behaviour with the local branch.
 	remoteBind := a.RemoteBind
+	if remoteBind == "" {
+		remoteBind = "127.0.0.1"
+	}
 
 	id, err := deps.TunnelMgr.CreateRemote(server, remoteBind, a.RemotePort, localHost, a.LocalPort)
 	if err != nil {

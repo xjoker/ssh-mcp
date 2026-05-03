@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/xjoker/mcp-ssh-bridge/internal/auth"
+	"github.com/xjoker/mcp-ssh-bridge/internal/tools"
 )
 
 // --------------------------------------------------------------------------
@@ -18,11 +19,14 @@ import (
 
 // quickSetupEntry holds one registered temp server.
 type quickSetupEntry struct {
-	host      string
-	port      int
-	user      string
-	secret    *auth.Secret
-	expiresAt time.Time
+	host          string
+	port          int
+	user          string
+	authKind      string // "password" or "key"
+	secret        *auth.Secret
+	passphrase    *auth.Secret // nil when no passphrase
+	acceptNewHost bool
+	expiresAt     time.Time
 }
 
 // quickSetupRegistry is an in-memory QuickSetupRegistry implementation.
@@ -54,10 +58,15 @@ func newQuickSetupRegistry() *quickSetupRegistry {
 // --------------------------------------------------------------------------
 
 // Register stores a new entry keyed by a sanitised/disambiguated name.
-// secret must be the raw credential bytes (password or PEM key).
-// Returns the canonical name and the Unix expiry timestamp.
-func (r *quickSetupRegistry) Register(nameHint, host string, port int, user string, secret []byte, ttlMinutes int) (string, int64, error) {
-	base := sanitiseName(nameHint, host)
+// SDD §6.13. Returns the canonical name and the Unix expiry timestamp.
+func (r *quickSetupRegistry) Register(spec tools.QuickSetupSpec) (string, int64, error) {
+	if spec.AuthKind != "password" && spec.AuthKind != "key" {
+		return "", 0, fmt.Errorf("quickSetupRegistry: invalid auth kind %q", spec.AuthKind)
+	}
+	if len(spec.Secret) == 0 {
+		return "", 0, fmt.Errorf("quickSetupRegistry: empty secret")
+	}
+	base := sanitiseName(spec.NameHint, spec.Host)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -69,43 +78,63 @@ func (r *quickSetupRegistry) Register(nameHint, host string, port int, user stri
 		name = fmt.Sprintf("%s-%d", base, r.counter[base])
 	}
 
-	expiresAt := time.Now().Add(time.Duration(ttlMinutes) * time.Minute)
+	expiresAt := time.Now().Add(time.Duration(spec.TTLMinutes) * time.Minute)
 
-	r.m[name] = &quickSetupEntry{
-		host:      host,
-		port:      port,
-		user:      user,
-		secret:    auth.NewSecret(secret),
-		expiresAt: expiresAt,
+	entry := &quickSetupEntry{
+		host:          spec.Host,
+		port:          spec.Port,
+		user:          spec.User,
+		authKind:      spec.AuthKind,
+		secret:        auth.NewSecret(spec.Secret),
+		acceptNewHost: spec.AcceptNewHost,
+		expiresAt:     expiresAt,
 	}
+	if len(spec.Passphrase) > 0 {
+		entry.passphrase = auth.NewSecret(spec.Passphrase)
+	}
+	r.m[name] = entry
 
 	return name, expiresAt.Unix(), nil
 }
 
 // Lookup returns the stored entry for name if it exists and has not expired.
-// The returned secret is a copy of the underlying bytes; callers should zero
-// it after use.
-func (r *quickSetupRegistry) Lookup(name string) (host string, port int, user string, secret []byte, ok bool) {
+// Secret / Passphrase in the returned view are fresh copies; callers
+// SHOULD zero them after use. The registry's own copy lives until
+// Close()/eviction.
+func (r *quickSetupRegistry) Lookup(name string) (tools.QuickSetupView, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	e, exists := r.m[name]
 	if !exists {
-		return "", 0, "", nil, false
+		return tools.QuickSetupView{}, false
 	}
 	if time.Now().After(e.expiresAt) {
 		// Expired — remove lazily.
 		r.evict(name, e)
-		return "", 0, "", nil, false
+		return tools.QuickSetupView{}, false
 	}
 
-	// Return a copy so that the caller's slice remains valid even if entry is
-	// later evicted and the Secret is closed.
-	secretBytes := e.secret.Bytes()
-	cp := make([]byte, len(secretBytes))
-	copy(cp, secretBytes)
+	view := tools.QuickSetupView{
+		Host:          e.host,
+		Port:          e.port,
+		User:          e.user,
+		AuthKind:      e.authKind,
+		AcceptNewHost: e.acceptNewHost,
+	}
+	if e.secret != nil {
+		view.Secret = copyBytes(e.secret.Bytes())
+	}
+	if e.passphrase != nil {
+		view.Passphrase = copyBytes(e.passphrase.Bytes())
+	}
+	return view, true
+}
 
-	return e.host, e.port, e.user, cp, true
+func copyBytes(in []byte) []byte {
+	out := make([]byte, len(in))
+	copy(out, in)
+	return out
 }
 
 // Close stops the reaper goroutine. Idempotent.
@@ -165,6 +194,9 @@ func (r *quickSetupRegistry) evictAll() {
 func (r *quickSetupRegistry) evict(name string, e *quickSetupEntry) {
 	if e.secret != nil {
 		e.secret.Close()
+	}
+	if e.passphrase != nil {
+		e.passphrase.Close()
 	}
 	delete(r.m, name)
 }

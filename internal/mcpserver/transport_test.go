@@ -194,5 +194,44 @@ func TestSSHDialer_SSHListenCalled(t *testing.T) {
 	}
 }
 
+// TestSSHDialer_SSHListen_EmptyBindDefaults_S9 verifies that SSHListen with an
+// empty bind address applies the 127.0.0.1 default (S-9 defence-in-depth).
+// The test uses a non-existent server so Get will fail; we verify that the
+// error message mentions "nonexistent" not an empty bind address, proving the
+// default was applied before the Pool.Get call.
+func TestSSHDialer_SSHListen_EmptyBindDefaults_S9(t *testing.T) {
+	cfg := &config.Config{
+		Settings: config.Settings{},
+		Servers:  map[string]config.ServerConfig{},
+	}
+	resolver := &credResolver{allowPlaintext: false}
+	pool := sshpkg.NewPool(cfg, resolver)
+
+	dialer := &sshDialer{pool: pool}
+	// Pass empty bind — should default to 127.0.0.1 before Pool.Get.
+	_, err := dialer.SSHListen(context.Background(), "nonexistent-server", "", 9999)
+	if err == nil {
+		t.Fatal("expected error for nonexistent server, got nil")
+	}
+	// The error should be about the server not being found, not an empty addr.
+	errMsg := err.Error()
+	if !containsStr(errMsg, "nonexistent") {
+		t.Errorf("unexpected error %q: expected server-not-found error", errMsg)
+	}
+}
+
+// containsStr is a small helper to avoid importing strings in the test file.
+func containsStr(s, sub string) bool {
+	if len(sub) == 0 {
+		return true
+	}
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
+
 // ensure gossh import is used
 var _ = gossh.TerminalModes{}

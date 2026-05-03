@@ -36,7 +36,14 @@ type AuthMethod struct {
 	PrivateKey gossh.Signer
 
 	// Password is a cleartext password. Callers should zero it after use.
+	// Deprecated: prefer PasswordCallback which avoids a permanent string copy.
 	Password []byte
+
+	// PasswordCallback, when non-nil, is called at dial time to obtain the
+	// password string. This avoids retaining a permanent string copy in memory
+	// (SDD §8.5 / S-7). If both Password and PasswordCallback are set,
+	// PasswordCallback takes precedence.
+	PasswordCallback func() string
 }
 
 // AdHocParams specifies parameters for an ad-hoc (not configured) SSH connection.

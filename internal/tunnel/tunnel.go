@@ -243,14 +243,20 @@ func (m *Manager) localForward(ctx context.Context, e *tunnelEntry, local net.Co
 // Traffic arriving at remoteBind:remotePort on the SSH server is forwarded
 // locally to localHost:localPort.
 //
-// S-9 note: the remote bind address is controlled by the SSH server; callers
-// should pass "127.0.0.1" for the remote bind to restrict exposure.
+// S-9: if remoteBind is empty it defaults to 127.0.0.1 so the remote listener
+// is restricted to loopback only (never wildcard). This is symmetric with
+// CreateLocal's default.
 func (m *Manager) CreateRemote(
 	server, remoteBind string,
 	remotePort int,
 	localHost string,
 	localPort int,
 ) (id string, err error) {
+	// S-9: default remote bind to loopback only.
+	if remoteBind == "" {
+		remoteBind = "127.0.0.1"
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	ln, err := m.dialer.SSHListen(ctx, server, remoteBind, remotePort)

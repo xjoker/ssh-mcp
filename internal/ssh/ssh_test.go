@@ -1,6 +1,7 @@
 package ssh
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -319,6 +320,104 @@ func TestCloseIdle(t *testing.T) {
 	if !freshStillInPool {
 		t.Error("expected fresh entry to remain in pool")
 	}
+}
+
+// --------------------------------------------------------------------------
+// H04: appendBounded race tests
+// --------------------------------------------------------------------------
+
+// TestAppendBounded_BasicTruncation verifies that appendBounded correctly
+// truncates output when the budget is exhausted.
+func TestAppendBounded_BasicTruncation(t *testing.T) {
+	var buf bytes.Buffer
+	var mu sync.Mutex
+	var rem atomic.Int64
+	var trunc atomic.Bool
+
+	rem.Store(5)
+
+	// Write 3 bytes — fits in budget.
+	appendBounded(&buf, &mu, []byte("abc"), &rem, &trunc)
+	if trunc.Load() {
+		t.Error("truncated should be false after writing within budget")
+	}
+	if buf.String() != "abc" {
+		t.Errorf("buf = %q, want %q", buf.String(), "abc")
+	}
+	if rem.Load() != 2 {
+		t.Errorf("remaining = %d, want 2", rem.Load())
+	}
+
+	// Write 4 bytes — only 2 bytes of budget left; should truncate.
+	appendBounded(&buf, &mu, []byte("defg"), &rem, &trunc)
+	if !trunc.Load() {
+		t.Error("truncated should be true after budget exhausted")
+	}
+	if buf.String() != "abcde" {
+		t.Errorf("buf = %q, want %q", buf.String(), "abcde")
+	}
+
+	// Write more — budget at 0 or negative, nothing should be appended.
+	appendBounded(&buf, &mu, []byte("xyz"), &rem, &trunc)
+	if buf.String() != "abcde" {
+		t.Errorf("buf changed after exhausted budget: %q", buf.String())
+	}
+}
+
+// TestAppendBounded_ConcurrentRace runs two goroutines simultaneously writing
+// into separate buffers but sharing the same budget and truncated flag.
+// This test is designed to surface data races under -race; the key invariant
+// is that the total bytes written never exceeds the budget.
+func TestAppendBounded_ConcurrentRace(t *testing.T) {
+	const budget = 100
+	const chunkSize = 7
+	const goroutines = 2
+	const iterations = 50
+
+	var buf1, buf2 bytes.Buffer
+	var mu1, mu2 sync.Mutex
+	var rem atomic.Int64
+	var trunc atomic.Bool
+
+	rem.Store(budget)
+
+	chunk := bytes.Repeat([]byte("x"), chunkSize)
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+
+	// Goroutine 1 writes to buf1.
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			appendBounded(&buf1, &mu1, chunk, &rem, &trunc)
+		}
+	}()
+
+	// Goroutine 2 writes to buf2.
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			appendBounded(&buf2, &mu2, chunk, &rem, &trunc)
+		}
+	}()
+
+	wg.Wait()
+
+	total := buf1.Len() + buf2.Len()
+	if total > budget {
+		t.Errorf("total bytes written (%d) exceeds budget (%d)", total, budget)
+	}
+	// Once the budget is exhausted, truncated must be set.
+	if total == budget && !trunc.Load() {
+		// It's possible that truncated is set due to the over-commitment even
+		// though we wrote exactly budget bytes; acceptable either way.
+	}
+	// The remaining counter must not be positive beyond budget, or wrap.
+	// After writes, remaining can be 0 or negative (over-committed atomics
+	// before clamping), but total bytes should be <= budget.
+	t.Logf("buf1=%d buf2=%d total=%d budget=%d trunc=%v rem=%d",
+		buf1.Len(), buf2.Len(), total, budget, trunc.Load(), rem.Load())
 }
 
 // --------------------------------------------------------------------------

@@ -62,21 +62,25 @@ func New(cfg *config.Config, auditDir string) (*Server, error) {
 		return nil, fmt.Errorf("mcpserver.New: audit health-check failed: %w", err)
 	}
 
-	// 2. Credential resolver + SSH pool.
-	resolver := &credResolver{allowPlaintext: cfg.Settings.AllowConfigPlaintextPassword}
+	// 2. QuickSetup registry — created early so the credResolver can
+	//    consult it for ssh_quick_setup-registered servers.
+	qs := newQuickSetupRegistry()
+
+	// 3. Credential resolver + SSH pool.
+	resolver := &credResolver{
+		allowPlaintext: cfg.Settings.AllowConfigPlaintextPassword,
+		quickSetup:     qs,
+	}
 	pool := sshpkg.NewPool(cfg, resolver)
 
-	// 3. Session manager.
+	// 4. Session manager.
 	transport := &sshTransport{pool: pool}
 	idleTimeout := time.Duration(cfg.Settings.SessionIdleSeconds) * time.Second
 	sessionMgr := session.NewManager(transport, idleTimeout)
 
-	// 4. Tunnel manager.
+	// 5. Tunnel manager.
 	dialer := &sshDialer{pool: pool}
 	tunnelMgr := tunnel.NewManager(dialer)
-
-	// 5. QuickSetup registry.
-	qs := newQuickSetupRegistry()
 
 	// 6. Assemble tools.Deps.
 	deps := &tools.Deps{

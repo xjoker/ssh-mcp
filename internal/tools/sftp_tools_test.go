@@ -494,3 +494,166 @@ func TestParseOctalMode_Empty(t *testing.T) {
 		t.Errorf("parseOctalMode empty: got %04o, want 0644", uint32(mode))
 	}
 }
+
+// --------------------------------------------------------------------------
+// H01 — allowed_paths enforcement tests
+// --------------------------------------------------------------------------
+
+// restrictedDeps returns Deps with a "restricted" named server whose
+// allowed_paths = ["/tmp"].
+func restrictedDeps() *Deps {
+	d := minDeps(true)
+	d.Cfg.Servers = map[string]config.ServerConfig{
+		"restricted": {
+			Name:         "restricted",
+			Host:         "localhost",
+			User:         "u",
+			Auth:         "agent",
+			AllowedPaths: []string{"/tmp"},
+		},
+	}
+	return d
+}
+
+// TestSftpList_AllowedPaths_Denied: path outside allowed_prefixes → PERMISSION_DENIED.
+func TestSftpList_AllowedPaths_Denied(t *testing.T) {
+	args := mustJSON(map[string]any{
+		"server": "restricted",
+		"path":   "/etc/passwd",
+	})
+	resp := handleSftpList(context.Background(), restrictedDeps(), args)
+	if resp.OK {
+		t.Fatal("expected error, got OK")
+	}
+	if sftpErrCode(resp) != envelope.CodePermissionDenied {
+		t.Errorf("code: got %q, want %q", sftpErrCode(resp), envelope.CodePermissionDenied)
+	}
+}
+
+// TestSftpList_AllowedPaths_Allowed: path within allowed_prefixes → does NOT
+// return PERMISSION_DENIED before the pool lookup (the pool lookup itself will
+// panic/error when Pool is nil, so we verify the error is not PERMISSION_DENIED).
+func TestSftpList_AllowedPaths_Allowed(t *testing.T) {
+	args := mustJSON(map[string]any{
+		"server": "restricted",
+		"path":   "/tmp/subdir",
+	})
+	// Use a recover wrapper because Pool == nil will cause a panic in Get.
+	// We only care that enforceAllowedPath did NOT reject the path.
+	var resp envelope.Response
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				// Panic means we got past the allowed_paths check — that's the goal.
+				resp = envelope.Err("CONN_FAILED", "nil pool (expected in unit test)", true)
+			}
+		}()
+		resp = handleSftpList(context.Background(), restrictedDeps(), args)
+	}()
+	if sftpErrCode(resp) == envelope.CodePermissionDenied {
+		t.Errorf("got PERMISSION_DENIED for allowed path /tmp/subdir")
+	}
+}
+
+// TestSftpRead_AllowedPaths_Denied: read outside allowed_prefixes → PERMISSION_DENIED.
+func TestSftpRead_AllowedPaths_Denied(t *testing.T) {
+	args := mustJSON(map[string]any{
+		"server": "restricted",
+		"path":   "/etc/passwd",
+	})
+	resp := handleSftpRead(context.Background(), restrictedDeps(), args)
+	if resp.OK {
+		t.Fatal("expected error, got OK")
+	}
+	if sftpErrCode(resp) != envelope.CodePermissionDenied {
+		t.Errorf("code: got %q, want %q", sftpErrCode(resp), envelope.CodePermissionDenied)
+	}
+}
+
+// TestSftpStat_AllowedPaths_Denied: stat outside allowed_prefixes → PERMISSION_DENIED.
+func TestSftpStat_AllowedPaths_Denied(t *testing.T) {
+	args := mustJSON(map[string]any{
+		"server": "restricted",
+		"path":   "/etc/passwd",
+	})
+	resp := handleSftpStat(context.Background(), restrictedDeps(), args)
+	if resp.OK {
+		t.Fatal("expected error, got OK")
+	}
+	if sftpErrCode(resp) != envelope.CodePermissionDenied {
+		t.Errorf("code: got %q, want %q", sftpErrCode(resp), envelope.CodePermissionDenied)
+	}
+}
+
+// TestSftpOp_Write_AllowedPaths_Denied → PERMISSION_DENIED.
+func TestSftpOp_Write_AllowedPaths_Denied(t *testing.T) {
+	args := mustJSON(map[string]any{
+		"server":  "restricted",
+		"action":  "write",
+		"path":    "/etc/passwd",
+		"content": "bad",
+	})
+	resp := handleSftpOp(context.Background(), restrictedDeps(), args)
+	if resp.OK {
+		t.Fatal("expected error, got OK")
+	}
+	if sftpErrCode(resp) != envelope.CodePermissionDenied {
+		t.Errorf("code: got %q, want %q", sftpErrCode(resp), envelope.CodePermissionDenied)
+	}
+}
+
+// TestSftpOp_Remove_AllowedPaths_Denied → PERMISSION_DENIED.
+func TestSftpOp_Remove_AllowedPaths_Denied(t *testing.T) {
+	args := mustJSON(map[string]any{
+		"server": "restricted",
+		"action": "remove",
+		"path":   "/etc/important",
+	})
+	resp := handleSftpOp(context.Background(), restrictedDeps(), args)
+	if resp.OK {
+		t.Fatal("expected error, got OK")
+	}
+	if sftpErrCode(resp) != envelope.CodePermissionDenied {
+		t.Errorf("code: got %q, want %q", sftpErrCode(resp), envelope.CodePermissionDenied)
+	}
+}
+
+// TestSftpOp_Rename_DestDenied: destination path outside allowed_prefixes → PERMISSION_DENIED.
+func TestSftpOp_Rename_DestDenied(t *testing.T) {
+	args := mustJSON(map[string]any{
+		"server": "restricted",
+		"action": "rename",
+		"path":   "/tmp/allowed_src",
+		"to":     "/etc/target",
+	})
+	resp := handleSftpOp(context.Background(), restrictedDeps(), args)
+	if resp.OK {
+		t.Fatal("expected error, got OK")
+	}
+	if sftpErrCode(resp) != envelope.CodePermissionDenied {
+		t.Errorf("code: got %q, want %q", sftpErrCode(resp), envelope.CodePermissionDenied)
+	}
+}
+
+// TestSftpList_InlineNoAllowedPaths: inline path bypass — allowed_paths check
+// must be skipped; error must NOT be PERMISSION_DENIED.
+func TestSftpList_InlineNoAllowedPaths(t *testing.T) {
+	args := mustJSON(map[string]any{
+		"inline": map[string]any{"host": "x", "user": "u", "password": "p"},
+		"path":   "/etc/passwd",
+	})
+	// Pool == nil → GetAdHoc will panic; recover and verify no PERMISSION_DENIED.
+	var resp envelope.Response
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				// Panic means allowed_paths check was skipped (inline) — correct.
+				resp = envelope.Err("CONN_FAILED", "nil pool (expected in unit test)", true)
+			}
+		}()
+		resp = handleSftpList(context.Background(), sftpDeps(), args)
+	}()
+	if sftpErrCode(resp) == envelope.CodePermissionDenied {
+		t.Error("inline path must not trigger PERMISSION_DENIED for allowed_paths check")
+	}
+}

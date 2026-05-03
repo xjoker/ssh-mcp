@@ -27,6 +27,10 @@ type fakeDialer struct {
 	// For SSHListen: each call pops the next listener.
 	listeners []net.Listener
 
+	// lastListenBind records the bind argument passed to the most recent SSHListen call.
+	// Used by tests to verify S-9 compliance.
+	lastListenBind string
+
 	// dialErr / listenErr make the respective call fail.
 	dialErr   error
 	listenErr error
@@ -78,11 +82,12 @@ func (f *fakeDialer) SSHDial(_ context.Context, _, _, _ string) (net.Conn, error
 	return pc.local, nil
 }
 
-func (f *fakeDialer) SSHListen(_ context.Context, _, _ string, _ int) (net.Listener, error) {
+func (f *fakeDialer) SSHListen(_ context.Context, _ string, bind string, _ int) (net.Listener, error) {
 	if f.listenErr != nil {
 		return nil, f.listenErr
 	}
 	f.mu.Lock()
+	f.lastListenBind = bind
 	defer f.mu.Unlock()
 	if len(f.listeners) == 0 {
 		return nil, io.EOF // nothing queued
@@ -419,6 +424,55 @@ func TestCreateRemote_ForwardData(t *testing.T) {
 	}
 	if string(buf2) != string(reply) {
 		t.Errorf("reply got %q, want %q", buf2, reply)
+	}
+}
+
+// TestCreateRemote_DefaultBind_S9 verifies that an empty remoteBind defaults
+// to 127.0.0.1 (S-9 requirement: remote listener must not expose on wildcard).
+// It checks that SSHListen is called with bind="127.0.0.1".
+func TestCreateRemote_DefaultBind_S9(t *testing.T) {
+	fd := &fakeDialer{}
+	fakeLn := fd.addListener(t)
+	defer fakeLn.Close()
+
+	m := newTestManager(fd)
+	defer m.CloseAll()
+
+	_, err := m.CreateRemote("srv", "" /* empty = should default */, 0, "localhost", 8080)
+	if err != nil {
+		t.Fatalf("CreateRemote: %v", err)
+	}
+
+	fd.mu.Lock()
+	gotBind := fd.lastListenBind
+	fd.mu.Unlock()
+
+	if gotBind != "127.0.0.1" {
+		t.Errorf("SSHListen called with bind=%q, want 127.0.0.1 (S-9)", gotBind)
+	}
+}
+
+// TestCreateRemote_ExplicitBind_S9 verifies that an explicitly provided
+// remoteBind is forwarded as-is to SSHListen (not overwritten).
+func TestCreateRemote_ExplicitBind_S9(t *testing.T) {
+	fd := &fakeDialer{}
+	fakeLn := fd.addListener(t)
+	defer fakeLn.Close()
+
+	m := newTestManager(fd)
+	defer m.CloseAll()
+
+	_, err := m.CreateRemote("srv", "127.0.0.1", 0, "localhost", 8080)
+	if err != nil {
+		t.Fatalf("CreateRemote: %v", err)
+	}
+
+	fd.mu.Lock()
+	gotBind := fd.lastListenBind
+	fd.mu.Unlock()
+
+	if gotBind != "127.0.0.1" {
+		t.Errorf("SSHListen called with bind=%q, want 127.0.0.1", gotBind)
 	}
 }
 

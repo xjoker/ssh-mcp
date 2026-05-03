@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/xjoker/mcp-ssh-bridge/internal/config"
 	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
 )
 
@@ -119,21 +120,46 @@ func handleSSHQuickSetup(ctx context.Context, deps *Deps, args json.RawMessage) 
 			"user declined to register temporary server", false)
 	}
 
-	// 4. Determine secret bytes. password takes priority over private_key_pem.
-	var secretBytes []byte
+	// 4. Determine secret bytes + auth kind. password takes priority.
+	spec := QuickSetupSpec{
+		NameHint:      input.NameHint,
+		Host:          input.Host,
+		Port:          port,
+		User:          input.User,
+		AcceptNewHost: input.AcceptNewHost,
+		TTLMinutes:    ttl,
+	}
 	if input.Password != "" {
-		secretBytes = []byte(input.Password)
+		spec.AuthKind = "password"
+		spec.Secret = []byte(input.Password)
 	} else {
-		secretBytes = []byte(input.PrivateKeyPEM)
+		spec.AuthKind = "key"
+		spec.Secret = []byte(input.PrivateKeyPEM)
+		if input.Passphrase != "" {
+			spec.Passphrase = []byte(input.Passphrase)
+		}
 	}
 
-	// 5. Register in QuickSetup registry.
-	registeredName, expiresAt, err := deps.QuickSetup.Register(
-		input.NameHint, input.Host, port, input.User, secretBytes, ttl,
-	)
+	// 5. Register in QuickSetup registry (in-memory secret store).
+	registeredName, expiresAt, err := deps.QuickSetup.Register(spec)
 	if err != nil {
 		return envelope.Err(envelope.CodeInternalError,
 			"failed to register temporary server: "+err.Error(), false)
+	}
+
+	// 6. Plumb the temporary server into the SSH pool so subsequent tool
+	//    calls (ssh_exec, sftp_*, …) can address it by registeredName.
+	//    SDD §6.13: the registered name resolves through the same Pool.Get
+	//    path as configured servers. The credResolver detects auth ==
+	//    "quick_setup" and looks up the in-memory secret.
+	if deps.Pool != nil {
+		deps.Pool.AddTempServer(registeredName, config.ServerConfig{
+			Name: registeredName,
+			Host: input.Host,
+			Port: port,
+			User: input.User,
+			Auth: "quick_setup",
+		})
 	}
 
 	// Format expiry as RFC3339 UTC.

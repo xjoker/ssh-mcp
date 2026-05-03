@@ -6,8 +6,22 @@ import (
 	"strings"
 	"time"
 
+	"github.com/xjoker/mcp-ssh-bridge/internal/config"
 	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
 )
+
+// configServerConfigFromInline builds a minimal ServerConfig used when an
+// inline session_start request is registered as a temp server. Auth is
+// "quick_setup" so the credResolver consults the QuickSetup registry.
+func configServerConfigFromInline(name, host string, port int, user string) config.ServerConfig {
+	return config.ServerConfig{
+		Name: name,
+		Host: host,
+		Port: port,
+		User: user,
+		Auth: "quick_setup",
+	}
+}
 
 func init() {
 	Registered = append(Registered, toolSessionStart())
@@ -22,22 +36,40 @@ func init() {
 var sessionStartSchema = json.RawMessage(`{
   "type": "object",
   "properties": {
-    "server": { "type": "string", "description": "Configured server name" }
+    "server": { "type": "string", "description": "Configured server name" },
+    "inline": {
+      "type": "object",
+      "description": "Ad-hoc connection params (alternative to server). Credentials live only for the lifetime of this session and are cleared on session_close.",
+      "properties": {
+        "host":             { "type": "string" },
+        "port":             { "type": "integer", "minimum": 1, "maximum": 65535, "default": 22 },
+        "user":             { "type": "string" },
+        "password":         { "type": "string" },
+        "private_key_pem":  { "type": "string" },
+        "passphrase":       { "type": "string" },
+        "accept_new_host":  { "type": "boolean", "default": false }
+      },
+      "required": ["host", "user"]
+    }
   },
-  "required": ["server"]
+  "oneOf": [
+    { "required": ["server"] },
+    { "required": ["inline"] }
+  ]
 }`)
 
 func toolSessionStart() Tool {
 	return Tool{
 		Name:        "session_start",
-		Description: "Open a persistent shell session on a remote server. Subsequent session_send calls reuse the same shell.",
+		Description: "Open a persistent shell session on a remote server. Accepts either a configured server name or inline ad-hoc credentials. Subsequent session_send calls reuse the same shell.",
 		InputSchema: sessionStartSchema,
 		Handle:      handleSessionStart,
 	}
 }
 
 type sessionStartInput struct {
-	Server string `json:"server"`
+	Server string      `json:"server,omitempty"`
+	Inline *sftpInline `json:"inline,omitempty"`
 }
 
 type sessionStartOutput struct {
@@ -51,24 +83,105 @@ func handleSessionStart(ctx context.Context, deps *Deps, args json.RawMessage) e
 	if err := json.Unmarshal(args, &input); err != nil {
 		return envelope.Err(envelope.CodeInvalidArgument, "invalid JSON: "+err.Error(), false)
 	}
-	if input.Server == "" {
-		return envelope.Err(envelope.CodeInvalidArgument, "'server' is required", false)
-	}
-	if _, ok := deps.Cfg.Servers[input.Server]; !ok {
+
+	hasServer := input.Server != ""
+	hasInline := input.Inline != nil
+	if !hasServer && !hasInline {
 		return envelope.Err(envelope.CodeInvalidArgument,
-			"server \""+input.Server+"\" not found in configuration", false)
+			"either 'server' or 'inline' is required", false)
+	}
+	if hasServer && hasInline {
+		return envelope.Err(envelope.CodeInvalidArgument,
+			"'server' and 'inline' are mutually exclusive", false)
 	}
 
-	id, err := deps.SessionMgr.Start(ctx, input.Server)
+	serverName := input.Server
+	if hasInline {
+		// SDD §6.2 oneOf inline branch — register an ephemeral server in
+		// the QuickSetup registry + Pool, then drive the standard Start
+		// path so audit/Pool.Get/keepalive all behave normally.
+		registered, errResp, ok := registerInlineSession(deps, input.Inline)
+		if !ok {
+			return errResp
+		}
+		serverName = registered
+	} else {
+		if _, ok := deps.Cfg.Servers[input.Server]; !ok {
+			return envelope.Err(envelope.CodeInvalidArgument,
+				"server \""+input.Server+"\" not found in configuration", false)
+		}
+	}
+
+	id, err := deps.SessionMgr.Start(ctx, serverName)
 	if err != nil {
 		return mapSessionError(err)
 	}
 
 	return envelope.OK(sessionStartOutput{
 		SessionID: id,
-		Server:    input.Server,
+		Server:    serverName,
 		StartedAt: time.Now().UTC().Format(time.RFC3339),
 	})
+}
+
+// registerInlineSession converts inline credentials into a runtime entry
+// in the QuickSetup registry + ssh.Pool so that the rest of the session
+// machinery can address it by name. The TTL matches the configured session
+// idle timeout so the credential lives only as long as the session itself.
+//
+// Returns (registeredName, errorResponse, ok).
+func registerInlineSession(deps *Deps, in *sftpInline) (string, envelope.Response, bool) {
+	if !deps.Cfg.Settings.AllowInlineCredentials {
+		return "", envelope.Err(envelope.CodeInlineCredsDisabled,
+			"inline credentials are disabled by configuration", false), false
+	}
+	if in.Password == "" && in.PrivateKeyPEM == "" {
+		return "", envelope.Err(envelope.CodeInvalidArgument,
+			"inline: 'password' or 'private_key_pem' is required", false), false
+	}
+	if deps.QuickSetup == nil || deps.Pool == nil {
+		return "", envelope.Err(envelope.CodeInternalError,
+			"session_start: inline path requires QuickSetup + Pool", false), false
+	}
+
+	port := in.Port
+	if port == 0 {
+		port = 22
+	}
+	ttl := deps.Cfg.Settings.SessionIdleSeconds / 60
+	if ttl < 1 {
+		ttl = 1
+	}
+	if ttl > 240 {
+		ttl = 240
+	}
+
+	spec := QuickSetupSpec{
+		NameHint:      "inline-session-" + in.Host,
+		Host:          in.Host,
+		Port:          port,
+		User:          in.User,
+		AcceptNewHost: in.AcceptNewHost,
+		TTLMinutes:    ttl,
+	}
+	if in.Password != "" {
+		spec.AuthKind = "password"
+		spec.Secret = []byte(in.Password)
+	} else {
+		spec.AuthKind = "key"
+		spec.Secret = []byte(in.PrivateKeyPEM)
+		if in.Passphrase != "" {
+			spec.Passphrase = []byte(in.Passphrase)
+		}
+	}
+	name, _, err := deps.QuickSetup.Register(spec)
+	if err != nil {
+		return "", envelope.Err(envelope.CodeInternalError,
+			"register inline session: "+err.Error(), false), false
+	}
+
+	deps.Pool.AddTempServer(name, configServerConfigFromInline(name, in.Host, port, in.User))
+	return name, envelope.Response{}, true
 }
 
 // --------------------------------------------------------------------------

@@ -476,6 +476,165 @@ key_path = ` + fmt.Sprintf("%q", abs) + `
 	}
 }
 
+// ---- Load: auth=agent field restrictions (SDD §7.3 rule 4) -----------------
+
+func TestValidate_AuthAgentRejectsKeyPath(t *testing.T) {
+	mustFail(t, `
+[servers.myserver]
+host     = "example.com"
+user     = "deploy"
+auth     = "agent"
+key_path = "~/.ssh/id_ed25519"
+`, "auth=agent must not set key_path")
+}
+
+func TestValidate_AuthAgentRejectsKeyPassphrase(t *testing.T) {
+	mustFail(t, `
+[servers.myserver]
+host           = "example.com"
+user           = "deploy"
+auth           = "agent"
+key_passphrase = "keychain:mcp-ssh-bridge:myserver"
+`, "auth=agent must not set key_passphrase")
+}
+
+func TestValidate_AuthAgentRejectsPassword(t *testing.T) {
+	mustFail(t, `
+[settings]
+allow_config_plaintext_password = true
+
+[servers.myserver]
+host     = "example.com"
+user     = "deploy"
+auth     = "agent"
+password = "plaintext:secret"
+`, "auth=agent must not set password")
+}
+
+func TestValidate_AuthAgentNoExtraCredsOK(t *testing.T) {
+	mustLoad(t, `
+[servers.myserver]
+host = "example.com"
+user = "deploy"
+auth = "agent"
+`)
+}
+
+// ---- Load: auth=password field restrictions (SDD §7.3 rule 6) --------------
+
+func TestValidate_AuthPasswordRequiresPassword(t *testing.T) {
+	mustFail(t, `
+[servers.myserver]
+host = "example.com"
+user = "deploy"
+auth = "password"
+`, "auth=password requires password")
+}
+
+func TestValidate_AuthPasswordRejectsKeyPath(t *testing.T) {
+	mustFail(t, `
+[settings]
+allow_config_plaintext_password = true
+
+[servers.myserver]
+host     = "example.com"
+user     = "deploy"
+auth     = "password"
+password = "plaintext:secret"
+key_path = "~/.ssh/id_ed25519"
+`, "auth=password must not set key_path")
+}
+
+func TestValidate_AuthPasswordRejectsKeyPassphrase(t *testing.T) {
+	mustFail(t, `
+[settings]
+allow_config_plaintext_password = true
+
+[servers.myserver]
+host           = "example.com"
+user           = "deploy"
+auth           = "password"
+password       = "plaintext:secret"
+key_passphrase = "keychain:mcp-ssh-bridge:myserver"
+`, "auth=password must not set key_passphrase")
+}
+
+func TestValidate_AuthPasswordWithKeychainOK(t *testing.T) {
+	cfg := mustLoad(t, `
+[servers.myserver]
+host     = "example.com"
+user     = "deploy"
+auth     = "password"
+password = "keychain:mcp-ssh-bridge:myserver"
+`)
+	srv := cfg.Servers["myserver"]
+	if srv.Password.Kind != config.CredRefKeychain {
+		t.Errorf("Password.Kind = %v, want CredRefKeychain", srv.Password.Kind)
+	}
+}
+
+// ---- Load: auth=key field restrictions (SDD §7.3 rule 5 extension) ---------
+
+func TestValidate_AuthKeyRejectsPassword(t *testing.T) {
+	mustFail(t, `
+[settings]
+allow_config_plaintext_password = true
+
+[servers.myserver]
+host     = "example.com"
+user     = "deploy"
+auth     = "key"
+key_path = "~/.ssh/id_ed25519"
+password = "plaintext:secret"
+`, "auth=key must not set password")
+}
+
+// ---- Load: allowed_paths clean validation (SDD §7.3 rule 11) ---------------
+
+func TestValidate_AllowedPathsRejectsDoubleSlash(t *testing.T) {
+	mustFail(t, `
+[servers.myserver]
+host          = "example.com"
+user          = "deploy"
+auth          = "agent"
+allowed_paths = ["/var//log"]
+`, "is not clean")
+}
+
+func TestValidate_AllowedPathsRejectsDotDot(t *testing.T) {
+	mustFail(t, `
+[servers.myserver]
+host          = "example.com"
+user          = "deploy"
+auth          = "agent"
+allowed_paths = ["/var/../etc"]
+`, "must not contain '..'")
+}
+
+func TestValidate_AllowedPathsRejectsTrailingSlash(t *testing.T) {
+	mustFail(t, `
+[servers.myserver]
+host          = "example.com"
+user          = "deploy"
+auth          = "agent"
+allowed_paths = ["/var/log/"]
+`, "is not clean")
+}
+
+func TestValidate_AllowedPathsCleanOK(t *testing.T) {
+	cfg := mustLoad(t, `
+[servers.myserver]
+host          = "example.com"
+user          = "deploy"
+auth          = "agent"
+allowed_paths = ["/var/log", "/tmp", "/"]
+`)
+	srv := cfg.Servers["myserver"]
+	if len(srv.AllowedPaths) != 3 {
+		t.Errorf("expected 3 allowed_paths, got %d", len(srv.AllowedPaths))
+	}
+}
+
 func TestLoad_KeyPathTildeExpanded(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {

@@ -312,8 +312,23 @@ func adHocAuthMethods(am AuthMethod) ([]gossh.AuthMethod, error) {
 	if am.PrivateKey != nil {
 		return []gossh.AuthMethod{gossh.PublicKeys(am.PrivateKey)}, nil
 	}
+	// H05: PasswordCallback takes precedence over Password to avoid a permanent
+	// string copy. The callback is invoked by the ssh library at handshake time;
+	// the caller is expected to zero the underlying secret via cleanup() after
+	// the dial attempt completes.
+	if am.PasswordCallback != nil {
+		cb := am.PasswordCallback
+		return []gossh.AuthMethod{gossh.PasswordCallback(func() (string, error) {
+			return cb(), nil
+		})}, nil
+	}
 	if len(am.Password) > 0 {
 		pw := string(am.Password)
+		// Zero the slice immediately; pw is a local string copy that the
+		// Go runtime will eventually GC, but we cannot control its lifetime.
+		for i := range am.Password {
+			am.Password[i] = 0
+		}
 		return []gossh.AuthMethod{gossh.Password(pw)}, nil
 	}
 	return nil, fmt.Errorf("AdHocParams.Auth: no authentication method set")

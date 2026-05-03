@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -211,6 +212,37 @@ func validate(cfg *Config) error {
 			errs = append(errs, fmt.Sprintf("server %q: auth=key requires key_path", name))
 		}
 
+		// Rule 4: auth=agent forbids key_path, key_passphrase, and password.
+		if srv.Auth == "agent" {
+			if srv.KeyPath != "" {
+				errs = append(errs, fmt.Sprintf("server %q: auth=agent must not set key_path", name))
+			}
+			if !srv.KeyPassphrase.IsZero() {
+				errs = append(errs, fmt.Sprintf("server %q: auth=agent must not set key_passphrase", name))
+			}
+			if !srv.Password.IsZero() {
+				errs = append(errs, fmt.Sprintf("server %q: auth=agent must not set password", name))
+			}
+		}
+
+		// Rule 6: auth=password requires password and forbids key_path / key_passphrase.
+		if srv.Auth == "password" {
+			if srv.Password.IsZero() {
+				errs = append(errs, fmt.Sprintf("server %q: auth=password requires password", name))
+			}
+			if srv.KeyPath != "" {
+				errs = append(errs, fmt.Sprintf("server %q: auth=password must not set key_path", name))
+			}
+			if !srv.KeyPassphrase.IsZero() {
+				errs = append(errs, fmt.Sprintf("server %q: auth=password must not set key_passphrase", name))
+			}
+		}
+
+		// Rule 5 (extension): auth=key forbids password.
+		if srv.Auth == "key" && !srv.Password.IsZero() {
+			errs = append(errs, fmt.Sprintf("server %q: auth=key must not set password", name))
+		}
+
 		// Rules 7+8: plaintext check for password and key_passphrase.
 		if !srv.Password.IsZero() && isPlaintext(srv.Password) {
 			if !cfg.Settings.AllowConfigPlaintextPassword {
@@ -230,10 +262,21 @@ func validate(cfg *Config) error {
 			}
 		}
 
-		// Rule 11: allowed_paths must be absolute.
+		// Rule 11: allowed_paths must be absolute, clean (no .., no double slash),
+		// and must not contain trailing slash (except root "/").
 		for _, p := range srv.AllowedPaths {
 			if !strings.HasPrefix(p, "/") {
 				errs = append(errs, fmt.Sprintf("server %q: allowed_paths entry %q must be an absolute path", name, p))
+				continue
+			}
+			// Reject paths containing ".." components.
+			if strings.Contains(p, "..") {
+				errs = append(errs, fmt.Sprintf("server %q: allowed_paths entry %q must not contain '..'", name, p))
+				continue
+			}
+			// Reject paths that are not clean (catches double slashes, trailing slash, etc.).
+			if cleaned := path.Clean(p); cleaned != p {
+				errs = append(errs, fmt.Sprintf("server %q: allowed_paths entry %q is not clean (expected %q)", name, p, cleaned))
 			}
 		}
 	}

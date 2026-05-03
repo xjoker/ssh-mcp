@@ -206,3 +206,45 @@ func TestSessionClose_Idempotent(t *testing.T) {
 		t.Fatalf("expected OK for idempotent close of unknown session, got %+v", resp.Error)
 	}
 }
+
+// SDD §6.2 / Codex H07: session_start MUST accept inline credentials via
+// the oneOf branch and surface a registered name.
+func TestSessionStart_InlineDisabled(t *testing.T) {
+	cfg := &config.Config{Settings: config.Settings{AllowInlineCredentials: false}}
+	deps := &Deps{Cfg: cfg}
+	args := json.RawMessage(`{"inline":{"host":"h","user":"u","password":"p"}}`)
+	resp := handleSessionStart(context.Background(), deps, args)
+	if resp.OK {
+		t.Fatal("expected error when inline disabled")
+	}
+	if resp.Error.Code != envelope.CodeInlineCredsDisabled {
+		t.Errorf("got %s want INLINE_CREDS_DISABLED", resp.Error.Code)
+	}
+}
+
+func TestSessionStart_BothServerAndInlineRejected(t *testing.T) {
+	cfg := &config.Config{Settings: config.Settings{AllowInlineCredentials: true}}
+	deps := &Deps{Cfg: cfg}
+	args := json.RawMessage(`{"server":"x","inline":{"host":"h","user":"u","password":"p"}}`)
+	resp := handleSessionStart(context.Background(), deps, args)
+	if resp.OK {
+		t.Fatal("expected mutual-exclusion error")
+	}
+	if resp.Error.Code != envelope.CodeInvalidArgument {
+		t.Errorf("got %s want INVALID_ARGUMENT", resp.Error.Code)
+	}
+}
+
+func TestSessionStart_InlineMissingCreds(t *testing.T) {
+	cfg := &config.Config{Settings: config.Settings{AllowInlineCredentials: true, SessionIdleSeconds: 60}}
+	qs := &fakeQuickSetup{}
+	deps := &Deps{Cfg: cfg, QuickSetup: qs, Pool: nil}
+	args := json.RawMessage(`{"inline":{"host":"h","user":"u"}}`)
+	resp := handleSessionStart(context.Background(), deps, args)
+	if resp.OK {
+		t.Fatal("expected error when no inline creds")
+	}
+	if resp.Error.Code != envelope.CodeInvalidArgument {
+		t.Errorf("got %s want INVALID_ARGUMENT", resp.Error.Code)
+	}
+}

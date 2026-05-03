@@ -154,20 +154,21 @@ func handleSSHExec(ctx context.Context, deps *Deps, args json.RawMessage) envelo
 		userLabel = in.User
 		adHoc = true
 
-		am, err := buildSFTPAdHocAuth(in)
+		am, cleanup, err := buildSFTPAdHocAuth(in)
 		if err != nil {
 			return envelope.Err(envelope.CodeAuthFailed, err.Error(), false)
 		}
 
-		c, err := deps.Pool.GetAdHoc(ctx, ssh.AdHocParams{
+		c, dialErr := deps.Pool.GetAdHoc(ctx, ssh.AdHocParams{
 			Host:          in.Host,
 			Port:          port,
 			User:          in.User,
 			Auth:          am,
 			AcceptNewHost: in.AcceptNewHost,
 		})
-		if err != nil {
-			return mapSSHConnErr(err)
+		cleanup() // zero the secret immediately after dial
+		if dialErr != nil {
+			return mapSSHConnErr(dialErr)
 		}
 		client = c
 	}
@@ -215,6 +216,14 @@ func handleSSHExec(ctx context.Context, deps *Deps, args json.RawMessage) envelo
 				fmt.Sprintf("cannot resolve cwd %q: %v", cwdStr, err), false)
 		}
 		absDir = resolved
+
+		// H01: enforce allowed_paths for named servers only (inline = no restriction).
+		if hasServer {
+			cwdRP := safety.NewRemotePathUnchecked(absDir)
+			if errResp, allowed := enforceAllowedPath(deps.Cfg, input.Server, cwdRP); !allowed {
+				return errResp
+			}
+		}
 	}
 
 	// Build remote command via safety package

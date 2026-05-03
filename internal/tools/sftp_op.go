@@ -115,6 +115,35 @@ func handleSftpOp(ctx context.Context, deps *Deps, args json.RawMessage) envelop
 		}
 	}
 
+	// H01: enforce allowed_paths for named servers (inline = no restriction).
+	// Performed after path validation but before connecting.
+	{
+		var connArgs sftpConnArgs
+		_ = json.Unmarshal(args, &connArgs)
+		serverName := ""
+		if connArgs.Server != nil {
+			serverName = *connArgs.Server
+		}
+		// Check primary path for actions that use an absolute path.
+		if a.Action != "realpath" {
+			rp, rpErr := safety.ValidateRemotePath(a.Path)
+			if rpErr == nil { // already validated above; skip if somehow invalid
+				if errResp, allowed := enforceAllowedPath(deps.Cfg, serverName, rp); !allowed {
+					return errResp
+				}
+			}
+		}
+		// For rename: also check the destination path.
+		if a.Action == "rename" && a.To != "" {
+			toRP, rpErr := safety.ValidateRemotePath(a.To)
+			if rpErr == nil {
+				if errResp, allowed := enforceAllowedPath(deps.Cfg, serverName, toRP); !allowed {
+					return errResp
+				}
+			}
+		}
+	}
+
 	client, closeFn, errResp, ok := resolveClient(ctx, deps, args)
 	if !ok {
 		return errResp
