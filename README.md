@@ -3,6 +3,11 @@
 An MCP (Model Context Protocol) server that exposes SSH operations as tools for
 AI assistants — Claude Desktop, Claude Code, Codex.
 
+> **Using this with an AI assistant?** After the install steps below,
+> point your assistant at [`docs/AI_GUIDE.md`](docs/AI_GUIDE.md) — it
+> codifies tool-selection heuristics, error-handling expectations, and
+> the no-autoApprove discipline so the model behaves predictably.
+
 ## TL;DR — three commands and you're online
 
 ```sh
@@ -153,10 +158,28 @@ mcp-ssh-bridge migrate-passwords     # turn any leftover plaintext into keychain
 
 ## Documentation
 
+- **[`docs/AI_GUIDE.md`](docs/AI_GUIDE.md)** — paste this into your AI
+  assistant's context once after connecting the bridge. It teaches the
+  model how to pick the right tool, when to ask for confirmation, how to
+  react to each error code, and what never to do (autoApprove, echoing
+  passwords, etc.).
 - `examples/quick-start.md` — concrete walkthrough from zero to first call
 - `examples/` — config + MCP client snippets
 - `SDD.md` — full system design document
 - `SECURITY.md` — threat model & disclosure policy
+
+### Onboarding an AI assistant
+
+After installing the MCP server in your client, give the assistant a
+single setup message like:
+
+> "Read `docs/AI_GUIDE.md` from the mcp-ssh-bridge repo and follow it for
+> the rest of this session. Then run `list_servers` to see what's
+> available."
+
+That single line gets the assistant onto the right rails: tool selection
+heuristics, error handling, no-autoApprove discipline, and the
+keychain-only secret rule.
 
 ## License
 

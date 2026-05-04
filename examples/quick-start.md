@@ -73,7 +73,20 @@ mcp-ssh-bridge config validate     # parses + applies all SDD rules
 mcp-ssh-bridge audit query --since 1h     # confirms audit dir + read path
 ```
 
-## 5. First call
+## 5. Onboard your AI assistant (one-time)
+
+In your AI client's first message of the session:
+
+> Read `docs/AI_GUIDE.md` from the mcp-ssh-bridge repo and follow it for
+> the rest of this session. Then call `list_servers` to see what's
+> available.
+
+`docs/AI_GUIDE.md` teaches the model the read-only-vs-destructive split,
+which tool to pick for which job, how to react to every error code, and
+the security rules (no autoApprove, no password echoing). Doing this
+once dramatically reduces back-and-forth on later requests.
+
+## 6. First call
 
 In your AI client, ask the agent something like:
 
@@ -84,7 +97,7 @@ result is returned. Each invocation appends a row to the JSONL audit
 log under `~/.local/state/mcp-ssh-bridge/` (Linux/macOS) or
 `%LOCALAPPDATA%\mcp-ssh-bridge\audit\` (Windows).
 
-## Common follow-ups
+## 7. Common follow-ups
 
 - Add a second server: re-run `config add-server <name> ...`. The command
   refuses to overwrite an existing block, atomic-renames on success, and
@@ -96,7 +109,7 @@ log under `~/.local/state/mcp-ssh-bridge/` (Linux/macOS) or
 - Promote a quick_setup ad-hoc registration to a permanent entry:
   re-run `config add-server` with the same host/user.
 
-## Wizard mode
+## 8. Wizard mode
 
 Prefer prompts to flags?
 
