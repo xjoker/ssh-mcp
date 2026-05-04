@@ -29,9 +29,11 @@ func init() {
 // migrate-from-legacy
 // --------------------------------------------------------------------------
 
-// migrateLegacyCmd reads a legacy-ssh-tool-style .env file and imports each
-// server entry into the mcp-ssh-bridge config.toml, storing passwords in the
-// OS keychain.
+// migrateLegacyCmd reads a legacy SSH-tool .env file (one with SSH_HOST=,
+// SSH_USER=, SSH_PORT=, SSH_AUTH=, SSH_PASSWORD=, SSH_KEY_PATH= keys, with
+// optional numeric suffixes for multi-server files) and imports each server
+// entry into the mcp-ssh-bridge config.toml, storing passwords in the OS
+// keychain.
 func migrateLegacyCmd(args []string) int {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: mcp-ssh-bridge migrate-from-legacy <env-file>")
@@ -83,7 +85,7 @@ func migrateLegacyCmd(args []string) int {
 	return exitCode
 }
 
-// legacyEntry holds parsed fields from one legacy-ssh-tool server block.
+// legacyEntry holds parsed fields from one legacy .env server block.
 type legacyEntry struct {
 	name     string
 	host     string
@@ -95,7 +97,7 @@ type legacyEntry struct {
 }
 
 // parseLegacyEnv reads KEY=VALUE pairs from a simple .env file.
-// It supports one server per file (the classic legacy-ssh-tool layout) or
+// It supports one server per file (a single SSH_HOST/SSH_USER block) or
 // numbered prefixes SSH_HOST_1, SSH_HOST_2, etc. for multi-server files.
 func parseLegacyEnv(path string) ([]legacyEntry, error) {
 	f, err := os.Open(path)
