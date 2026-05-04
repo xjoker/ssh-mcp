@@ -149,10 +149,13 @@ A two-server example with tags and keychain auth lives at
 When in doubt, `mcp-ssh-bridge config validate` first — it catches almost
 every "why won't it start" question.
 
-## Migrating from legacy-ssh-tool
+## Migrating from a legacy `.env` setup
+
+If you have an older SSH-tooling configuration in a flat `.env` file
+(`SSH_HOST=`, `SSH_USER=`, `SSH_PASSWORD=`, …), import it once:
 
 ```sh
-mcp-ssh-bridge migrate-from-legacy /path/to/.env
+mcp-ssh-bridge migrate-from-legacy /path/to/legacy.env
 mcp-ssh-bridge migrate-passwords     # turn any leftover plaintext into keychain refs
 ```
 

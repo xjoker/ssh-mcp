@@ -28,7 +28,7 @@
 15. [Testing Strategy](#15-testing-strategy)
 16. [Release and Versioning](#16-release-and-versioning)
 17. [Appendix A: Dependency Pinning](#appendix-a-dependency-pinning)
-18. [Appendix B: Migration Guide from legacy-ssh-tool](#appendix-b-migration-guide-from-legacy-ssh-tool)
+18. [Appendix B: Migration Guide from Legacy `.env` Setups](#appendix-b-migration-guide-from-legacy-env-setups)
 
 ---
 
@@ -88,25 +88,28 @@ This document is written for:
 
 ## 2. Background and Motivation
 
-This project exists in response to a security review of
-`a-legacy-ssh-tool`, a popular MCP SSH server that ships with the
-following defects (verified by source inspection on 2026-05-03):
+Existing MCP SSH integrations commonly suffer from a set of recurring
+defects: lax host-key verification, shell-concatenated `cwd`, plaintext
+credentials in config files, sudo password leakage via `ps`, weak
+default ciphers, and example MCP client configs that auto-approve
+destructive tools. The intent of this project is to publish a small,
+auditable, **default-secure** SSH bridge that addresses each of these
+classes:
 
-| Defect in original project | Severity | Our response |
-|---|---|---|
-| `hostVerifier` returns `true` for unknown hosts; for known hosts a `TODO` admits no fingerprint comparison is performed | Critical | Strict `knownhosts` callback, fail-closed |
-| `cwd` parameter interpolated directly into `cd ${cwd} && ...` — shell injection | Critical | Newtype `RemotePath`; resolved via SFTP `realpath`, never via shell concatenation |
-| Sudo password passed via `echo "$pwd" \| sudo -S ...` — leaks via `ps`, breaks on quoting | Critical | No sudo tool exposed; users configure NOPASSWD or use sessions |
-| `isSafeQuery` checks substrings — both false-positive and bypassable; query interpolated into shell | Critical | No DB tools |
-| Default cipher list includes `ssh-rsa`, `*-cbc`, `hmac-sha1`, `dh-group14-sha1` | High | Modern algorithm defaults; weak algorithms require explicit opt-in |
-| Plaintext credentials in `.env` / `config.toml` with no migration path | High | Default-rejected; opt-in flag with persistent warning; keychain helper for migration |
-| `examples/claude-code-config.example.json` recommends auto-approving `ssh_execute_sudo`, `ssh_deploy`, etc. | High | We do not ship an autoApprove example. README explicitly recommends against it. |
-| 4,700-line `index.js`; 38 tools; no decomposition | Medium | 13 tools; per-module package boundaries; <250 LOC per file target |
+| Class of defect | Our response |
+|---|---|
+| Permissive / TODO host-key verification | Strict `knownhosts` callback, fail-closed; explicit `trust` step |
+| Shell-concatenated `cwd` (injection) | Newtype `RemotePath`; resolved via SFTP `realpath`, never via shell concatenation |
+| Sudo password piped on stdin (`ps` leak) | No sudo tool exposed; users configure NOPASSWD or use sessions |
+| Substring "safe query" allowlists | No DB tools at all |
+| Weak SSH algorithm defaults (`ssh-rsa`, `*-cbc`, `hmac-sha1`, dh-group14-sha1) | Modern algorithm defaults; weak algorithms require explicit opt-in |
+| Plaintext credentials in `.env` / `config.toml` with no migration path | Default-rejected; opt-in flag with persistent warning; keychain helper for migration |
+| Example MCP configs that recommend `autoApprove` for destructive tools | No autoApprove example shipped; README explicitly recommends against it |
+| Monolithic multi-thousand-LOC entrypoints with dozens of tools | Small fixed tool surface; per-module package boundaries; <250 LOC per file target |
 
-The motivation is not to "rewrite the project better" but to **publish a
-counter-example**: a small, auditable, default-secure SSH bridge that
-demonstrates what MCP servers handling privileged operations should look
-like.
+The goal is a counter-example that demonstrates what MCP servers
+handling privileged operations should look like — not to compete with
+any specific upstream.
 
 ---
 
@@ -1556,7 +1559,7 @@ Key passphrase reference [keychain:mcp-ssh-bridge:prod-db]:  # default suggested
 [...]
 ```
 
-**Migrating from legacy-ssh-tool:**
+**Migrating from a legacy `.env` setup:**
 ```bash
 $ mcp-ssh-bridge migrate-from-legacy ~/.config/legacy-ssh-tool/.env
 Found 5 servers, 3 with plaintext passwords.
@@ -1904,7 +1907,7 @@ mcp-ssh-bridge auth get <name>          Print metadata about stored secret (not 
 mcp-ssh-bridge auth remove <name>       Delete from keychain
 mcp-ssh-bridge auth list                List keychain entries for service mcp-ssh-bridge
 
-mcp-ssh-bridge migrate-from-legacy <env-file>     Import legacy-ssh-tool .env
+mcp-ssh-bridge migrate-from-legacy <env-file>     Import a legacy SSH-tool .env
 mcp-ssh-bridge migrate-passwords        Walk config, move plaintext to keychain
 
 mcp-ssh-bridge install claude-desktop   Write MCP entry to Claude Desktop config
@@ -2092,7 +2095,7 @@ mcp-ssh-bridge/
 │   ├── threat-model.md           # §3 expanded for end users
 │   ├── configuration.md          # config reference
 │   ├── tool-reference.md         # per-tool docs (mirrors §6)
-│   ├── migration-from-legacy-ssh-tool.md
+│   ├── migration-from-legacy-env.md
 │   └── security-checklist.md     # §13 with explanations
 ├── examples/
 │   ├── config.toml               # canonical example
@@ -2328,58 +2331,32 @@ attached to GitHub release assets.
 
 ---
 
-## Appendix B: Migration Guide from legacy-ssh-tool
+## Appendix B: Migration Guide from Legacy `.env` Setups
 
-Operators migrating from `a-legacy-ssh-tool` should follow this
-checklist. The migration tool automates most of it.
+Operators coming from any older SSH-tooling that stores its settings in
+a flat `.env` file (lines like `SSH_HOST=`, `SSH_USER=`, `SSH_PORT=`,
+`SSH_AUTH=`, `SSH_PASSWORD=`, `SSH_KEY_PATH=`, …) can use the
+`migrate-from-legacy` subcommand to bootstrap a `config.toml` and move
+any plaintext passwords into the OS keychain.
 
 ### B.1 Inventory
 
 ```bash
-$ mcp-ssh-bridge migrate-from-legacy ~/.config/legacy-ssh-tool/.env --dry-run
+$ mcp-ssh-bridge migrate-from-legacy ~/path/to/legacy.env --dry-run
 ```
 
 This prints a report:
 - Servers found
 - Auth method per server
 - Plaintext passwords detected
-- Servers using deprecated SSH algorithms (none of our concern; they
-  just won't connect by default — opt in via `weak_algorithms_opt_in`)
+- Any servers whose original tooling defaulted to weak SSH algorithms
+  (they will fail to connect by default — opt in via
+  `weak_algorithms_opt_in`)
 - Any `proxy_jump` chains
 
-### B.2 Tool Mapping
+### B.2 Workflow Notes
 
-| `legacy-ssh-tool` tool | `mcp-ssh-bridge` equivalent |
-|---|---|
-| `ssh_execute` | `ssh_exec` (rename + structured output) |
-| `ssh_execute_sudo` | **removed** — use `ssh_exec` with `sudo` in command, configure NOPASSWD on remote |
-| `ssh_upload` | `sftp_op` action=`write` |
-| `ssh_download` | `sftp_read` |
-| `ssh_sync` | **removed** — use `ssh_exec` to invoke remote `rsync` |
-| `ssh_tail` | `ssh_exec` with `stream: true` and `tail -f` |
-| `ssh_monitor` | `ssh_exec` with composed command (`top -b -n 1; df -h; free -m`) |
-| `ssh_history` | `audit_query` (richer, queryable) |
-| `ssh_session_*` | `session_*` (rename + sentinel-based protocol) |
-| `ssh_execute_group` | `ssh_group_exec` (similar) |
-| `ssh_group_manage` | **removed** — use `tags` in config |
-| `ssh_tunnel_*` | `tunnel` (action=`create/list/close`) |
-| `ssh_deploy` | **removed** — compose via `sftp_op` + `ssh_exec` |
-| `ssh_alias` | **removed** — use server name or config tags |
-| `ssh_command_alias` | **removed** — LLM can compose commands directly |
-| `ssh_hooks` | **removed** |
-| `ssh_profile` | **removed** |
-| `ssh_connection_status` | `list_servers` (limited) + `audit_query` |
-| `ssh_key_manage` | CLI: `mcp-ssh-bridge trust` |
-| `ssh_health_check` | `ssh_exec` with composed command |
-| `ssh_service_status` | `ssh_exec systemctl status <svc>` |
-| `ssh_process_manager` | `ssh_exec ps aux` etc. |
-| `ssh_alert_setup` | **removed** — out of scope |
-| `ssh_backup_*` | **removed** — out of scope |
-| `ssh_db_*` | **removed** — use `ssh_exec` with native CLI clients |
-
-### B.3 Workflow Changes
-
-The most impactful changes for a user:
+Things to be aware of after migration:
 
 1. **No more autoApprove for destructive tools.** Each
    `ssh_exec`/`sftp_op` write requires user confirmation in Claude
