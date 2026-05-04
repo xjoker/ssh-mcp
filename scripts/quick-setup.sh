@@ -92,19 +92,35 @@ if [ "$TRUST" = "y" ] || [ "$TRUST" = "Y" ]; then
   "$BIN" trust "$NAME" || echo "  (trust failed — you can retry later with 'mcp-ssh-bridge trust $NAME')"
 fi
 
-# 4. Pick MCP client to install for.
+# 4. Register with an MCP client (use the client's own CLI when available).
 echo
 echo "Which MCP client?"
-echo "  1) claude-desktop"
-echo "  2) claude-code"
-echo "  3) codex"
+echo "  1) claude-code (uses 'claude mcp add')"
+echo "  2) codex       (uses 'codex mcp add')"
+echo "  3) claude-desktop (paste JSON snippet)"
 echo "  4) skip"
 ask "Choose" "1" CHOICE
 case "$CHOICE" in
-  1) "$BIN" install claude-desktop ;;
-  2) "$BIN" install claude-code ;;
-  3) "$BIN" install codex ;;
-  *) echo "  (skipped MCP install — run 'mcp-ssh-bridge install <target>' later)" ;;
+  1)
+    if command -v claude >/dev/null 2>&1; then
+      claude mcp add --transport stdio --scope user ssh-bridge -- "$BIN" \
+        || echo "  (claude mcp add failed — run 'mcp-ssh-bridge install claude-code' for the manual command)"
+    else
+      echo "  (claude CLI not on PATH — printing the command instead:)"
+      "$BIN" install claude-code
+    fi
+    ;;
+  2)
+    if command -v codex >/dev/null 2>&1; then
+      codex mcp add ssh-bridge -- "$BIN" \
+        || echo "  (codex mcp add failed — run 'mcp-ssh-bridge install codex' for the manual command)"
+    else
+      echo "  (codex CLI not on PATH — printing the command instead:)"
+      "$BIN" install codex
+    fi
+    ;;
+  3) "$BIN" install claude-desktop ;;
+  *) echo "  (skipped — register later with 'claude mcp add ...' or 'codex mcp add ...')" ;;
 esac
 
 echo

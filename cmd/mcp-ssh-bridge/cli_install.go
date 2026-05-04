@@ -1,20 +1,16 @@
 package main
 
-// cli_install.go implements:
-//   install claude-desktop
-//   install claude-code
-//   install codex
+// cli_install.go implements the `install` subcommand. Both Claude Code and
+// Codex now ship official CLI commands for managing MCP servers, so the
+// preferred path is to run those CLIs directly. We print the exact command
+// for each target rather than emitting a JSON snippet that the user has to
+// paste into the right config file.
 //
-// S-10: generated snippets MUST NOT contain autoApprove for any
-// mcp-ssh-bridge tool (ssh_exec, sftp_op, ssh_group_exec, etc.).
-//
-// Simplification (per SDD spec): all three variants print the recommended
-// configuration snippet to stdout and show the target path. They do NOT
-// merge or patch the target file, avoiding destructive mutations to existing
-// client configurations.
+// S-10: nothing we emit ever sets autoApprove. Both client CLIs honour
+// the absence of that flag and require per-call human confirmation, which
+// is the security posture we ship.
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"runtime"
@@ -24,19 +20,6 @@ func init() {
 	registerSubcommand("install", installCmd)
 }
 
-// mcpServerEntry is the JSON shape for claude-desktop / claude-code MCP config.
-// S-10: no autoApprove field — intentionally absent.
-type mcpServerEntry struct {
-	Command string   `json:"command"`
-	Args    []string `json:"args"`
-}
-
-// mcpServersWrapper is the top-level JSON wrapper.
-type mcpServersWrapper struct {
-	MCPServers map[string]mcpServerEntry `json:"mcpServers"`
-}
-
-// installCmd dispatches to a target-specific printer.
 func installCmd(args []string) int {
 	if len(args) == 0 {
 		printInstallUsage()
@@ -46,7 +29,7 @@ func installCmd(args []string) int {
 
 	exePath, err := os.Executable()
 	if err != nil {
-		exePath = "/usr/local/bin/mcp-ssh-bridge"
+		exePath = defaultBinaryPath()
 	}
 
 	switch target {
@@ -66,78 +49,72 @@ func installCmd(args []string) int {
 func printInstallUsage() {
 	fmt.Fprintln(os.Stderr, "usage: mcp-ssh-bridge install <target>")
 	fmt.Fprintln(os.Stderr, "  Targets: claude-desktop  claude-code  codex")
+	fmt.Fprintln(os.Stderr, "  Prints the official CLI command (or JSON/TOML snippet) to register")
+	fmt.Fprintln(os.Stderr, "  this binary as an MCP server with the given client.")
 }
 
 // installClaudeDesktop prints the JSON snippet for Claude Desktop.
+// Claude Desktop does not yet ship a `claude-desktop mcp add` CLI, so the
+// snippet must be pasted manually. The path printed is the platform-default
+// claude_desktop_config.json location.
 func installClaudeDesktop(exePath string) int {
 	configPath := claudeDesktopConfigPath()
 
-	entry := mcpServersWrapper{
-		MCPServers: map[string]mcpServerEntry{
-			"ssh-bridge": {
-				Command: exePath,
-				Args:    []string{},
-			},
-		},
-	}
-	// S-10: no autoApprove key in the struct or serialised output.
-	out, err := json.MarshalIndent(entry, "", "  ")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "install claude-desktop: marshal: %v\n", err)
-		return 1
-	}
-
-	fmt.Printf("# Add this to: %s\n", configPath)
+	fmt.Printf("# Claude Desktop has no MCP-management CLI; paste this block manually.\n")
+	fmt.Printf("# Edit: %s\n", configPath)
 	fmt.Println("# WARNING: Do not add autoApprove for any of mcp-ssh-bridge tools.")
-	fmt.Println("# The tools provided can have unbounded effects on remote systems.")
 	fmt.Println()
-	fmt.Println(string(out))
+	fmt.Println("{")
+	fmt.Println(`  "mcpServers": {`)
+	fmt.Println(`    "ssh-bridge": {`)
+	fmt.Printf("      \"command\": %q,\n", exePath)
+	fmt.Println(`      "args": []`)
+	fmt.Println("    }")
+	fmt.Println("  }")
+	fmt.Println("}")
 	return 0
 }
 
-// installClaudeCode prints the JSON snippet for Claude Code.
-// The exact config path is undocumented in the SDD, so we print the snippet
-// and instruct the user to paste it manually.
+// installClaudeCode prints the official `claude mcp add` command.
+// Claude Code stores user-scoped MCP servers in ~/.claude.json under the
+// top-level `mcpServers` key; the CLI handles that for us so we don't
+// hard-code the path.
 func installClaudeCode(exePath string) int {
-	configPath := "~/.config/claude-code/mcp.json"
-
-	entry := mcpServersWrapper{
-		MCPServers: map[string]mcpServerEntry{
-			"ssh-bridge": {
-				Command: exePath,
-				Args:    []string{},
-			},
-		},
-	}
-	out, err := json.MarshalIndent(entry, "", "  ")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "install claude-code: marshal: %v\n", err)
-		return 1
-	}
-
-	fmt.Printf("# Add this to: %s\n", configPath)
-	fmt.Println("# (exact path may vary by Claude Code version; check your installation)")
-	fmt.Println("# WARNING: Do not add autoApprove for any of mcp-ssh-bridge tools.")
-	fmt.Println("# The tools provided can have unbounded effects on remote systems.")
+	fmt.Println("# Claude Code ships an MCP-management CLI. Run this once:")
 	fmt.Println()
-	fmt.Println(string(out))
+	fmt.Printf("claude mcp add --transport stdio --scope user ssh-bridge -- %s\n", exePath)
+	fmt.Println()
+	fmt.Println("# Then verify with:")
+	fmt.Println("claude mcp list")
+	fmt.Println()
+	fmt.Println("# Remove later with:")
+	fmt.Println("claude mcp remove ssh-bridge")
+	fmt.Println()
+	fmt.Println("# WARNING: Do not add autoApprove for any of mcp-ssh-bridge tools.")
 	return 0
 }
 
-// installCodex prints the TOML snippet for Codex.
+// installCodex prints the official `codex mcp add` command.
+// Codex stores MCP servers in ~/.codex/config.toml under
+// [mcp_servers.<name>]; the CLI manages the file for us.
 func installCodex(exePath string) int {
-	fmt.Println("# Add this to your Codex configuration file.")
-	fmt.Println("# WARNING: Do not add autoApprove for any of mcp-ssh-bridge tools.")
-	fmt.Println("# The tools provided can have unbounded effects on remote systems.")
+	fmt.Println("# Codex ships an MCP-management CLI. Run this once:")
 	fmt.Println()
-	fmt.Printf("[mcp_servers.ssh-bridge]\n")
-	fmt.Printf("command = %q\n", exePath)
-	fmt.Printf("args = []\n")
+	fmt.Printf("codex mcp add ssh-bridge -- %s\n", exePath)
+	fmt.Println()
+	fmt.Println("# Then verify with:")
+	fmt.Println("codex mcp list")
+	fmt.Println()
+	fmt.Println("# Remove later with:")
+	fmt.Println("codex mcp remove ssh-bridge")
+	fmt.Println()
+	fmt.Println("# WARNING: Do not add autoApprove for any of mcp-ssh-bridge tools.")
 	return 0
 }
 
 // claudeDesktopConfigPath returns the platform-appropriate path for the
-// Claude Desktop configuration file.
+// Claude Desktop configuration file (used only for the manual-paste
+// fallback; Claude Code is handled by `claude mcp add`).
 func claudeDesktopConfigPath() string {
 	switch runtime.GOOS {
 	case "windows":
@@ -149,5 +126,17 @@ func claudeDesktopConfigPath() string {
 	default: // Linux / other
 		home, _ := os.UserHomeDir()
 		return home + "/.config/Claude/claude_desktop_config.json"
+	}
+}
+
+// defaultBinaryPath returns the user-level install path the install
+// scripts use. Only consulted if os.Executable() fails (rare).
+func defaultBinaryPath() string {
+	switch runtime.GOOS {
+	case "windows":
+		return os.Getenv("LOCALAPPDATA") + `\Programs\mcp-ssh-bridge\mcp-ssh-bridge.exe`
+	default:
+		home, _ := os.UserHomeDir()
+		return home + "/.local/bin/mcp-ssh-bridge"
 	}
 }

@@ -6,6 +6,13 @@
 >
 > Humans: paste this file (or its URL) into your AI's context the first
 > time you connect the bridge. After that the AI will know the rules.
+>
+> **Quick install reminder for humans:** the binary lives at
+> `~/.local/bin/mcp-ssh-bridge` (macOS/Linux) or
+> `%LOCALAPPDATA%\Programs\mcp-ssh-bridge\mcp-ssh-bridge.exe` (Windows).
+> Register it once with your client via `claude mcp add ... ssh-bridge`
+> or `codex mcp add ssh-bridge ...` — never hand-edit the client config
+> if a CLI exists.
 
 ---
 

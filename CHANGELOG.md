@@ -10,6 +10,32 @@ Branch / version convention:
 - Dev versions carry a `-dev` suffix (e.g. `0.0.1-dev`); release versions
   drop the suffix (`0.0.1`). `make release VERSION=…` stamps the binary.
 
+## [Unreleased]
+
+### Changed
+- Installers default to **user-level** install (no sudo / admin):
+  `~/.local/bin/mcp-ssh-bridge` on macOS/Linux,
+  `%LOCALAPPDATA%\Programs\mcp-ssh-bridge\mcp-ssh-bridge.exe` on Windows.
+- New `scripts/install.ps1` for Windows (PowerShell one-liner).
+- `mcp-ssh-bridge install claude-code` and `install codex` now print the
+  official client-side CLI command (`claude mcp add ...` /
+  `codex mcp add ...`) instead of a JSON/TOML snippet — those clients
+  ship MCP-management CLIs as of late 2025/early 2026, and using them is
+  safer than hand-editing `~/.claude.json` / `~/.codex/config.toml`.
+- `install claude-desktop` still prints a JSON snippet (Claude Desktop
+  has no MCP CLI yet); the snippet uses the user-level binary path.
+- README + `examples/quick-start.md` updated with three-platform install
+  paths, PowerShell snippet, and the official `claude mcp add` /
+  `codex mcp add` registration commands.
+- `scripts/quick-setup.sh` calls `claude mcp add` / `codex mcp add`
+  directly when those CLIs are on PATH.
+
+### Fixed
+- `scripts/install.sh` repo URL corrected (`xjoker/ssh-mcp`).
+- `cli_install.go` no longer prints the obsolete
+  `~/.config/claude-code/mcp.json` path; Claude Code reads
+  `~/.claude.json` and we no longer assert any specific path.
+
 ## [0.0.1-dev] — 2026-05-04
 
 First public iteration. Targeted at internal smoke testing prior to the

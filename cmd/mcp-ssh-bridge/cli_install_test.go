@@ -66,7 +66,10 @@ func TestInstallClaudeDesktopNoAutoApprove(t *testing.T) {
 	}
 }
 
-// TestInstallClaudeCodeNoAutoApprove verifies the claude-code snippet (S-10).
+// TestInstallClaudeCodeNoAutoApprove verifies the claude-code output (S-10).
+// Claude Code now ships an MCP-management CLI, so the output is the
+// `claude mcp add` command rather than a JSON snippet. We assert on the
+// CLI form and the absence of any autoApprove assignment.
 func TestInstallClaudeCodeNoAutoApprove(t *testing.T) {
 	out := captureStdout(t, func() {
 		installClaudeCode("/usr/local/bin/mcp-ssh-bridge")
@@ -75,12 +78,20 @@ func TestInstallClaudeCodeNoAutoApprove(t *testing.T) {
 	if hasAutoApproveAssignment(out) {
 		t.Fatalf("S-10 violation: install claude-code output contains autoApprove assignment.\nOutput:\n%s", out)
 	}
-	if !strings.Contains(out, "mcpServers") {
-		t.Fatalf("install claude-code output missing 'mcpServers'.\nOutput:\n%s", out)
+	if !strings.Contains(out, "claude mcp add") {
+		t.Fatalf("install claude-code output missing 'claude mcp add' CLI hint.\nOutput:\n%s", out)
+	}
+	if !strings.Contains(out, "ssh-bridge") {
+		t.Fatalf("install claude-code output missing the ssh-bridge name.\nOutput:\n%s", out)
+	}
+	if !strings.Contains(out, "/usr/local/bin/mcp-ssh-bridge") {
+		t.Fatalf("install claude-code output missing the binary path.\nOutput:\n%s", out)
 	}
 }
 
-// TestInstallCodexNoAutoApprove verifies the codex snippet (S-10).
+// TestInstallCodexNoAutoApprove verifies the codex output (S-10).
+// Codex ships `codex mcp add`, so we recommend that CLI rather than
+// hand-editing the TOML.
 func TestInstallCodexNoAutoApprove(t *testing.T) {
 	out := captureStdout(t, func() {
 		installCodex("/usr/local/bin/mcp-ssh-bridge")
@@ -89,9 +100,14 @@ func TestInstallCodexNoAutoApprove(t *testing.T) {
 	if hasAutoApproveAssignment(out) {
 		t.Fatalf("S-10 violation: install codex output contains autoApprove assignment.\nOutput:\n%s", out)
 	}
-	// Must contain TOML-style mcp_servers section.
-	if !strings.Contains(out, "mcp_servers") && !strings.Contains(out, "ssh-bridge") {
-		t.Fatalf("install codex output missing mcp_servers/ssh-bridge.\nOutput:\n%s", out)
+	if !strings.Contains(out, "codex mcp add") {
+		t.Fatalf("install codex output missing 'codex mcp add' CLI hint.\nOutput:\n%s", out)
+	}
+	if !strings.Contains(out, "ssh-bridge") {
+		t.Fatalf("install codex output missing the ssh-bridge name.\nOutput:\n%s", out)
+	}
+	if !strings.Contains(out, "/usr/local/bin/mcp-ssh-bridge") {
+		t.Fatalf("install codex output missing the binary path.\nOutput:\n%s", out)
 	}
 }
 

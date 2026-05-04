@@ -4,11 +4,23 @@ Five minutes from zero to your first agent-driven `ssh_exec`.
 
 ## 1. Install
 
+**macOS / Linux:**
+
 ```sh
-curl -fsSL https://raw.githubusercontent.com/xjoker/mcp-ssh-bridge/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/xjoker/ssh-mcp/main/scripts/install.sh | bash
 ```
 
-Or, from a local checkout, just `bash scripts/install.sh`.
+**Windows (PowerShell):**
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/xjoker/ssh-mcp/main/scripts/install.ps1 | iex
+```
+
+Both install user-level — no sudo / admin elevation. Defaults:
+- macOS / Linux: `~/.local/bin/mcp-ssh-bridge`
+- Windows: `%LOCALAPPDATA%\Programs\mcp-ssh-bridge\mcp-ssh-bridge.exe`
+
+Or, from a local checkout: `bash scripts/install.sh` (or `.\scripts\install.ps1`).
 
 Verify:
 
@@ -52,19 +64,36 @@ mcp-ssh-bridge trust prod
 
 ## 3. Plug into your MCP client
 
-Pick one — the CLI prints the snippet and exact target path:
+Both Claude Code and Codex ship a CLI for managing MCP servers — use
+that, no file-editing required:
+
+```sh
+# Claude Code (user scope = available in every project)
+claude mcp add --transport stdio --scope user ssh-bridge -- ~/.local/bin/mcp-ssh-bridge
+
+# Codex
+codex mcp add ssh-bridge -- ~/.local/bin/mcp-ssh-bridge
+```
+
+Verify:
+
+```sh
+claude mcp list      # ssh-bridge should show "✓ Connected"
+codex  mcp list      # ssh-bridge should show "enabled"
+```
+
+Claude **Desktop** (the macOS / Windows app) does not yet ship an MCP
+CLI, so paste a small JSON snippet manually:
 
 ```sh
 mcp-ssh-bridge install claude-desktop
-mcp-ssh-bridge install claude-code
-mcp-ssh-bridge install codex
 ```
 
-Paste the printed block into the indicated config file. **Do not add
+Then copy the printed block into the file the command names. **Never add
 `autoApprove`** for any of the tools — the printed snippet intentionally
 omits it.
 
-Restart your MCP client.
+Restart whichever client you registered with.
 
 ## 4. Validate before first use
 

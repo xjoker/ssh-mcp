@@ -8,28 +8,35 @@ AI assistants — Claude Desktop, Claude Code, Codex.
 > codifies tool-selection heuristics, error-handling expectations, and
 > the no-autoApprove discipline so the model behaves predictably.
 
-## TL;DR — three commands and you're online
+## TL;DR — four commands and you're online
 
 ```sh
-# 1. Install (auto-detects sudo / falls back to ~/.local/bin)
-curl -fsSL https://raw.githubusercontent.com/xjoker/mcp-ssh-bridge/main/scripts/install.sh | bash
+# 1. Install to ~/.local/bin (no sudo, no PATH surgery needed by MCP)
+curl -fsSL https://raw.githubusercontent.com/xjoker/ssh-mcp/main/scripts/install.sh | bash
 
 # 2. Interactive wizard: config → server → trust → MCP client entry
-bash <(curl -fsSL https://raw.githubusercontent.com/xjoker/mcp-ssh-bridge/main/scripts/quick-setup.sh)
-
-# 3. Restart your MCP client. Done.
+bash <(curl -fsSL https://raw.githubusercontent.com/xjoker/ssh-mcp/main/scripts/quick-setup.sh)
 ```
 
-Prefer the manual path? Same flow, four explicit steps:
+On Windows (PowerShell):
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/xjoker/ssh-mcp/main/scripts/install.ps1 | iex
+```
+
+Prefer explicit steps?
 
 ```sh
 mcp-ssh-bridge config init
 mcp-ssh-bridge config add-server prod --host example.com --user alice --auth agent
-mcp-ssh-bridge trust prod                    # accepts the host key into known_hosts
-mcp-ssh-bridge install claude-desktop        # or claude-code / codex
+mcp-ssh-bridge trust prod                                  # accept host key
+
+# Register with your AI client using its official CLI:
+claude mcp add --transport stdio --scope user ssh-bridge -- ~/.local/bin/mcp-ssh-bridge
+codex  mcp add ssh-bridge -- ~/.local/bin/mcp-ssh-bridge
 ```
 
-That's a working agent + key auth setup. For password auth swap step 2 for:
+For password auth, swap the `add-server` line for:
 
 ```sh
 mcp-ssh-bridge config add-server prod --host example.com --user alice --auth password
@@ -53,12 +60,28 @@ sensitive ever lands in `config.toml`.
 
 ### One-liner (recommended)
 
+**macOS / Linux:**
+
 ```sh
-curl -fsSL https://raw.githubusercontent.com/xjoker/mcp-ssh-bridge/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/xjoker/ssh-mcp/main/scripts/install.sh | bash
 ```
 
-The script clones, builds with `go`, installs the binary to `/usr/local/bin`
-(sudo) or `~/.local/bin` (falls back automatically), and prints the next steps.
+**Windows (PowerShell):**
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/xjoker/ssh-mcp/main/scripts/install.ps1 | iex
+```
+
+Both scripts install **user-level — no sudo / admin elevation**. The MCP
+binary is just a stdio process spawned by your AI client; it does not
+need a system path.
+
+| Platform | Default install path |
+|----------|----------------------|
+| macOS / Linux | `~/.local/bin/mcp-ssh-bridge` |
+| Windows | `%LOCALAPPDATA%\Programs\mcp-ssh-bridge\mcp-ssh-bridge.exe` |
+
+Override with `PREFIX=...` (bash) or `$env:PREFIX=...` (PowerShell).
 
 ### `go install`
 
@@ -69,8 +92,8 @@ go install github.com/xjoker/mcp-ssh-bridge/cmd/mcp-ssh-bridge@latest
 ### From source
 
 ```sh
-git clone https://github.com/xjoker/mcp-ssh-bridge.git
-cd mcp-ssh-bridge
+git clone https://github.com/xjoker/ssh-mcp.git
+cd ssh-mcp
 make build       # binary at bin/mcp-ssh-bridge
 ```
 
@@ -86,10 +109,14 @@ mcp-ssh-bridge config add-server <name> --host H --user U --auth agent
 mcp-ssh-bridge trust <name>                                # accept first-seen host key
 mcp-ssh-bridge auth set-keychain mcp-ssh-bridge ssh-password:<name>
 
-# Install MCP client config
-mcp-ssh-bridge install claude-desktop
-mcp-ssh-bridge install claude-code
-mcp-ssh-bridge install codex
+# Register with your AI client (use the client's own CLI; no file editing)
+claude mcp add --transport stdio --scope user ssh-bridge -- ~/.local/bin/mcp-ssh-bridge
+codex  mcp add ssh-bridge -- ~/.local/bin/mcp-ssh-bridge
+
+# Or print the right command/snippet for any of three targets:
+mcp-ssh-bridge install claude-code     # → prints `claude mcp add ...`
+mcp-ssh-bridge install codex           # → prints `codex mcp add ...`
+mcp-ssh-bridge install claude-desktop  # → JSON snippet to paste (Desktop has no MCP CLI)
 
 # Migration / audit
 mcp-ssh-bridge migrate-from-legacy /path/to/.env
@@ -102,14 +129,15 @@ default_dir, allowed_paths, tags, …).
 
 ## Config file layout
 
-Default location:
+Default locations (all user-level — no admin / sudo required):
 
-| OS         | Path                                              |
-|------------|---------------------------------------------------|
-| macOS/Linux | `$XDG_CONFIG_HOME/mcp-ssh-bridge/config.toml` (default `~/.config/...`) |
-| Windows    | `%APPDATA%\mcp-ssh-bridge\config.toml`            |
+| OS | Binary | Config | Audit log |
+|----|--------|--------|-----------|
+| macOS / Linux | `~/.local/bin/mcp-ssh-bridge` | `$XDG_CONFIG_HOME/mcp-ssh-bridge/config.toml` (default `~/.config/...`) | `$XDG_STATE_HOME/mcp-ssh-bridge/` (default `~/.local/state/...`) |
+| Windows | `%LOCALAPPDATA%\Programs\mcp-ssh-bridge\mcp-ssh-bridge.exe` | `%APPDATA%\mcp-ssh-bridge\config.toml` | `%LOCALAPPDATA%\mcp-ssh-bridge\audit\` |
 
-Override with `MCP_SSH_BRIDGE_CONFIG=/path/to/config.toml`.
+Override the config path with `MCP_SSH_BRIDGE_CONFIG=/path/to/config.toml`.
+Override the audit dir with `MCP_SSH_BRIDGE_AUDIT_DIR=/path/to/audit/`.
 
 Minimal example (`examples/config-min.toml`):
 
