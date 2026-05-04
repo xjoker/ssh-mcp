@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/xjoker/mcp-ssh-bridge/internal/auth"
 )
 
 // --------------------------------------------------------------------------
@@ -254,21 +256,33 @@ password = "plaintext:hunter2"
 	}
 	t.Setenv("MCP_SSH_BRIDGE_CONFIG", cfgPath)
 
-	// Best-effort: keychain may be unavailable on CI. Assert on the rewritten
-	// config — even if SetKeychain failed, the migrate logic must not have
-	// substituted "plaintext:hunter2" verbatim into the keychain reference.
-	migratePasswordsCmd(nil)
+	// Probe the OS keychain. CI environments without a secret service
+	// (e.g. headless Linux without dbus/libsecret) cannot exercise the
+	// post-keychain rewrite path because SetKeychain fails before the
+	// config is rewritten — skip rather than report a false positive.
+	if err := auth.SetKeychain(keychainService(), "ssh-password:_probe", []byte("x")); err != nil {
+		t.Skipf("keychain unavailable on this host: %v", err)
+	}
+	defer func() { _ = auth.DeleteKeychain(keychainService(), "ssh-password:_probe") }()
+	defer func() { _ = auth.DeleteKeychain(keychainService(), "ssh-password:myserver") }()
+
+	if code := migratePasswordsCmd(nil); code != 0 {
+		t.Fatalf("migratePasswordsCmd exit = %d, want 0", code)
+	}
 
 	written, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	out := string(written)
-	// The literal "plaintext:hunter2" must not appear anywhere — neither as
-	// the keychain payload (which would mean the bug is still present) nor
-	// in the rewritten config.
+	// The literal "plaintext:hunter2" must not appear anywhere — neither
+	// inside the keychain (the entire point of the original fix) nor in
+	// the rewritten config.
 	if strings.Contains(out, "plaintext:hunter2") {
 		t.Errorf("rewritten config still contains 'plaintext:hunter2': %s", out)
+	}
+	if !strings.Contains(out, "keychain:") {
+		t.Errorf("expected 'keychain:' reference in rewritten config: %s", out)
 	}
 }
 

@@ -13,9 +13,14 @@ import (
 	"github.com/xjoker/mcp-ssh-bridge/internal/mcpserver"
 )
 
-// version and commit are injected at build time via -ldflags.
+// version and commit are injected at build time via -ldflags. The default
+// reflects the current development line: when no ldflags override is
+// provided (e.g. plain `go build`), this is what `version` prints.
+//
+// Branch convention: -dev suffix on dev/feature branches; release builds
+// from main strip the suffix via -X main.version=<tag>.
 var (
-	version = "dev"
+	version = "0.0.1-dev"
 	commit  = "unknown"
 )
 
