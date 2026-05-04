@@ -36,19 +36,19 @@ func init() {
 }
 
 type tunnelArgs struct {
-	Action      string `json:"action"`
-	Kind        string `json:"kind"`
-	Server      string `json:"server"`
-	LocalBind   string `json:"local_bind"`
-	LocalPort   int    `json:"local_port"`
-	RemoteBind  string `json:"remote_bind"`
-	RemotePort  int    `json:"remote_port"`
-	DstHost     string `json:"dst_host"`
-	DstPort     int    `json:"dst_port"`
-	TunnelID    string `json:"tunnel_id"`
+	Action     string `json:"action"`
+	Kind       string `json:"kind"`
+	Server     string `json:"server"`
+	LocalBind  string `json:"local_bind"`
+	LocalPort  int    `json:"local_port"`
+	RemoteBind string `json:"remote_bind"`
+	RemotePort int    `json:"remote_port"`
+	DstHost    string `json:"dst_host"`
+	DstPort    int    `json:"dst_port"`
+	TunnelID   string `json:"tunnel_id"`
 }
 
-func handleTunnel(_ context.Context, deps *Deps, args json.RawMessage) envelope.Response {
+func handleTunnel(ctx context.Context, deps *Deps, args json.RawMessage) envelope.Response {
 	var a tunnelArgs
 	if err := json.Unmarshal(args, &a); err != nil {
 		return envelope.Err(envelope.CodeInvalidArgument, "cannot parse args: "+err.Error(), false)
@@ -60,7 +60,7 @@ func handleTunnel(_ context.Context, deps *Deps, args json.RawMessage) envelope.
 
 	switch a.Action {
 	case "create":
-		return tunnelCreate(a, deps)
+		return tunnelCreate(ctx, a, deps)
 	case "list":
 		return tunnelList(deps)
 	case "close":
@@ -76,7 +76,7 @@ func handleTunnel(_ context.Context, deps *Deps, args json.RawMessage) envelope.
 // action: create
 // --------------------------------------------------------------------------
 
-func tunnelCreate(a tunnelArgs, deps *Deps) envelope.Response {
+func tunnelCreate(ctx context.Context, a tunnelArgs, deps *Deps) envelope.Response {
 	if a.Kind == "" {
 		return envelope.Err(envelope.CodeInvalidArgument, "kind is required for create (local or remote)", false)
 	}
@@ -90,16 +90,16 @@ func tunnelCreate(a tunnelArgs, deps *Deps) envelope.Response {
 
 	switch a.Kind {
 	case "local":
-		return tunnelCreateLocal(a, serverName, deps)
+		return tunnelCreateLocal(ctx, a, serverName, deps)
 	case "remote":
-		return tunnelCreateRemote(a, serverName, deps)
+		return tunnelCreateRemote(ctx, a, serverName, deps)
 	default:
 		return envelope.Err(envelope.CodeInvalidArgument,
 			fmt.Sprintf("kind must be local or remote, got %q", a.Kind), false)
 	}
 }
 
-func tunnelCreateLocal(a tunnelArgs, server string, deps *Deps) envelope.Response {
+func tunnelCreateLocal(ctx context.Context, a tunnelArgs, server string, deps *Deps) envelope.Response {
 	if a.DstHost == "" {
 		return envelope.Err(envelope.CodeInvalidArgument, "dst_host is required for local tunnel", false)
 	}
@@ -114,9 +114,16 @@ func tunnelCreateLocal(a tunnelArgs, server string, deps *Deps) envelope.Respons
 	// Do NOT default to "0.0.0.0" here.
 	localBind := a.LocalBind // empty → tunnel.Manager will use 127.0.0.1
 
-	id, err := deps.TunnelMgr.CreateLocal(server, localBind, a.LocalPort, a.DstHost, a.DstPort)
+	id, err := deps.TunnelMgr.CreateLocalContext(ctx, server, localBind, a.LocalPort, a.DstHost, a.DstPort)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return envelope.Err(envelope.CodeTimeout, "create local tunnel canceled: "+ctxErr.Error(), true)
+		}
 		return envelope.Err(envelope.CodeConnFailed, "create local tunnel: "+err.Error(), false)
+	}
+	if err := ctx.Err(); err != nil {
+		_ = deps.TunnelMgr.Close(id)
+		return envelope.Err(envelope.CodeTimeout, "create local tunnel canceled: "+err.Error(), true)
 	}
 
 	endpoint := fmt.Sprintf("%s:%d", resolvedBind(localBind, "127.0.0.1"), a.LocalPort)
@@ -127,7 +134,7 @@ func tunnelCreateLocal(a tunnelArgs, server string, deps *Deps) envelope.Respons
 	})
 }
 
-func tunnelCreateRemote(a tunnelArgs, server string, deps *Deps) envelope.Response {
+func tunnelCreateRemote(ctx context.Context, a tunnelArgs, server string, deps *Deps) envelope.Response {
 	if a.RemotePort <= 0 {
 		return envelope.Err(envelope.CodeInvalidArgument, "remote_port is required for remote tunnel", false)
 	}
@@ -147,9 +154,16 @@ func tunnelCreateRemote(a tunnelArgs, server string, deps *Deps) envelope.Respon
 		remoteBind = "127.0.0.1"
 	}
 
-	id, err := deps.TunnelMgr.CreateRemote(server, remoteBind, a.RemotePort, localHost, a.LocalPort)
+	id, err := deps.TunnelMgr.CreateRemoteContext(ctx, server, remoteBind, a.RemotePort, localHost, a.LocalPort)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return envelope.Err(envelope.CodeTimeout, "create remote tunnel canceled: "+ctxErr.Error(), true)
+		}
 		return envelope.Err(envelope.CodeConnFailed, "create remote tunnel: "+err.Error(), false)
+	}
+	if err := ctx.Err(); err != nil {
+		_ = deps.TunnelMgr.Close(id)
+		return envelope.Err(envelope.CodeTimeout, "create remote tunnel canceled: "+err.Error(), true)
 	}
 
 	endpoint := fmt.Sprintf("%s:%d", resolvedBind(remoteBind, "127.0.0.1"), a.RemotePort)

@@ -635,22 +635,55 @@ allowed_paths = ["/var/log", "/tmp", "/"]
 	}
 }
 
-// TestServerConfig_AcceptNewHostNotFromToml verifies that the AcceptNewHost
-// field is excluded from TOML deserialisation (toml:"-"). A config file that
-// sets accept_new_host = true must not propagate the value into the loaded
-// ServerConfig; the field is a runtime-only injection point for ssh_quick_setup
-// and session_start inline registrations.
-func TestServerConfig_AcceptNewHostNotFromToml(t *testing.T) {
-	cfg := mustLoad(t, `
-[servers.myserver]
-host           = "example.com"
-user           = "deploy"
-auth           = "agent"
-accept_new_host = true
-`)
-	srv := cfg.Servers["myserver"]
-	if srv.AcceptNewHost {
-		t.Error("AcceptNewHost must not be deserialised from TOML (toml:\"-\" tag); got true")
+// TestServerConfig_AcceptNewHostRejectedFromToml verifies that config drift is
+// explicit: accept_new_host is runtime-only and must not be silently ignored.
+func TestServerConfig_AcceptNewHostRejectedFromToml(t *testing.T) {
+	mustFail(t, `
+	[servers.myserver]
+	host           = "example.com"
+	user           = "deploy"
+	auth           = "agent"
+	accept_new_host = true
+	`, "unknown key")
+}
+
+func TestLoad_RejectsUnknownSettingsKey(t *testing.T) {
+	mustFail(t, `
+	[settings]
+	not_a_real_setting = true
+
+	[servers.myserver]
+	host = "example.com"
+	user = "deploy"
+	auth = "agent"
+	`, "unknown key")
+}
+
+func TestLoad_RejectsNegativeAuditRetention(t *testing.T) {
+	mustFail(t, `
+	[settings]
+	audit_retention_days = -1
+
+	[servers.myserver]
+	host = "example.com"
+	user = "deploy"
+	auth = "agent"
+	`, "audit_retention_days")
+}
+
+func TestLoad_RejectsOversizedConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	tooLarge := strings.Repeat("#", 4*1024*1024+1)
+	if err := os.WriteFile(path, []byte(tooLarge), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := config.Load(path)
+	if err == nil {
+		t.Fatal("expected oversized config to be rejected")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("expected size-limit error, got %v", err)
 	}
 }
 

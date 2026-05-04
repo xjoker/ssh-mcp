@@ -196,7 +196,7 @@ var sessionSendSchema = json.RawMessage(`{
   "properties": {
     "session_id": { "type": "string" },
     "command":    { "type": "string" },
-    "timeout_ms": { "type": "integer", "default": 120000 }
+    "timeout_ms": { "type": "integer", "minimum": 1000, "maximum": 1800000, "default": 120000 }
   },
   "required": ["session_id", "command"]
 }`)
@@ -235,9 +235,22 @@ func handleSessionSend(ctx context.Context, deps *Deps, args json.RawMessage) en
 		return envelope.Err(envelope.CodeInvalidArgument, "'command' is required", false)
 	}
 
+	if input.TimeoutMs > 0 && input.TimeoutMs < 1000 {
+		return envelope.Err(envelope.CodeInvalidArgument, "timeout_ms must be >= 1000", false)
+	}
 	timeoutMs := input.TimeoutMs
 	if timeoutMs <= 0 {
+		timeoutMs = deps.Cfg.Settings.DefaultTimeoutMs
+	}
+	if timeoutMs <= 0 {
 		timeoutMs = 120000
+	}
+	maxMs := deps.Cfg.Settings.MaxTimeoutMs
+	if maxMs <= 0 || maxMs > 1800000 {
+		maxMs = 1800000
+	}
+	if timeoutMs > maxMs {
+		timeoutMs = maxMs
 	}
 	timeout := time.Duration(timeoutMs) * time.Millisecond
 

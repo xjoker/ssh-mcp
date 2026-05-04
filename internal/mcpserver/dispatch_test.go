@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -226,5 +227,127 @@ func TestMiddlewareChain_AuditMetaNilNoOverride(t *testing.T) {
 	}
 	if entries[0].AuthMode != "" {
 		t.Errorf("AuthMode should be empty when AuditMeta is nil, got %q", entries[0].AuthMode)
+	}
+}
+
+func TestMiddlewareChain_PanicWritesCompletionAudit(t *testing.T) {
+	auditDir := t.TempDir()
+	auditLog, err := audit.New(auditDir, 90)
+	if err != nil {
+		t.Fatalf("audit.New: %v", err)
+	}
+	defer auditLog.Close()
+
+	oldStderr := stderrWriter
+	stderrWriter = io.Discard
+	defer func() { stderrWriter = oldStderr }()
+
+	deps := &tools.Deps{
+		Cfg:       &config.Config{Settings: config.Settings{}, Servers: map[string]config.ServerConfig{}},
+		Audit:     auditLog,
+		SessionID: "sess-panic",
+	}
+	panicHandler := func(_ context.Context, _ *tools.Deps, _ json.RawMessage) envelope.Response {
+		panic("boom")
+	}
+	req := &mcp.CallToolRequest{
+		Params: &mcp.CallToolParamsRaw{
+			Arguments: json.RawMessage(`{"server":"prod"}`),
+		},
+	}
+
+	got, err := middlewareChain(context.Background(), req, "ssh_exec", panicHandler, deps)
+	if err != nil {
+		t.Fatalf("middlewareChain: %v", err)
+	}
+	if got == nil || !got.IsError {
+		t.Fatalf("expected MCP error result after panic, got %#v", got)
+	}
+
+	entries, qErr := auditLog.Query(audit.Filter{Tool: "ssh_exec", Limit: 10})
+	if qErr != nil {
+		t.Fatalf("Query: %v", qErr)
+	}
+	var pending, completed *audit.Entry
+	for i := range entries {
+		switch entries[i].Status {
+		case "pending":
+			pending = &entries[i]
+		case "completed":
+			completed = &entries[i]
+		}
+	}
+	if pending == nil || completed == nil {
+		t.Fatalf("expected pending and completed audit entries, got %+v", entries)
+	}
+	if completed.ErrorCode != envelope.CodeInternalError {
+		t.Errorf("completed ErrorCode = %q, want %q", completed.ErrorCode, envelope.CodeInternalError)
+	}
+	if completed.SessionID != "sess-panic" {
+		t.Errorf("SessionID = %q, want sess-panic", completed.SessionID)
+	}
+	if completed.CorrelationID == "" || completed.CorrelationID != pending.CorrelationID {
+		t.Errorf("correlation mismatch: pending=%q completed=%q", pending.CorrelationID, completed.CorrelationID)
+	}
+}
+
+// TestMiddlewareChain_PanicWritesAuditForReadOnlyTool verifies that a panic
+// inside a non-destructive tool (which skips pre-record) still produces a
+// completed audit entry. Without this, panics in read-only tools like
+// sftp_list / audit_query would leave no debugging trail.
+func TestMiddlewareChain_PanicWritesAuditForReadOnlyTool(t *testing.T) {
+	if isDestructive("sftp_list") {
+		t.Fatal("sftp_list is expected to be a read-only tool for this test")
+	}
+
+	auditDir := t.TempDir()
+	auditLog, err := audit.New(auditDir, 90)
+	if err != nil {
+		t.Fatalf("audit.New: %v", err)
+	}
+	defer auditLog.Close()
+
+	oldStderr := stderrWriter
+	stderrWriter = io.Discard
+	defer func() { stderrWriter = oldStderr }()
+
+	deps := &tools.Deps{
+		Cfg:       &config.Config{Settings: config.Settings{}, Servers: map[string]config.ServerConfig{}},
+		Audit:     auditLog,
+		SessionID: "sess-ro-panic",
+	}
+	panicHandler := func(_ context.Context, _ *tools.Deps, _ json.RawMessage) envelope.Response {
+		panic("boom-readonly")
+	}
+	req := &mcp.CallToolRequest{
+		Params: &mcp.CallToolParamsRaw{
+			Arguments: json.RawMessage(`{"server":"prod"}`),
+		},
+	}
+
+	got, err := middlewareChain(context.Background(), req, "sftp_list", panicHandler, deps)
+	if err != nil {
+		t.Fatalf("middlewareChain: %v", err)
+	}
+	if got == nil || !got.IsError {
+		t.Fatalf("expected MCP error result after panic, got %#v", got)
+	}
+
+	entries, qErr := auditLog.Query(audit.Filter{Tool: "sftp_list", Limit: 10})
+	if qErr != nil {
+		t.Fatalf("Query: %v", qErr)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected exactly one audit entry (no pre-record for read-only tools), got %d: %+v", len(entries), entries)
+	}
+	entry := entries[0]
+	if entry.ErrorCode != envelope.CodeInternalError {
+		t.Errorf("ErrorCode = %q, want %q", entry.ErrorCode, envelope.CodeInternalError)
+	}
+	if entry.SessionID != "sess-ro-panic" {
+		t.Errorf("SessionID = %q, want sess-ro-panic", entry.SessionID)
+	}
+	if entry.ExitCode != 1 {
+		t.Errorf("ExitCode = %d, want 1", entry.ExitCode)
 	}
 }

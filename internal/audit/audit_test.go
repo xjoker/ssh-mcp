@@ -23,10 +23,10 @@ func newTestLogger(t *testing.T) (*Logger, string) {
 // helper: build a minimal valid Entry with the given timestamp.
 func makeEntry(ts time.Time, tool, server string) Entry {
 	return Entry{
-		Timestamp: ts,
-		SessionID: "test-session",
-		Tool:      tool,
-		Server:    server,
+		Timestamp:  ts,
+		SessionID:  "test-session",
+		Tool:       tool,
+		Server:     server,
 		DurationMs: 1,
 	}
 }
@@ -278,6 +278,37 @@ func TestQuery_Limit(t *testing.T) {
 	}
 }
 
+// TestQuery_MalformedJSONLSkipsLine verifies that malformed JSONL lines are
+// skipped rather than aborting the entire query. A truncated line from a
+// kill -9 should not poison historical log queries; valid entries before and
+// after the bad line must still be returned.
+func TestQuery_MalformedJSONLSkipsLine(t *testing.T) {
+	dir := t.TempDir()
+	today := time.Now().UTC().Format(dateLayout)
+	path := filepath.Join(dir, filePrefix+today+fileSuffix)
+
+	good1 := `{"timestamp":"` + time.Now().UTC().Format(time.RFC3339Nano) + `","tool":"a","status":"success"}` + "\n"
+	bad := "{not-json}\n"
+	good2 := `{"timestamp":"` + time.Now().UTC().Format(time.RFC3339Nano) + `","tool":"b","status":"success"}` + "\n"
+	if err := os.WriteFile(path, []byte(good1+bad+good2), 0600); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+
+	l, err := New(dir, 90)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer l.Close()
+
+	results, err := l.Query(Filter{Limit: 10})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want 2 (malformed line should be skipped)", len(results))
+	}
+}
+
 // TestS5_AuditFailureBlocksCaller verifies that when the underlying file
 // descriptor is closed (simulating a write failure), Record returns an error,
 // signalling the caller must abort the operation. SDD S-5.
@@ -295,6 +326,36 @@ func TestS5_AuditFailureBlocksCaller(t *testing.T) {
 	err := l.Record(e)
 	if err == nil {
 		t.Error("expected Record to return error when file is closed, got nil")
+	}
+}
+
+func TestNewRejectsNonPositiveRetentionWithoutDeleting(t *testing.T) {
+	dir := t.TempDir()
+	oldFile := filepath.Join(dir, "audit-2020-01-01.jsonl")
+	if err := os.WriteFile(oldFile, []byte(`{}`+"\n"), 0600); err != nil {
+		t.Fatalf("write old file: %v", err)
+	}
+
+	if _, err := New(dir, -1); err == nil {
+		t.Fatal("expected New to reject negative retention")
+	}
+	if _, err := os.Stat(oldFile); err != nil {
+		t.Fatalf("old audit file should not be deleted on invalid retention: %v", err)
+	}
+}
+
+func TestRecordAfterCloseReturnsError(t *testing.T) {
+	l, _ := newTestLogger(t)
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	err := l.Record(makeEntry(time.Now().UTC(), "ssh_exec", "prod"))
+	if err == nil {
+		t.Fatal("expected Record after Close to fail")
+	}
+	if !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("expected closed error, got %v", err)
 	}
 }
 

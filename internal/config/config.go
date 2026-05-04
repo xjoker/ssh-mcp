@@ -41,6 +41,8 @@ var tagRe = regexp.MustCompile(`^[a-z0-9_-]+$`)
 // serverNameRe validates server name keys: ^[a-z0-9][a-z0-9_-]*$, length 1-64
 var serverNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
+const maxConfigFileBytes = 4 * 1024 * 1024
+
 // rawConfig mirrors the on-disk TOML structure before key normalisation.
 type rawConfig struct {
 	Settings Settings                `toml:"settings"`
@@ -121,10 +123,17 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config: read %q: %w", path, err)
 	}
+	if len(data) > maxConfigFileBytes {
+		return nil, fmt.Errorf("config: %q exceeds %d byte limit", path, maxConfigFileBytes)
+	}
 
 	var raw rawTopLevel
-	if _, err := toml.Decode(string(data), &raw); err != nil {
+	md, err := toml.Decode(string(data), &raw)
+	if err != nil {
 		return nil, fmt.Errorf("config: parse %q: %w", path, err)
+	}
+	if undecoded := md.Undecoded(); len(undecoded) > 0 {
+		return nil, fmt.Errorf("config: parse %q: unknown key %q", path, undecoded[0].String())
 	}
 
 	// Build Settings with proper defaults.
@@ -177,6 +186,28 @@ func Load(path string) (*Config, error) {
 // validate applies all SDD §7.3 validation rules and collects errors.
 func validate(cfg *Config) error {
 	var errs []string
+
+	if cfg.Settings.DefaultTimeoutMs <= 0 {
+		errs = append(errs, "settings.default_timeout_ms must be positive")
+	}
+	if cfg.Settings.MaxTimeoutMs <= 0 {
+		errs = append(errs, "settings.max_timeout_ms must be positive")
+	}
+	if cfg.Settings.OutputMaxBytes <= 0 {
+		errs = append(errs, "settings.output_max_bytes must be positive")
+	}
+	if cfg.Settings.SftpProgressThresholdBytes <= 0 {
+		errs = append(errs, "settings.sftp_progress_threshold_bytes must be positive")
+	}
+	if cfg.Settings.SessionIdleSeconds <= 0 {
+		errs = append(errs, "settings.session_idle_seconds must be positive")
+	}
+	if cfg.Settings.ConnIdleSeconds <= 0 {
+		errs = append(errs, "settings.conn_idle_seconds must be positive")
+	}
+	if cfg.Settings.AuditRetentionDays <= 0 {
+		errs = append(errs, "settings.audit_retention_days must be positive")
+	}
 
 	for name, srv := range cfg.Servers {
 		// Rule 13: server name matches ^[a-z0-9][a-z0-9_-]*$, length 1-64.

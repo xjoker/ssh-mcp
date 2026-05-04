@@ -4,10 +4,16 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
-	internalsftp "github.com/xjoker/mcp-ssh-bridge/internal/sftp"
 	"github.com/xjoker/mcp-ssh-bridge/internal/safety"
+	internalsftp "github.com/xjoker/mcp-ssh-bridge/internal/sftp"
+)
+
+const (
+	sftpListDefaultMaxEntries = 1000
+	sftpListMaxEntries        = 10000
 )
 
 func init() {
@@ -50,6 +56,15 @@ func handleSftpList(ctx context.Context, deps *Deps, args json.RawMessage) envel
 		return envelope.Err(envelope.CodeInvalidArgument, err.Error(), false)
 	}
 
+	maxEntries := a.MaxEntries
+	if maxEntries <= 0 {
+		maxEntries = sftpListDefaultMaxEntries
+	}
+	if maxEntries > sftpListMaxEntries {
+		return envelope.Err(envelope.CodeInvalidArgument,
+			fmt.Sprintf("max_entries exceeds %d limit", sftpListMaxEntries), false)
+	}
+
 	// extract server name for allowed_paths enforcement (inline = no restriction).
 	var connArgs sftpConnArgs
 	_ = json.Unmarshal(args, &connArgs)
@@ -63,11 +78,6 @@ func handleSftpList(ctx context.Context, deps *Deps, args json.RawMessage) envel
 		return errResp
 	}
 	defer closeFn()
-
-	maxEntries := a.MaxEntries
-	if maxEntries <= 0 {
-		maxEntries = 1000
-	}
 
 	sftpClient, err := internalsftp.New(client.Underlying())
 	if err != nil {

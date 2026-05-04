@@ -139,15 +139,17 @@ func (r *quickSetupRegistry) Register(spec tools.QuickSetupSpec) (string, int64,
 // Close()/eviction.
 func (r *quickSetupRegistry) Lookup(name string) (tools.QuickSetupView, bool) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	e, exists := r.m[name]
 	if !exists {
+		r.mu.Unlock()
 		return tools.QuickSetupView{}, false
 	}
 	if time.Now().After(e.expiresAt) {
 		// Expired — remove lazily.
-		r.evict(name, e)
+		r.evictLocked(name, e)
+		r.mu.Unlock()
+		r.notifyEvicted([]string{name})
 		return tools.QuickSetupView{}, false
 	}
 
@@ -164,6 +166,7 @@ func (r *quickSetupRegistry) Lookup(name string) (tools.QuickSetupView, bool) {
 	if e.passphrase != nil {
 		view.Passphrase = copyBytes(e.passphrase.Bytes())
 	}
+	r.mu.Unlock()
 	return view, true
 }
 
@@ -207,29 +210,33 @@ func (r *quickSetupRegistry) reaperLoop() {
 // reapExpired removes all entries whose expiresAt is in the past.
 func (r *quickSetupRegistry) reapExpired() {
 	now := time.Now()
+	var evicted []string
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	for name, e := range r.m {
 		if now.After(e.expiresAt) {
-			r.evict(name, e)
+			r.evictLocked(name, e)
+			evicted = append(evicted, name)
 		}
 	}
+	r.mu.Unlock()
+	r.notifyEvicted(evicted)
 }
 
 // evictAll closes and removes all entries. Called on shutdown.
 func (r *quickSetupRegistry) evictAll() {
+	var evicted []string
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	for name, e := range r.m {
-		r.evict(name, e)
+		r.evictLocked(name, e)
+		evicted = append(evicted, name)
 	}
+	r.mu.Unlock()
+	r.notifyEvicted(evicted)
 }
 
-// evict closes the secret, removes the entry from the map, and notifies
-// the onEvict callback (which the mcpserver wires to
-// ssh.Pool.RemoveTempServer so the pool entry is dropped in lock-step).
+// evictLocked closes the secret and removes the entry from the map.
 // Caller must hold r.mu.
-func (r *quickSetupRegistry) evict(name string, e *quickSetupEntry) {
+func (r *quickSetupRegistry) evictLocked(name string, e *quickSetupEntry) {
 	if e.secret != nil {
 		e.secret.Close()
 	}
@@ -237,13 +244,16 @@ func (r *quickSetupRegistry) evict(name string, e *quickSetupEntry) {
 		e.passphrase.Close()
 	}
 	delete(r.m, name)
+}
+
+// notifyEvicted runs onEvict outside r.mu to avoid lock-order inversions with
+// ssh.Pool, whose dial path can resolve quick_setup credentials while holding
+// a per-entry pool lock.
+func (r *quickSetupRegistry) notifyEvicted(names []string) {
 	if r.onEvict != nil {
-		// Run outside the lock to avoid potential ordering issues with the
-		// pool's own mutex. We're still inside r.mu but Pool.RemoveTempServer
-		// only takes its own private mutex; releasing r.mu here would expose
-		// the half-closed entry to concurrent Lookup. Net: keep it under
-		// r.mu and accept the one-mutex-then-the-other ordering.
-		r.onEvict(name)
+		for _, name := range names {
+			r.onEvict(name)
+		}
 	}
 }
 

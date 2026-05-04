@@ -286,6 +286,34 @@ func TestQuickSetupRegistry_OnEvictFiresOnReap(t *testing.T) {
 	}
 }
 
+func TestQuickSetupRegistry_OnEvictRunsOutsideLock(t *testing.T) {
+	var r *quickSetupRegistry
+	r = newQuickSetupRegistry(nil, func(string) {
+		locked := make(chan struct{})
+		go func() {
+			r.mu.Lock()
+			r.mu.Unlock()
+			close(locked)
+		}()
+		select {
+		case <-locked:
+		case <-time.After(200 * time.Millisecond):
+			t.Error("onEvict appears to run while registry mutex is held")
+		}
+	})
+	defer r.Close()
+
+	name, _, err := r.Register(mkSpec("lock", "h", "u", []byte("x"), 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.mu.Lock()
+	r.m[name].expiresAt = time.Now().Add(-time.Minute)
+	r.mu.Unlock()
+
+	_, _ = r.Lookup(name)
+}
+
 func TestQuickSetupRegistry_OnEvictFiresOnClose(t *testing.T) {
 	var evicted []string
 	r := newQuickSetupRegistry(nil, func(name string) { evicted = append(evicted, name) })

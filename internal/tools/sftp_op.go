@@ -11,9 +11,11 @@ import (
 	"strconv"
 
 	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
-	internalsftp "github.com/xjoker/mcp-ssh-bridge/internal/sftp"
 	"github.com/xjoker/mcp-ssh-bridge/internal/safety"
+	internalsftp "github.com/xjoker/mcp-ssh-bridge/internal/sftp"
 )
+
+const sftpWriteMaxBytes = sftpReadMaxBytes
 
 func init() {
 	Registered = append(Registered, Tool{
@@ -82,16 +84,14 @@ func handleSftpOp(ctx context.Context, deps *Deps, args json.RawMessage) envelop
 	}
 
 	// Additional per-action pre-validation before connecting.
+	var writeData []byte
 	switch a.Action {
 	case "write":
-		if a.Encoding != "" && a.Encoding != "utf8" && a.Encoding != "base64" {
-			return envelope.Err(envelope.CodeInvalidArgument, "encoding must be utf8 or base64", false)
+		data, errResp, ok := decodeSFTPWriteContent(a)
+		if !ok {
+			return errResp
 		}
-		if a.Encoding == "base64" {
-			if _, err := base64.StdEncoding.DecodeString(a.Content); err != nil {
-				return envelope.Err(envelope.CodeInvalidArgument, "base64 decode: "+err.Error(), false)
-			}
-		}
+		writeData = data
 	case "chmod":
 		if a.Mode == "" {
 			return envelope.Err(envelope.CodeInvalidArgument, "mode is required for chmod", false)
@@ -197,7 +197,7 @@ func handleSftpOp(ctx context.Context, deps *Deps, args json.RawMessage) envelop
 
 	switch a.Action {
 	case "write":
-		return sftpOpWrite(a, resolvedPath, sftpClient, deps, authMode)
+		return sftpOpWrite(a, writeData, resolvedPath, sftpClient, deps, authMode)
 	case "mkdir":
 		return sftpOpMkdir(a, resolvedPath, sftpClient)
 	case "remove":
@@ -221,26 +221,34 @@ func handleSftpOp(ctx context.Context, deps *Deps, args json.RawMessage) envelop
 // action: write
 // --------------------------------------------------------------------------
 
-func sftpOpWrite(a sftpOpArgs, rp safety.RemotePath, sc *internalsftp.Client, deps *Deps, authMode string) envelope.Response {
-	// Decode content.
-	var err error
+func decodeSFTPWriteContent(a sftpOpArgs) ([]byte, envelope.Response, bool) {
 	encoding := a.Encoding
 	if encoding == "" {
 		encoding = "utf8"
 	}
-	var data []byte
+
 	switch encoding {
 	case "base64":
-		data, err = base64.StdEncoding.DecodeString(a.Content)
+		data, err := base64.StdEncoding.DecodeString(a.Content)
 		if err != nil {
-			return envelope.Err(envelope.CodeInvalidArgument, "base64 decode: "+err.Error(), false)
+			return nil, envelope.Err(envelope.CodeInvalidArgument, "base64 decode: "+err.Error(), false), false
 		}
+		if len(data) > sftpWriteMaxBytes {
+			return nil, envelope.Err(envelope.CodeInvalidArgument, "content exceeds 16 MiB limit", false), false
+		}
+		return data, envelope.Response{}, true
 	case "utf8":
-		data = []byte(a.Content)
+		data := []byte(a.Content)
+		if len(data) > sftpWriteMaxBytes {
+			return nil, envelope.Err(envelope.CodeInvalidArgument, "content exceeds 16 MiB limit", false), false
+		}
+		return data, envelope.Response{}, true
 	default:
-		return envelope.Err(envelope.CodeInvalidArgument, "encoding must be utf8 or base64", false)
+		return nil, envelope.Err(envelope.CodeInvalidArgument, "encoding must be utf8 or base64", false), false
 	}
+}
 
+func sftpOpWrite(a sftpOpArgs, data []byte, rp safety.RemotePath, sc *internalsftp.Client, deps *Deps, authMode string) envelope.Response {
 	// Parse mode; default 0644.
 	mode, modeErr := parseOctalMode(a.Mode, 0644)
 	if modeErr != nil {
@@ -304,8 +312,8 @@ func sftpOpRemove(a sftpOpArgs, rp safety.RemotePath, sc *internalsftp.Client) e
 			return mapSFTPErr(enumErr)
 		}
 		return envelope.OK(map[string]any{
-			"removed":  removed,
-			"dry_run":  true,
+			"removed": removed,
+			"dry_run": true,
 		})
 	}
 
@@ -316,8 +324,8 @@ func sftpOpRemove(a sftpOpArgs, rp safety.RemotePath, sc *internalsftp.Client) e
 		return mapSFTPErr(err)
 	}
 	return envelope.OK(map[string]any{
-		"removed":  removed,
-		"dry_run":  false,
+		"removed": removed,
+		"dry_run": false,
 	})
 }
 

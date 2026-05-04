@@ -149,6 +149,20 @@ func TestCreateLocal_DefaultBind_S9(t *testing.T) {
 	}
 }
 
+func TestCreateLocalContextCanceledBeforeListen(t *testing.T) {
+	m := NewManager(&fakeDialer{})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := m.CreateLocalContext(ctx, "srv", "", 0, "dst", 9999)
+	if err == nil {
+		t.Fatal("expected canceled context to fail tunnel creation")
+	}
+	if got := len(m.List()); got != 0 {
+		t.Fatalf("expected no tunnel after canceled create, got %d", got)
+	}
+}
+
 // TestCreateLocal_ExplicitEmptyBind_S9 verifies that localBind="" also
 // defaults to 127.0.0.1 (same S-9 rule, tested via TunnelInfo.LocalAddr).
 func TestCreateLocal_ExplicitEmptyBind_S9(t *testing.T) {

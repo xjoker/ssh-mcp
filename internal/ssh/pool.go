@@ -279,30 +279,32 @@ func (p *Pool) GetAdHoc(ctx context.Context, params AdHocParams) (*Client, error
 }
 
 // CloseIdle closes and removes pool entries whose lastUsed time is older than threshold.
+//
+// Lock order: p.mu MUST be acquired before entry.mu. All call sites that take
+// both locks (CloseIdle, Close) follow this order; getInternal releases p.mu
+// before taking entry.mu. Reversing the order risks deadlock.
 func (p *Pool) CloseIdle(threshold time.Duration) {
 	cutoff := time.Now().Add(-threshold)
 
 	p.mu.Lock()
-	var toClose []*pooledEntry
-	var toRemove []string
+	var toClose []*Client
 	for name, entry := range p.entries {
-		// Lock the entry to read lastUsed safely.
+		// Lock the entry to read lastUsed safely (lock order: p.mu → entry.mu).
 		entry.mu.Lock()
 		if entry.lastUsed.Before(cutoff) {
-			toClose = append(toClose, entry)
-			toRemove = append(toRemove, name)
+			client := entry.client
+			entry.client = nil
+			delete(p.entries, name)
+			if client != nil {
+				toClose = append(toClose, client)
+			}
 		}
 		entry.mu.Unlock()
 	}
-	for _, name := range toRemove {
-		delete(p.entries, name)
-	}
 	p.mu.Unlock()
 
-	for _, entry := range toClose {
-		if entry.client != nil {
-			_ = entry.client.Close()
-		}
+	for _, client := range toClose {
+		_ = client.Close()
 	}
 }
 
@@ -316,12 +318,14 @@ func (p *Pool) Close() error {
 	var lastErr error
 	for _, entry := range entries {
 		entry.mu.Lock()
-		if entry.client != nil {
-			if err := entry.client.Close(); err != nil {
+		client := entry.client
+		entry.client = nil
+		entry.mu.Unlock()
+		if client != nil {
+			if err := client.Close(); err != nil {
 				lastErr = err
 			}
 		}
-		entry.mu.Unlock()
 	}
 	return lastErr
 }

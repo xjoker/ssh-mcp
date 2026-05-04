@@ -6,6 +6,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/xjoker/mcp-ssh-bridge/internal/config"
@@ -114,6 +115,21 @@ func TestSftpList_InlineDisabled(t *testing.T) {
 func TestSftpList_NeitherServerNorInline(t *testing.T) {
 	args := mustJSON(map[string]any{
 		"path": "/tmp",
+	})
+	resp := handleSftpList(context.Background(), sftpDeps(), args)
+	if resp.OK {
+		t.Fatal("expected error, got OK")
+	}
+	if sftpErrCode(resp) != envelope.CodeInvalidArgument {
+		t.Errorf("code: got %q, want %q", sftpErrCode(resp), envelope.CodeInvalidArgument)
+	}
+}
+
+func TestSftpList_MaxEntriesLimit(t *testing.T) {
+	args := mustJSON(map[string]any{
+		"server":      "dummy",
+		"path":        "/tmp",
+		"max_entries": sftpListMaxEntries + 1,
 	})
 	resp := handleSftpList(context.Background(), sftpDeps(), args)
 	if resp.OK {
@@ -327,6 +343,21 @@ func TestSftpOp_WriteInvalidBase64(t *testing.T) {
 	}
 }
 
+func TestSftpOp_WriteContentLimit(t *testing.T) {
+	_, resp, ok := decodeSFTPWriteContent(sftpOpArgs{
+		Action:   "write",
+		Path:     "/tmp/out",
+		Content:  strings.Repeat("x", sftpWriteMaxBytes+1),
+		Encoding: "utf8",
+	})
+	if ok {
+		t.Fatal("expected oversized write content to be rejected")
+	}
+	if resp.Error == nil || resp.Error.Code != envelope.CodeInvalidArgument {
+		t.Fatalf("expected INVALID_ARGUMENT, got %+v", resp.Error)
+	}
+}
+
 // TestSftpOp_MissingAction → INVALID_ARGUMENT.
 func TestSftpOp_MissingAction(t *testing.T) {
 	args := mustJSON(map[string]any{
@@ -445,6 +476,26 @@ func TestTunnel_CreateLocalMissingPorts(t *testing.T) {
 	}
 	if sftpErrCode(resp) != envelope.CodeInvalidArgument {
 		t.Errorf("code: got %q, want %q", sftpErrCode(resp), envelope.CodeInvalidArgument)
+	}
+}
+
+func TestTunnel_CreateCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	args := mustJSON(map[string]any{
+		"action":     "create",
+		"kind":       "local",
+		"server":     "dummy",
+		"local_port": 10022,
+		"dst_host":   "db.internal",
+		"dst_port":   5432,
+	})
+	resp := handleTunnel(ctx, sftpDepsWithTunnel(), args)
+	if resp.OK {
+		t.Fatal("expected canceled create to fail")
+	}
+	if sftpErrCode(resp) != envelope.CodeTimeout {
+		t.Errorf("code: got %q, want %q", sftpErrCode(resp), envelope.CodeTimeout)
 	}
 }
 

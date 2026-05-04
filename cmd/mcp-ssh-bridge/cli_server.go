@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -265,7 +266,7 @@ func serverAppendToConfig(cfgPath string, name string, srv config.ServerConfig) 
 
 	// If the file doesn't exist, create with minimal header first.
 	if _, statErr := os.Stat(cfgPath); os.IsNotExist(statErr) {
-		dir := cfgPath[:strings.LastIndex(cfgPath, string(os.PathSeparator))]
+		dir := filepath.Dir(cfgPath)
 		if dir != "" {
 			if mkErr := os.MkdirAll(dir, 0700); mkErr != nil {
 				return fmt.Errorf("cannot create config directory: %w", mkErr)
@@ -357,18 +358,18 @@ type onDiskConfig struct {
 // serverForEncode is used exclusively for round-trip TOML encode/decode.
 // Using map[string]interface{} to avoid CredRef zero-value serialization issues.
 type serverForEncode struct {
-	Host          string          `toml:"host"`
-	Port          int             `toml:"port,omitempty"`
-	User          string          `toml:"user"`
-	Auth          string          `toml:"auth"`
-	KeyPath       string          `toml:"key_path,omitempty"`
-	KeyPassphrase config.CredRef  `toml:"key_passphrase,omitempty"`
-	Password      config.CredRef  `toml:"password,omitempty"`
-	DefaultDir    string          `toml:"default_dir,omitempty"`
-	Description   string          `toml:"description,omitempty"`
-	ProxyJump     string          `toml:"proxy_jump,omitempty"`
-	AllowedPaths  []string        `toml:"allowed_paths,omitempty"`
-	Tags          []string        `toml:"tags,omitempty"`
+	Host          string         `toml:"host"`
+	Port          int            `toml:"port,omitempty"`
+	User          string         `toml:"user"`
+	Auth          string         `toml:"auth"`
+	KeyPath       string         `toml:"key_path,omitempty"`
+	KeyPassphrase config.CredRef `toml:"key_passphrase,omitempty"`
+	Password      config.CredRef `toml:"password,omitempty"`
+	DefaultDir    string         `toml:"default_dir,omitempty"`
+	Description   string         `toml:"description,omitempty"`
+	ProxyJump     string         `toml:"proxy_jump,omitempty"`
+	AllowedPaths  []string       `toml:"allowed_paths,omitempty"`
+	Tags          []string       `toml:"tags,omitempty"`
 }
 
 func serverRemoveCmd(args []string) int {
@@ -444,9 +445,51 @@ func saveConfig(cfgPath string, cfg *config.Config) error {
 		return fmt.Errorf("encode config: %w", err)
 	}
 
-	if err := os.WriteFile(cfgPath, buf.Bytes(), 0600); err != nil {
+	if err := writeFileAtomic(cfgPath, buf.Bytes(), 0600); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
+	return nil
+}
+
+func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	dir := filepath.Dir(path)
+	if dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			return err
+		}
+	}
+
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	cleanup = false
 	return nil
 }
 

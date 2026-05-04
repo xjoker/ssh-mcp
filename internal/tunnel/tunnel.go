@@ -146,6 +146,25 @@ func (m *Manager) CreateLocal(
 	dstHost string,
 	dstPort int,
 ) (id string, err error) {
+	return m.CreateLocalContext(context.Background(), server, localBind, localPort, dstHost, dstPort)
+}
+
+// CreateLocalContext is CreateLocal with request-context cancellation during
+// setup. Once created, tunnel lifetime is detached and controlled by Close.
+func (m *Manager) CreateLocalContext(
+	ctx context.Context,
+	server, localBind string,
+	localPort int,
+	dstHost string,
+	dstPort int,
+) (id string, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("tunnel: CreateLocal: %w", err)
+	}
+
 	// S-9: default local bind to loopback only.
 	if localBind == "" {
 		localBind = "127.0.0.1"
@@ -156,14 +175,22 @@ func (m *Manager) CreateLocal(
 	if err != nil {
 		return "", fmt.Errorf("tunnel: CreateLocal: listen %s: %w", listenAddr, err)
 	}
+	if err := ctx.Err(); err != nil {
+		_ = ln.Close()
+		return "", fmt.Errorf("tunnel: CreateLocal: %w", err)
+	}
 
 	id, err = newUUID()
 	if err != nil {
 		_ = ln.Close()
 		return "", fmt.Errorf("tunnel: CreateLocal: generate id: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		_ = ln.Close()
+		return "", fmt.Errorf("tunnel: CreateLocal: %w", err)
+	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	tunnelCtx, cancel := context.WithCancel(context.Background())
 	entry := &tunnelEntry{
 		id:          id,
 		kind:        "local",
@@ -180,7 +207,7 @@ func (m *Manager) CreateLocal(
 	m.tunnels[id] = entry
 	m.mu.Unlock()
 
-	go m.localAcceptLoop(ctx, entry, dstHost, dstPort)
+	go m.localAcceptLoop(tunnelCtx, entry, dstHost, dstPort)
 	return id, nil
 }
 
@@ -252,25 +279,50 @@ func (m *Manager) CreateRemote(
 	localHost string,
 	localPort int,
 ) (id string, err error) {
+	return m.CreateRemoteContext(context.Background(), server, remoteBind, remotePort, localHost, localPort)
+}
+
+// CreateRemoteContext is CreateRemote with request-context cancellation during
+// SSHListen setup. Once created, tunnel lifetime is detached and controlled by Close.
+func (m *Manager) CreateRemoteContext(
+	ctx context.Context,
+	server, remoteBind string,
+	remotePort int,
+	localHost string,
+	localPort int,
+) (id string, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("tunnel: CreateRemote: %w", err)
+	}
+
 	// S-9: default remote bind to loopback only.
 	if remoteBind == "" {
 		remoteBind = "127.0.0.1"
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-
 	ln, err := m.dialer.SSHListen(ctx, server, remoteBind, remotePort)
 	if err != nil {
-		cancel()
 		return "", fmt.Errorf("tunnel: CreateRemote: SSHListen %s:%d: %w", remoteBind, remotePort, err)
+	}
+	if err := ctx.Err(); err != nil {
+		_ = ln.Close()
+		return "", fmt.Errorf("tunnel: CreateRemote: %w", err)
 	}
 
 	id, err = newUUID()
 	if err != nil {
-		cancel()
 		_ = ln.Close()
 		return "", fmt.Errorf("tunnel: CreateRemote: generate id: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		_ = ln.Close()
+		return "", fmt.Errorf("tunnel: CreateRemote: %w", err)
+	}
+
+	tunnelCtx, cancel := context.WithCancel(context.Background())
 
 	entry := &tunnelEntry{
 		id:          id,
@@ -288,7 +340,7 @@ func (m *Manager) CreateRemote(
 	m.tunnels[id] = entry
 	m.mu.Unlock()
 
-	go m.remoteAcceptLoop(ctx, entry, localHost, localPort)
+	go m.remoteAcceptLoop(tunnelCtx, entry, localHost, localPort)
 	return id, nil
 }
 

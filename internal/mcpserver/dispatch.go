@@ -25,13 +25,13 @@ import (
 // audit record before the handler runs; if that record cannot be written,
 // the handler is refused and the caller receives AUDIT_FAILED.
 var destructiveTools = map[string]struct{}{
-	"ssh_exec":       {},
-	"ssh_group_exec": {},
-	"sftp_op":        {},
-	"session_send":   {},
-	"session_start":  {},
-	"session_close":  {},
-	"tunnel":         {},
+	"ssh_exec":        {},
+	"ssh_group_exec":  {},
+	"sftp_op":         {},
+	"session_send":    {},
+	"session_start":   {},
+	"session_close":   {},
+	"tunnel":          {},
 	"ssh_quick_setup": {},
 }
 
@@ -47,6 +47,8 @@ func newCorrelationID() string {
 	_, _ = rand.Read(b[:])
 	return hex.EncodeToString(b[:])
 }
+
+var fallbackSessionID = "local-" + newCorrelationID()
 
 // registerAll iterates over tools.All() and registers each tool with the
 // MCP SDK server. It wires the middleware chain around every handler.
@@ -101,15 +103,39 @@ func middlewareChain(
 	deps *tools.Deps,
 ) (result *mcp.CallToolResult, retErr error) {
 	start := time.Now()
+	resp := envelope.Response{}
+	shouldPostAudit := false
+	rawArgs := req.Params.Arguments
+	argsRedacted := string(safety.RedactSecret(rawArgs))
+	serverName := extractServerName(rawArgs)
+	correlationID := newCorrelationID()
+	sessionID := requestSessionID(req, deps.SessionID)
 
 	// 1. Recover from panics — return INTERNAL_ERROR without exposing stack to client.
 	defer func() {
 		if r := recover(); r != nil {
 			stack := debug.Stack()
 			fmt.Fprintf(getStderr(), "mcpserver: PANIC in tool %q: %v\n%s\n", toolName, r, stack)
-			errResp := envelope.Err(envelope.CodeInternalError,
+			resp = envelope.Err(envelope.CodeInternalError,
 				fmt.Sprintf("internal server error in tool %q", toolName), false)
-			result = envelopeToCallToolResult(errResp)
+			result = envelopeToCallToolResult(resp)
+			retErr = nil
+			// Force post-audit on panic so read-only tools (sftp_list,
+			// audit_query, etc.) also leave a debugging trail. Without
+			// this, only destructive tools have a record of the panic.
+			shouldPostAudit = true
+		}
+
+		if !shouldPostAudit {
+			return
+		}
+
+		auditEntry := buildAuditEntry(start, toolName, sessionID, serverName, argsRedacted, correlationID, resp)
+		if auditErr := deps.Audit.Record(auditEntry); auditErr != nil {
+			fmt.Fprintf(getStderr(), "mcpserver: audit post-record failed for tool %q: %v\n", toolName, auditErr)
+			auditFailResp := envelope.Err(envelope.CodeAuditFailed,
+				"audit log write failed after action; outcome cannot be confirmed", false)
+			result = envelopeToCallToolResult(auditFailResp)
 			retErr = nil
 		}
 	}()
@@ -119,11 +145,7 @@ func middlewareChain(
 	reqDeps := *deps // shallow copy so we can add per-request fields
 	reqDeps.Progress = buildProgressFunc(ctx, req)
 	reqDeps.Elicit = buildElicitFunc(req)
-
-	rawArgs := req.Params.Arguments
-	argsRedacted := string(safety.RedactSecret(rawArgs))
-	serverName := extractServerName(rawArgs)
-	correlationID := newCorrelationID()
+	reqDeps.SessionID = sessionID
 
 	// 3. Pre-record (fail-closed) — destructive tools only.
 	//    SDD §9.3: if the pending entry cannot be persisted we refuse to
@@ -133,7 +155,7 @@ func middlewareChain(
 	if isDestructive(toolName) {
 		pendingEntry := audit.Entry{
 			Timestamp:     time.Now().UTC(),
-			SessionID:     deps.SessionID,
+			SessionID:     sessionID,
 			Tool:          toolName,
 			Server:        serverName,
 			ArgsRedacted:  argsRedacted,
@@ -147,14 +169,26 @@ func middlewareChain(
 			return envelopeToCallToolResult(auditFailResp), nil
 		}
 	}
+	shouldPostAudit = true
 
 	// 4. Invoke the tool handler.
-	resp := handler(ctx, &reqDeps, rawArgs)
+	resp = handler(ctx, &reqDeps, rawArgs)
+	return envelopeToCallToolResult(resp), nil
+}
 
-	// 5. Post-record: every tool emits a completion entry.
-	//    For destructive tools the Status field disambiguates from the
-	//    earlier "pending" line and they share CorrelationID.
-	durationMs := time.Since(start).Milliseconds()
+func requestSessionID(req *mcp.CallToolRequest, fallback string) string {
+	if req != nil && req.Session != nil {
+		if id := req.Session.ID(); id != "" {
+			return id
+		}
+	}
+	if fallback != "" {
+		return fallback
+	}
+	return fallbackSessionID
+}
+
+func buildAuditEntry(start time.Time, toolName, sessionID, serverName, argsRedacted, correlationID string, resp envelope.Response) audit.Entry {
 	exitCode := 0
 	errorCode := ""
 	if !resp.OK && resp.Error != nil {
@@ -164,12 +198,12 @@ func middlewareChain(
 
 	auditEntry := audit.Entry{
 		Timestamp:    time.Now().UTC(),
-		SessionID:    deps.SessionID,
+		SessionID:    sessionID,
 		Tool:         toolName,
 		Server:       serverName,
 		ArgsRedacted: argsRedacted,
 		ExitCode:     exitCode,
-		DurationMs:   durationMs,
+		DurationMs:   time.Since(start).Milliseconds(),
 		ErrorCode:    errorCode,
 	}
 	if isDestructive(toolName) {
@@ -182,8 +216,6 @@ func middlewareChain(
 	// that the envelope-success/failure mapping cannot provide. SDD §9.2.
 	if resp.Audit != nil {
 		if resp.Audit.ExitCode != 0 || resp.OK {
-			// Overwrite only when audit provides a meaningful value: either a
-			// real non-zero exit code, or the handler succeeded (exit 0 is valid).
 			auditEntry.ExitCode = resp.Audit.ExitCode
 		}
 		if resp.Audit.BytesIn > 0 {
@@ -196,15 +228,7 @@ func middlewareChain(
 			auditEntry.AuthMode = resp.Audit.AuthMode
 		}
 	}
-
-	if auditErr := deps.Audit.Record(auditEntry); auditErr != nil {
-		fmt.Fprintf(getStderr(), "mcpserver: audit post-record failed for tool %q: %v\n", toolName, auditErr)
-		auditFailResp := envelope.Err(envelope.CodeAuditFailed,
-			"audit log write failed after action; outcome cannot be confirmed", false)
-		return envelopeToCallToolResult(auditFailResp), nil
-	}
-
-	return envelopeToCallToolResult(resp), nil
+	return auditEntry
 }
 
 // buildProgressFunc builds a ProgressFunc from the MCP session's NotifyProgress.

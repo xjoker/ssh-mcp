@@ -75,12 +75,17 @@ type Logger struct {
 	currentDate   string // YYYY-MM-DD of open file
 	file          *os.File
 	bw            *bufio.Writer
+	closed        bool
 }
 
 // New creates (or opens) the audit directory, deletes files older than
 // retentionDays, and opens the current day's log file.
 // SDD §9.5.
 func New(dir string, retentionDays int) (*Logger, error) {
+	if retentionDays <= 0 {
+		return nil, fmt.Errorf("audit: retentionDays must be positive, got %d", retentionDays)
+	}
+
 	// Create directory with mode 0700.
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, fmt.Errorf("audit: cannot create dir %s: %w", dir, err)
@@ -170,6 +175,10 @@ func (l *Logger) Record(e Entry) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	if l.closed || l.bw == nil || l.file == nil {
+		return fmt.Errorf("audit: logger is closed")
+	}
+
 	// Lazy date rotation: if UTC date changed, open a new file. SDD §9.5.
 	today := time.Now().UTC().Format(dateLayout)
 	if today != l.currentDate {
@@ -220,6 +229,10 @@ func (l *Logger) flushLocked() error {
 func (l *Logger) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.closed {
+		return nil
+	}
+	l.closed = true
 	if l.file == nil {
 		return nil
 	}
@@ -332,14 +345,20 @@ func readFile(path string, f Filter, maxResults int) ([]Entry, error) {
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 
 	var results []Entry
+	lineNo := 0
 	for scanner.Scan() {
+		lineNo++
 		line := scanner.Bytes()
 		if len(line) == 0 {
 			continue
 		}
 		var e Entry
 		if err := json.Unmarshal(line, &e); err != nil {
-			// Skip malformed lines.
+			// Skip malformed lines (e.g. truncation from a kill -9) so a
+			// single bad row does not poison the entire query. Log to
+			// stderr for diagnostics.
+			fmt.Fprintf(os.Stderr, "audit: skip malformed JSONL at %s:%d: %v\n",
+				filepath.Base(path), lineNo, err)
 			continue
 		}
 		if !matchFilter(e, f) {
