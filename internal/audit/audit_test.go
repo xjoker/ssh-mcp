@@ -431,6 +431,32 @@ func TestS8_FileAndDirPermissions(t *testing.T) {
 	}
 }
 
+// TestNewReader_DoesNotTriggerRetention verifies that opening the directory
+// in read-only mode for the CLI does NOT delete old files. The daemon owns
+// retention; the CLI must never mutate the dir as a side-effect of a query.
+func TestNewReader_DoesNotTriggerRetention(t *testing.T) {
+	dir := t.TempDir()
+	oldFile := filepath.Join(dir, "audit-2020-01-01.jsonl")
+	if err := os.WriteFile(oldFile, []byte(`{}`+"\n"), 0600); err != nil {
+		t.Fatalf("write old file: %v", err)
+	}
+
+	r, err := NewReader(dir)
+	if err != nil {
+		t.Fatalf("NewReader: %v", err)
+	}
+	defer r.Close()
+
+	if _, statErr := os.Stat(oldFile); statErr != nil {
+		t.Errorf("NewReader must not delete old files: %v", statErr)
+	}
+
+	// Record on a read-only logger must fail (no file is open for writing).
+	if err := r.Record(Entry{Tool: "x"}); err == nil {
+		t.Error("Record on read-only logger should fail")
+	}
+}
+
 // TestRetention verifies that files older than retentionDays are deleted on
 // New. SDD §9.5.
 func TestRetention(t *testing.T) {

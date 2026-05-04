@@ -73,7 +73,9 @@ func auditQueryCmd(args []string) int {
 		auditDir = defaultAuditDirCLI()
 	}
 
-	logger, err := audit.New(auditDir, 90)
+	// Use the read-only opener: the CLI must not trigger retention deletion
+	// or rotate the daemon's current-day file. The daemon owns retention.
+	logger, err := audit.NewReader(auditDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "audit query: open audit dir %q: %v\n", auditDir, err)
 		return 1

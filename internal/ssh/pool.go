@@ -119,6 +119,24 @@ func NewPool(cfg *config.Config, resolver CredResolver) *Pool {
 	}
 }
 
+// LookupTempServer returns the ServerConfig for a previously-registered
+// temp-server entry. Expired entries are not returned. Used by the tools
+// layer so callers like ssh_exec / ssh_group_exec / session_start can
+// resolve quick_setup-registered names without consulting cfg.Servers
+// directly (which only contains statically configured servers).
+func (p *Pool) LookupTempServer(name string) (config.ServerConfig, bool) {
+	p.tempMu.RLock()
+	defer p.tempMu.RUnlock()
+	te, ok := p.tempServers[name]
+	if !ok {
+		return config.ServerConfig{}, false
+	}
+	if !te.expiresAt.IsZero() && time.Now().After(te.expiresAt) {
+		return config.ServerConfig{}, false
+	}
+	return te.srv, true
+}
+
 // AddTempServer registers an ad-hoc server configuration under the given name.
 // expiresAt records when the entry should be considered expired; Pool.Get will
 // return an error for any cache hit whose expiry has passed. Pass a zero value

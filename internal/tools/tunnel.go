@@ -87,6 +87,27 @@ func tunnelCreate(ctx context.Context, a tunnelArgs, deps *Deps) envelope.Respon
 	if serverName == "" {
 		return envelope.Err(envelope.CodeInvalidArgument, "server name is empty", false)
 	}
+	// Honour an already-cancelled context before any other validation so
+	// callers that pre-cancel get a deterministic TIMEOUT rather than a
+	// "not found" path.
+	if err := ctx.Err(); err != nil {
+		return envelope.Err(envelope.CodeTimeout, "tunnel create canceled: "+err.Error(), true)
+	}
+	if _, ok := lookupServer(deps, serverName); !ok {
+		return envelope.Err(envelope.CodeInvalidArgument,
+			fmt.Sprintf("server %q not found in configuration", serverName), false)
+	}
+
+	// Pre-flight: dial the SSH connection now so authentication / host-key
+	// failures surface synchronously instead of being deferred until the
+	// first inbound connection on the listener (which would silently drop).
+	// Pool.Get is idempotent and returns the cached client on subsequent
+	// calls, so this is cheap on the steady-state path.
+	if deps.Pool != nil {
+		if _, err := deps.Pool.Get(ctx, serverName); err != nil {
+			return mapSSHConnErr(err)
+		}
+	}
 
 	switch a.Kind {
 	case "local":

@@ -85,7 +85,7 @@ func New(cfg *config.Config, auditDir string) (*Server, error) {
 	// 4. Session manager.
 	transport := &sshTransport{pool: pool}
 	idleTimeout := time.Duration(cfg.Settings.SessionIdleSeconds) * time.Second
-	sessionMgr := session.NewManager(transport, idleTimeout)
+	sessionMgr := session.NewManagerWithLimit(transport, idleTimeout, cfg.Settings.MaxSessions)
 
 	// 5. Tunnel manager.
 	dialer := &sshDialer{pool: pool}

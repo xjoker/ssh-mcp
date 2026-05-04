@@ -14,9 +14,18 @@ import (
 // fakeQuickSetup implements QuickSetupRegistry for tests.
 type fakeQuickSetup struct {
 	registered []struct {
-		name     string
-		spec     QuickSetupSpec
+		name string
+		spec QuickSetupSpec
 	}
+	// registerCalls preserves every Register invocation even after Remove,
+	// so tests can verify that the spec was constructed correctly even
+	// when the lifecycle code subsequently scrubs the entry (e.g. on
+	// session_start failure).
+	registerCalls []struct {
+		name string
+		spec QuickSetupSpec
+	}
+	removed  []string
 	failWith error
 }
 
@@ -28,10 +37,12 @@ func (f *fakeQuickSetup) Register(spec QuickSetupSpec) (string, int64, error) {
 	if regName == "" {
 		regName = fmt.Sprintf("qs-%s-1", spec.Host)
 	}
-	f.registered = append(f.registered, struct {
+	entry := struct {
 		name string
 		spec QuickSetupSpec
-	}{regName, spec})
+	}{regName, spec}
+	f.registered = append(f.registered, entry)
+	f.registerCalls = append(f.registerCalls, entry)
 	return regName, 9999999999, nil
 }
 
@@ -50,6 +61,17 @@ func (f *fakeQuickSetup) Lookup(name string) (QuickSetupView, bool) {
 		}
 	}
 	return QuickSetupView{}, false
+}
+
+func (f *fakeQuickSetup) Remove(name string) {
+	f.removed = append(f.removed, name)
+	out := f.registered[:0]
+	for _, e := range f.registered {
+		if e.name != name {
+			out = append(out, e)
+		}
+	}
+	f.registered = out
 }
 
 func TestHandleSSHQuickSetup_Disabled(t *testing.T) {

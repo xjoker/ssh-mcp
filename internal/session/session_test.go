@@ -981,6 +981,44 @@ func startLongLineShell(sh *fakeShell, lineBytes int) {
 	}()
 }
 
+// TestStart_SessionLimit verifies that Start refuses to open more than
+// maxSessions concurrent sessions and returns a SESSION_LIMIT error.
+func TestStart_SessionLimit(t *testing.T) {
+	sh1 := newFakeShell()
+	sh2 := newFakeShell()
+	(&shellResponder{sh: sh1}).run()
+	(&shellResponder{sh: sh2}).run()
+
+	ft := &fakeTransport{}
+	ft.addShell(sh1)
+	ft.addShell(sh2)
+
+	m := NewManagerWithLimit(ft, time.Hour, 1)
+	defer m.CloseAll()
+
+	ctx := context.Background()
+	id, err := m.Start(ctx, "server-1")
+	if err != nil {
+		t.Fatalf("first Start failed: %v", err)
+	}
+
+	_, err = m.Start(ctx, "server-2")
+	if err == nil {
+		t.Fatal("expected SESSION_LIMIT error on second Start, got nil")
+	}
+	if !strings.Contains(err.Error(), "SESSION_LIMIT") {
+		t.Errorf("expected SESSION_LIMIT in error, got %v", err)
+	}
+
+	// Closing the first session should free a slot so a follow-up Start succeeds.
+	if err := m.Close(id); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := m.Start(ctx, "server-2"); err != nil {
+		t.Errorf("Start after Close: %v", err)
+	}
+}
+
 // TestSend_LongLineWithoutNewlineDoesNotOverflow verifies that a remote process
 // emitting a single line far exceeding sessionLineMaxBytes (5 MiB, no embedded
 // newline) does not cause OOM. Send must:

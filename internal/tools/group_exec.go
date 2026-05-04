@@ -126,9 +126,10 @@ func handleSSHGroupExec(ctx context.Context, deps *Deps, args json.RawMessage) e
 		}
 	}
 
-	// Validate all server names exist upfront
+	// Validate all server names exist upfront. Temp servers registered via
+	// ssh_quick_setup are addressable here in the same way as static config.
 	for _, name := range serverNames {
-		if _, ok := deps.Cfg.Servers[name]; !ok {
+		if _, ok := lookupServer(deps, name); !ok {
 			return envelope.Err(envelope.CodeInvalidArgument,
 				fmt.Sprintf("server %q not found in configuration", name), false)
 		}

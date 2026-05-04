@@ -66,6 +66,9 @@ func applySettingsDefaults(s *Settings) {
 	if s.SessionIdleSeconds == 0 {
 		s.SessionIdleSeconds = 3_600
 	}
+	if s.MaxSessions == 0 {
+		s.MaxSessions = 16
+	}
 	if s.ConnIdleSeconds == 0 {
 		s.ConnIdleSeconds = 600
 	}
@@ -93,6 +96,7 @@ type rawSettings struct {
 	OutputMaxBytes               *int     `toml:"output_max_bytes"`
 	SftpProgressThresholdBytes   *int     `toml:"sftp_progress_threshold_bytes"`
 	SessionIdleSeconds           *int     `toml:"session_idle_seconds"`
+	MaxSessions                  *int     `toml:"max_sessions"`
 	ConnIdleSeconds              *int     `toml:"conn_idle_seconds"`
 	AuditRetentionDays           *int     `toml:"audit_retention_days"`
 	WeakAlgorithmsOptIn          []string `toml:"weak_algorithms_opt_in"`
@@ -147,6 +151,7 @@ func Load(path string) (*Config, error) {
 		OutputMaxBytes:               intVal(rs.OutputMaxBytes, 65_536),
 		SftpProgressThresholdBytes:   intVal(rs.SftpProgressThresholdBytes, 10*1024*1024),
 		SessionIdleSeconds:           intVal(rs.SessionIdleSeconds, 3_600),
+		MaxSessions:                  intVal(rs.MaxSessions, 16),
 		ConnIdleSeconds:              intVal(rs.ConnIdleSeconds, 600),
 		AuditRetentionDays:           intVal(rs.AuditRetentionDays, 90),
 		WeakAlgorithmsOptIn:          rs.WeakAlgorithmsOptIn,
@@ -201,6 +206,9 @@ func validate(cfg *Config) error {
 	}
 	if cfg.Settings.SessionIdleSeconds <= 0 {
 		errs = append(errs, "settings.session_idle_seconds must be positive")
+	}
+	if cfg.Settings.MaxSessions <= 0 {
+		errs = append(errs, "settings.max_sessions must be positive")
 	}
 	if cfg.Settings.ConnIdleSeconds <= 0 {
 		errs = append(errs, "settings.conn_idle_seconds must be positive")

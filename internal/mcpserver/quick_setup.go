@@ -176,6 +176,20 @@ func copyBytes(in []byte) []byte {
 	return out
 }
 
+// Remove deletes the named entry, zeroes its secrets, and fires onEvict.
+// Idempotent: removing a non-existent name is a no-op.
+func (r *quickSetupRegistry) Remove(name string) {
+	r.mu.Lock()
+	e, ok := r.m[name]
+	if !ok {
+		r.mu.Unlock()
+		return
+	}
+	r.evictLocked(name, e)
+	r.mu.Unlock()
+	r.notifyEvicted([]string{name})
+}
+
 // Close stops the reaper goroutine. Idempotent.
 func (r *quickSetupRegistry) Close() {
 	select {

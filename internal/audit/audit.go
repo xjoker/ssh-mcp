@@ -78,6 +78,23 @@ type Logger struct {
 	closed        bool
 }
 
+// NewReader opens an existing audit directory in read-only mode for Query
+// callers (e.g. the `audit query` CLI). Unlike New, it does NOT enforce
+// retention (no deletion of old files), does NOT create the directory or
+// open today's file for writing, and is safe to use on a directory whose
+// retention policy is governed by the running daemon.
+//
+// The returned Logger MUST NOT be used to Record entries; doing so will
+// fail because the underlying file is never opened for writing.
+func NewReader(dir string) (*Logger, error) {
+	if _, err := os.Stat(dir); err != nil {
+		return nil, fmt.Errorf("audit: cannot stat dir %s: %w", dir, err)
+	}
+	// file/bw stay nil; Record will reject any write attempts via the
+	// "audit: logger is closed" path. Close is idempotent and safe.
+	return &Logger{dir: dir}, nil
+}
+
 // New creates (or opens) the audit directory, deletes files older than
 // retentionDays, and opens the current day's log file.
 // SDD §9.5.

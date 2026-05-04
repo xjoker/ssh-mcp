@@ -14,6 +14,7 @@ type Settings struct {
 	OutputMaxBytes               int      `toml:"output_max_bytes"`
 	SftpProgressThresholdBytes   int      `toml:"sftp_progress_threshold_bytes"`
 	SessionIdleSeconds           int      `toml:"session_idle_seconds"`
+	MaxSessions                  int      `toml:"max_sessions"`
 	ConnIdleSeconds              int      `toml:"conn_idle_seconds"`
 	AuditRetentionDays           int      `toml:"audit_retention_days"`
 	WeakAlgorithmsOptIn          []string `toml:"weak_algorithms_opt_in"`

@@ -4,11 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/xjoker/mcp-ssh-bridge/internal/config"
 	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
 )
+
+// inlineSessionRegistrations maps session_id → registered temp-server name
+// for sessions opened via the inline path. session_close consults this map
+// to release the QuickSetup secret + Pool entry alongside the shell, so
+// inline credentials live only as long as the session itself rather than
+// the registry's TTL window.
+var inlineSessionRegistrations sync.Map // map[string]string
 
 // configServerConfigFromInline builds a minimal ServerConfig used when an
 // inline session_start request is registered as a temp server. Auth is
@@ -99,6 +107,7 @@ func handleSessionStart(ctx context.Context, deps *Deps, args json.RawMessage) e
 	}
 
 	serverName := input.Server
+	inlineRegistered := ""
 	if hasInline {
 		// SDD §6.2 oneOf inline branch — register an ephemeral server in
 		// the QuickSetup registry + Pool, then drive the standard Start
@@ -108,8 +117,9 @@ func handleSessionStart(ctx context.Context, deps *Deps, args json.RawMessage) e
 			return errResp
 		}
 		serverName = registered
+		inlineRegistered = registered
 	} else {
-		if _, ok := deps.Cfg.Servers[input.Server]; !ok {
+		if _, ok := lookupServer(deps, input.Server); !ok {
 			return envelope.Err(envelope.CodeInvalidArgument,
 				"server \""+input.Server+"\" not found in configuration", false)
 		}
@@ -117,7 +127,17 @@ func handleSessionStart(ctx context.Context, deps *Deps, args json.RawMessage) e
 
 	id, err := deps.SessionMgr.Start(ctx, serverName)
 	if err != nil {
+		// On Start failure, scrub the inline registration immediately so the
+		// secret does not linger in the QuickSetup registry / Pool until TTL
+		// expiry.
+		if inlineRegistered != "" {
+			cleanupInlineRegistration(deps, inlineRegistered)
+		}
 		return mapSessionError(err)
+	}
+
+	if inlineRegistered != "" {
+		inlineSessionRegistrations.Store(id, inlineRegistered)
 	}
 
 	return envelope.OK(sessionStartOutput{
@@ -125,6 +145,44 @@ func handleSessionStart(ctx context.Context, deps *Deps, args json.RawMessage) e
 		Server:    serverName,
 		StartedAt: time.Now().UTC().Format(time.RFC3339),
 	})
+}
+
+// cleanupInlineRegistration removes a temp-server registration created for an
+// inline session_start request. Safe to call with a name that was never
+// registered (idempotent).
+func cleanupInlineRegistration(deps *Deps, name string) {
+	if name == "" {
+		return
+	}
+	if deps.QuickSetup != nil {
+		deps.QuickSetup.Remove(name)
+	}
+	if deps.Pool != nil {
+		deps.Pool.RemoveTempServer(name)
+	}
+}
+
+// lookupServer reports whether the name resolves to a configured server or a
+// live temp-server in the SSH pool. Quick_setup-registered entries are
+// addressable by ssh_exec / ssh_group_exec / session_start once registered.
+func lookupServer(deps *Deps, name string) (struct{ Host, User string }, bool) {
+	var info struct{ Host, User string }
+	if deps == nil || name == "" {
+		return info, false
+	}
+	if srv, ok := deps.Cfg.Servers[name]; ok {
+		info.Host = srv.Host
+		info.User = srv.User
+		return info, true
+	}
+	if deps.Pool != nil {
+		if srv, ok := deps.Pool.LookupTempServer(name); ok {
+			info.Host = srv.Host
+			info.User = srv.User
+			return info, true
+		}
+	}
+	return info, false
 }
 
 // registerInlineSession converts inline credentials into a runtime entry
@@ -303,6 +361,15 @@ func handleSessionClose(_ context.Context, deps *Deps, args json.RawMessage) env
 
 	// Close is idempotent per SDD §6.4 — NOT_FOUND also returns OK.
 	_ = deps.SessionMgr.Close(input.SessionID)
+
+	// Release any inline credential bound to this session so the secret no
+	// longer lives in the QuickSetup registry / Pool. Idempotent — non-inline
+	// sessions are not tracked here so the LoadAndDelete is a no-op.
+	if v, ok := inlineSessionRegistrations.LoadAndDelete(input.SessionID); ok {
+		if name, ok := v.(string); ok {
+			cleanupInlineRegistration(deps, name)
+		}
+	}
 
 	return envelope.OK(map[string]bool{"closed": true})
 }

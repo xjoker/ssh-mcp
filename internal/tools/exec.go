@@ -136,13 +136,13 @@ func handleSSHExec(ctx context.Context, deps *Deps, args json.RawMessage) envelo
 	var adHoc bool
 
 	if hasServer {
-		srv, ok := deps.Cfg.Servers[input.Server]
+		info, ok := lookupServer(deps, input.Server)
 		if !ok {
 			return envelope.Err(envelope.CodeInvalidArgument,
 				fmt.Sprintf("server %q not found in configuration", input.Server), false)
 		}
-		hostLabel = srv.Host
-		userLabel = srv.User
+		hostLabel = info.Host
+		userLabel = info.User
 
 		c, err := deps.Pool.Get(ctx, input.Server)
 		if err != nil {

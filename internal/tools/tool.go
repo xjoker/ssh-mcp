@@ -104,6 +104,12 @@ type QuickSetupView struct {
 type QuickSetupRegistry interface {
 	Register(spec QuickSetupSpec) (registeredName string, expiresAt int64, err error)
 	Lookup(name string) (view QuickSetupView, ok bool)
+	// Remove deletes a previously-registered entry, scrubs its secret, and
+	// fires the registry's onEvict callback (which keeps the SSH pool in
+	// sync). It is idempotent — calling Remove on an unknown name is a
+	// no-op. Used by the inline session_start path so credentials live
+	// only for the lifetime of the session, not the registry's TTL.
+	Remove(name string)
 }
 
 // ElicitFunc requests user confirmation via MCP elicitation/create.

@@ -300,11 +300,44 @@ func TestSessionStart_InlineAcceptNewHostPlumbed(t *testing.T) {
 	defer cancel()
 	handleSessionStart(tCtx, deps, args)
 
-	if len(qs.registered) == 0 {
-		t.Fatal("expected inline session to be registered in QuickSetup")
+	if len(qs.registerCalls) == 0 {
+		t.Fatal("expected inline session to call QuickSetup.Register")
 	}
-	if !qs.registered[0].spec.AcceptNewHost {
+	if !qs.registerCalls[0].spec.AcceptNewHost {
 		t.Error("QuickSetupSpec.AcceptNewHost should be true for inline accept_new_host=true")
+	}
+	// SessionMgr.Start fails (fake transport), so the inline registration
+	// must be cleaned up immediately — it should NOT linger in qs.registered.
+	if len(qs.removed) != 1 || qs.removed[0] != qs.registerCalls[0].name {
+		t.Errorf("expected inline registration to be removed on Start failure; removed=%v", qs.removed)
+	}
+}
+
+// TestSessionClose_ReleasesInlineRegistration verifies that closing an inline
+// session scrubs the QuickSetup entry + Pool temp-server, so the credential
+// does not linger past the session lifetime.
+func TestSessionClose_ReleasesInlineRegistration(t *testing.T) {
+	qs := &fakeQuickSetup{}
+	// Pre-populate the inline registration map as if session_start had succeeded.
+	const sessID = "sess-test-1"
+	const regName = "qs-inline-1"
+	inlineSessionRegistrations.Store(sessID, regName)
+
+	deps := &Deps{
+		Cfg:        &config.Config{},
+		QuickSetup: qs,
+		SessionMgr: newFakeSessionManager(),
+	}
+	args := mustJSON(map[string]any{"session_id": sessID})
+	resp := handleSessionClose(context.Background(), deps, args)
+	if !resp.OK {
+		t.Fatalf("session_close: %+v", resp.Error)
+	}
+	if len(qs.removed) != 1 || qs.removed[0] != regName {
+		t.Errorf("expected QuickSetup.Remove(%q); got removed=%v", regName, qs.removed)
+	}
+	if _, lingering := inlineSessionRegistrations.Load(sessID); lingering {
+		t.Error("inline registration should be removed from tracking map after close")
 	}
 }
 

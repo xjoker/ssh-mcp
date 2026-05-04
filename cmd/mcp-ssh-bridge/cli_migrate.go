@@ -347,14 +347,21 @@ func migratePasswordsCmd(_ []string) int {
 	migrated := 0
 
 	for name, srv := range raw.Servers {
-		// Check if password field is plaintext (non-empty, not a keychain/env ref).
-		pwd := srv.Password
-		if pwd == "" || strings.HasPrefix(pwd, "keychain:") || strings.HasPrefix(pwd, "env:") {
+		// Parse the raw value through the same logic config.Load uses, so a
+		// "plaintext:hunter2" entry yields just "hunter2" — not the literal
+		// string "plaintext:hunter2", which would then fail to authenticate
+		// after migration.
+		ref, perr := config.ParseCredRef(srv.Password)
+		if perr != nil {
+			fmt.Fprintf(os.Stderr, "migrate-passwords: parse password for %q: %v\n", name, perr)
+			exitCode = 1
 			continue
 		}
-		// It's plaintext; migrate to keychain.
+		if ref.Kind != config.CredRefPlaintext || ref.Value == "" {
+			continue
+		}
 		account := keychainAccount(name)
-		if err := auth.SetKeychain(service, account, []byte(pwd)); err != nil {
+		if err := auth.SetKeychain(service, account, []byte(ref.Value)); err != nil {
 			fmt.Fprintf(os.Stderr, "migrate-passwords: SetKeychain for %q: %v\n", name, err)
 			exitCode = 1
 			continue
@@ -368,12 +375,17 @@ func migratePasswordsCmd(_ []string) int {
 
 	// Also check key_passphrase fields.
 	for name, srv := range raw.Servers {
-		kp := srv.KeyPassphrase
-		if kp == "" || strings.HasPrefix(kp, "keychain:") || strings.HasPrefix(kp, "env:") {
+		ref, perr := config.ParseCredRef(srv.KeyPassphrase)
+		if perr != nil {
+			fmt.Fprintf(os.Stderr, "migrate-passwords: parse passphrase for %q: %v\n", name, perr)
+			exitCode = 1
+			continue
+		}
+		if ref.Kind != config.CredRefPlaintext || ref.Value == "" {
 			continue
 		}
 		account := "ssh-passphrase:" + name
-		if err := auth.SetKeychain(service, account, []byte(kp)); err != nil {
+		if err := auth.SetKeychain(service, account, []byte(ref.Value)); err != nil {
 			fmt.Fprintf(os.Stderr, "migrate-passwords: SetKeychain passphrase for %q: %v\n", name, err)
 			exitCode = 1
 			continue

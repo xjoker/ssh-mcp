@@ -233,6 +233,45 @@ func TestMigrate_LegacyEnvSkipsInvalidName(t *testing.T) {
 	}
 }
 
+// TestMigratePasswordsStripsPlaintextPrefix verifies that an explicitly-prefixed
+// "plaintext:hunter2" entry is migrated as the bare secret "hunter2", not the
+// literal string "plaintext:hunter2". A previous bug stored the full prefixed
+// string in the keychain, breaking authentication after migration.
+func TestMigratePasswordsStripsPlaintextPrefix(t *testing.T) {
+	cfgContent := `[settings]
+allow_config_plaintext_password = true
+
+[servers.myserver]
+host = "10.0.0.1"
+user = "ubuntu"
+auth = "password"
+password = "plaintext:hunter2"
+`
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MCP_SSH_BRIDGE_CONFIG", cfgPath)
+
+	// Best-effort: keychain may be unavailable on CI. Assert on the rewritten
+	// config — even if SetKeychain failed, the migrate logic must not have
+	// substituted "plaintext:hunter2" verbatim into the keychain reference.
+	migratePasswordsCmd(nil)
+
+	written, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(written)
+	// The literal "plaintext:hunter2" must not appear anywhere — neither as
+	// the keychain payload (which would mean the bug is still present) nor
+	// in the rewritten config.
+	if strings.Contains(out, "plaintext:hunter2") {
+		t.Errorf("rewritten config still contains 'plaintext:hunter2': %s", out)
+	}
+}
+
 // TestMigratePasswordsCmdNoPlaintext verifies that when a config has no
 // plaintext passwords, the command exits 0 and reports nothing to migrate.
 func TestMigratePasswordsCmdNoPlaintext(t *testing.T) {

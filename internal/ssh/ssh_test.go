@@ -498,6 +498,38 @@ func TestPool_TempExpiryDropsCachedClient(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
+// TestPool_LookupTempServer verifies that LookupTempServer returns the
+// stored ServerConfig for a live entry, and false for unknown / expired
+// entries. Used by the tools layer to resolve quick_setup-registered
+// names without consulting cfg.Servers directly.
+func TestPool_LookupTempServer(t *testing.T) {
+	cfg := &config.Config{Settings: config.Settings{}, Servers: map[string]config.ServerConfig{}}
+	p := NewPool(cfg, &fakeResolver{})
+
+	srv := config.ServerConfig{
+		Name: "qs-1", Host: "10.0.0.1", Port: 2200, User: "alice", Auth: "quick_setup",
+	}
+	p.AddTempServer("qs-1", srv, time.Now().Add(30*time.Minute))
+
+	got, ok := p.LookupTempServer("qs-1")
+	if !ok {
+		t.Fatal("expected live temp entry to be found")
+	}
+	if got.Host != "10.0.0.1" || got.User != "alice" || got.Port != 2200 {
+		t.Errorf("returned ServerConfig fields: %+v", got)
+	}
+
+	if _, ok := p.LookupTempServer("nope"); ok {
+		t.Error("expected unknown name to return false")
+	}
+
+	// Expired entry must read as not present.
+	p.AddTempServer("qs-old", srv, time.Now().Add(-time.Minute))
+	if _, ok := p.LookupTempServer("qs-old"); ok {
+		t.Error("expected expired temp entry to return false")
+	}
+}
+
 // H02: TestPool_RemoveTempServerEvictsPoolEntry
 // --------------------------------------------------------------------------
 

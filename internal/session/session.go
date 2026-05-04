@@ -131,6 +131,10 @@ func (s *session) consumeStderr() string {
 type Manager struct {
 	transport   Transport
 	idleTimeout time.Duration
+	// maxSessions caps the number of concurrent live sessions. Start returns
+	// a SESSION_LIMIT error when the cap is reached. Zero or negative means
+	// "unlimited" (used by tests that need to spin up many sessions).
+	maxSessions int
 
 	mu       sync.RWMutex
 	sessions map[string]*session
@@ -156,10 +160,21 @@ const sessionLineMaxBytes = 64 * 1024 // 64 KiB per logical line
 
 // NewManager creates a Manager and starts the idle-session reaper goroutine.
 // Call CloseAll to shut down cleanly.
+//
+// maxSessions defaults to 0 (unlimited) for backwards compatibility with tests.
+// Production callers should use NewManagerWithLimit to set the cap.
 func NewManager(transport Transport, idleTimeout time.Duration) *Manager {
+	return NewManagerWithLimit(transport, idleTimeout, 0)
+}
+
+// NewManagerWithLimit is like NewManager but caps live sessions at
+// maxSessions (<=0 means unlimited). When the cap is reached, Start returns
+// an error containing "SESSION_LIMIT" so the tools layer can map it.
+func NewManagerWithLimit(transport Transport, idleTimeout time.Duration, maxSessions int) *Manager {
 	m := &Manager{
 		transport:   transport,
 		idleTimeout: idleTimeout,
+		maxSessions: maxSessions,
 		sessions:    make(map[string]*session),
 		stopReaper:  make(chan struct{}),
 		reaperDone:  make(chan struct{}),
@@ -208,7 +223,21 @@ func (m *Manager) ReapIdle() {
 
 // Start opens a new persistent shell session on the named server and returns
 // its session ID (UUID v4). SDD §5.7.
+//
+// Concurrency cap: when maxSessions > 0, Start returns a SESSION_LIMIT error
+// if adding this session would exceed the cap. The check is performed BEFORE
+// dialing the remote shell so an over-quota request fails fast without
+// consuming an SSH channel. SDD §6.2.
 func (m *Manager) Start(ctx context.Context, server string) (string, error) {
+	if m.maxSessions > 0 {
+		m.mu.RLock()
+		live := len(m.sessions)
+		m.mu.RUnlock()
+		if live >= m.maxSessions {
+			return "", fmt.Errorf("session: Start: SESSION_LIMIT: %d concurrent sessions reached", m.maxSessions)
+		}
+	}
+
 	stdin, stdoutRaw, stderrRaw, closeShell, err := m.transport.OpenShell(ctx, server)
 	if err != nil {
 		return "", fmt.Errorf("session: Start: OpenShell: %w", err)
@@ -276,6 +305,11 @@ func (m *Manager) Start(ctx context.Context, server string) (string, error) {
 	}
 
 	m.mu.Lock()
+	if m.maxSessions > 0 && len(m.sessions) >= m.maxSessions {
+		m.mu.Unlock()
+		_ = closeShell()
+		return "", fmt.Errorf("session: Start: SESSION_LIMIT: %d concurrent sessions reached", m.maxSessions)
+	}
 	m.sessions[id] = s
 	m.mu.Unlock()
 
