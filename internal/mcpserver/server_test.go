@@ -22,7 +22,7 @@ func TestServerNew_AuditDirWritable(t *testing.T) {
 	}
 
 	auditDir := t.TempDir()
-	s, err := New(cfg, auditDir)
+	s, err := New(cfg, auditDir, "")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestServerNew_AuditDirUnwritable(t *testing.T) {
 	// Actually, we can't easily prevent mkdir on most systems in tests.
 	// Instead, test that New succeeds with a writable temp dir.
 	auditDir := t.TempDir()
-	s, err := New(cfg, auditDir)
+	s, err := New(cfg, auditDir, "")
 	if err != nil {
 		t.Fatalf("unexpected failure: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestServer_RegisterAll(t *testing.T) {
 	}
 
 	auditDir := t.TempDir()
-	s, err := New(cfg, auditDir)
+	s, err := New(cfg, auditDir, "")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestServer_Shutdown(t *testing.T) {
 	}
 
 	auditDir := t.TempDir()
-	s, err := New(cfg, auditDir)
+	s, err := New(cfg, auditDir, "")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestRunConnReaper_ExitsOnCtxCancel(t *testing.T) {
 	}
 
 	auditDir := t.TempDir()
-	s, err := New(cfg, auditDir)
+	s, err := New(cfg, auditDir, "")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestRunConnReaper_UsesConnIdleSeconds(t *testing.T) {
 	}
 
 	auditDir := t.TempDir()
-	s, err := New(cfg, auditDir)
+	s, err := New(cfg, auditDir, "")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
