@@ -6,8 +6,9 @@ on:
       - 'v[0-9]+.[0-9]+.[0-9]+'   # Only stable tags (no -dev suffix)
 
 permissions:
-  contents: write   # Required for creating GitHub Releases
-  id-token: write   # Required for OIDC attestation
+  contents: write      # Required for creating GitHub Releases
+  id-token: write      # Required for OIDC token (Sigstore signing)
+  attestations: write  # Required for storing build provenance
 
 jobs:
   release:
