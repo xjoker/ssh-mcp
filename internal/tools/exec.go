@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -74,10 +75,7 @@ var sshExecSchema = json.RawMessage(`{
     "stream":     { "type": "boolean", "default": false },
     "timeout_ms": { "type": "integer", "minimum": 1000, "maximum": 1800000, "default": 120000 }
   },
-  "oneOf": [
-    { "required": ["server", "command"] },
-    { "required": ["inline", "command"] }
-  ]
+  "required": ["command"]
 }`)
 
 func toolSSHExec() Tool {
@@ -117,6 +115,9 @@ func handleSSHExec(ctx context.Context, deps *Deps, args json.RawMessage) envelo
 	}
 
 	// Timeout
+	if input.TimeoutMs > 0 && input.TimeoutMs < 1000 {
+		return envelope.Err(envelope.CodeInvalidArgument, "timeout_ms must be >= 1000", false)
+	}
 	timeoutMs := input.TimeoutMs
 	if timeoutMs <= 0 {
 		timeoutMs = deps.Cfg.Settings.DefaultTimeoutMs
@@ -250,7 +251,7 @@ func handleSSHExec(ctx context.Context, deps *Deps, args json.RawMessage) envelo
 		Timeout:        timeout,
 	})
 	if err != nil {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			return envelope.Err(envelope.CodeTimeout,
 				"command timed out: "+err.Error(), true)
 		}
@@ -415,7 +416,7 @@ func buildStreamingEnvelope(
 	truncated bool,
 	host, user string,
 ) envelope.Response {
-	if streamErr != nil && ctx.Err() != nil {
+	if streamErr != nil && (ctx.Err() != nil || errors.Is(streamErr, context.DeadlineExceeded) || errors.Is(streamErr, context.Canceled)) {
 		return envelope.Err(envelope.CodeTimeout,
 			"streaming command timed out: "+streamErr.Error(), true)
 	}

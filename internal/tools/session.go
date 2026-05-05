@@ -11,11 +11,10 @@ import (
 	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
 )
 
-// inlineSessionRegistrations maps session_id → registered temp-server name
-// for sessions opened via the inline path. session_close consults this map
-// to release the QuickSetup secret + Pool entry alongside the shell, so
-// inline credentials live only as long as the session itself rather than
-// the registry's TTL window.
+// inlineSessionRegistrations records session_id → registered temp-server name
+// for sessions opened via the inline path. The entry is retained until the
+// temp-server TTL/session shutdown path removes it; session_close only closes
+// the shell and deliberately does not remove the server registration.
 var inlineSessionRegistrations sync.Map // map[string]string
 
 // configServerConfigFromInline builds a minimal ServerConfig used when an
@@ -50,7 +49,7 @@ var sessionStartSchema = json.RawMessage(`{
     "server": { "type": "string", "description": "Configured server name" },
     "inline": {
       "type": "object",
-      "description": "Ad-hoc connection params (alternative to server). Credentials live only for the lifetime of this session and are cleared on session_close.",
+      "description": "Ad-hoc connection params (alternative to server). Credentials are promoted to an in-memory temp server for this MCP session.",
       "properties": {
         "host":             { "type": "string" },
         "port":             { "type": "integer", "minimum": 1, "maximum": 65535, "default": 22 },
@@ -62,11 +61,7 @@ var sessionStartSchema = json.RawMessage(`{
       },
       "required": ["host", "user"]
     }
-  },
-  "oneOf": [
-    { "required": ["server"] },
-    { "required": ["inline"] }
-  ]
+  }
 }`)
 
 func toolSessionStart() Tool {
@@ -279,6 +274,7 @@ type sessionSendOutput struct {
 	Stderr     string `json:"stderr"`
 	ExitCode   int    `json:"exit_code"`
 	DurationMs int64  `json:"duration_ms"`
+	Truncated  bool   `json:"truncated"`
 }
 
 func handleSessionSend(ctx context.Context, deps *Deps, args json.RawMessage) envelope.Response {
@@ -322,6 +318,7 @@ func handleSessionSend(ctx context.Context, deps *Deps, args json.RawMessage) en
 		Stderr:     result.Stderr,
 		ExitCode:   result.ExitCode,
 		DurationMs: result.Duration.Milliseconds(),
+		Truncated:  result.Truncated,
 	})
 }
 
@@ -362,14 +359,10 @@ func handleSessionClose(_ context.Context, deps *Deps, args json.RawMessage) env
 	// Close is idempotent per SDD §6.4 — NOT_FOUND also returns OK.
 	_ = deps.SessionMgr.Close(input.SessionID)
 
-	// Release any inline credential bound to this session so the secret no
-	// longer lives in the QuickSetup registry / Pool. Idempotent — non-inline
-	// sessions are not tracked here so the LoadAndDelete is a no-op.
-	if v, ok := inlineSessionRegistrations.LoadAndDelete(input.SessionID); ok {
-		if name, ok := v.(string); ok {
-			cleanupInlineRegistration(deps, name)
-		}
-	}
+	// Intentionally keep any inline temp-server registration alive. The
+	// registered server remains addressable by ssh_exec/sftp/tunnel until TTL
+	// expiry or MCP server shutdown, matching ssh_quick_setup semantics.
+	inlineSessionRegistrations.Delete(input.SessionID)
 
 	return envelope.OK(map[string]bool{"closed": true})
 }
