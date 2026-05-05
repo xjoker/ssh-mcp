@@ -26,9 +26,10 @@ type sshTransport struct {
 	pool *sshpkg.Pool
 }
 
-// OpenShell opens a PTY-backed shell on the named server.
-// It allocates a PTY, starts a shell, and returns the three I/O streams plus
-// a close function. The caller owns all returned values.
+// OpenShell starts a shell on the named server and returns the three I/O
+// streams plus a close function. It intentionally avoids allocating a PTY so
+// stdout/stderr stay separate and interactive prompts/control sequences do not
+// pollute session_send output.
 func (t *sshTransport) OpenShell(
 	ctx context.Context,
 	server string,
@@ -41,17 +42,6 @@ func (t *sshTransport) OpenShell(
 	sess, err := cl.Underlying().NewSession()
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("sshTransport.OpenShell: new session: %w", err)
-	}
-
-	// Request a pseudo-terminal.
-	modes := gossh.TerminalModes{
-		gossh.ECHO:          0,
-		gossh.TTY_OP_ISPEED: 38400,
-		gossh.TTY_OP_OSPEED: 38400,
-	}
-	if ptErr := sess.RequestPty("xterm", 40, 80, modes); ptErr != nil {
-		sess.Close()
-		return nil, nil, nil, nil, fmt.Errorf("sshTransport.OpenShell: RequestPty: %w", ptErr)
 	}
 
 	stdinPipe, err := sess.StdinPipe()

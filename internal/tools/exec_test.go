@@ -100,6 +100,22 @@ func TestSSHExec_InlineCredsDisabled(t *testing.T) {
 	}
 }
 
+func TestSSHExec_RejectsTooSmallTimeout(t *testing.T) {
+	deps := minDeps(true)
+	args := mustJSON(map[string]any{
+		"server":     "prod",
+		"command":    "ls",
+		"timeout_ms": 1,
+	})
+	resp := handleSSHExec(context.Background(), deps, args)
+	if resp.OK {
+		t.Fatal("expected not-OK for too-small timeout")
+	}
+	if resp.Error == nil || resp.Error.Code != envelope.CodeInvalidArgument {
+		t.Fatalf("expected INVALID_ARGUMENT, got %+v", resp.Error)
+	}
+}
+
 // TestSSHExec_ServerNotFound verifies INVALID_ARGUMENT for an unknown server name.
 func TestSSHExec_ServerNotFound(t *testing.T) {
 	deps := minDeps(true)

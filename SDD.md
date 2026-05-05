@@ -967,8 +967,8 @@ size), `error_code`.
 5. Truncate when total output exceeds `output_max_bytes`. Set `truncated:
    true` and append `...[truncated; N bytes total]` to the returned
    stdout/stderr.
-6. Cancel via `ctx.Done()` on timeout: send SSH signal `TERM` to the remote
-   process, wait 2s, then send `KILL`, then close the channel.
+6. Cancel via `ctx.Done()` on timeout: send SSH signal `TERM`, close the SSH
+   channel promptly, and return `TIMEOUT`.
 7. Inline mode: connection is created via `Pool.GetAdHoc()`, used, then
    closed in defer. The `Secret` for inline.password is closed immediately
    after `*ssh.Client` connect.
@@ -1017,7 +1017,7 @@ completion using a sentinel-based protocol (not regex prompt detection).
 }
 ```
 
-**Output:** `{ "stdout", "stderr", "exit_code", "duration_ms" }`
+**Output:** `{ "stdout", "stderr", "exit_code", "duration_ms", "truncated" }`
 
 **Errors:** `SESSION_DEAD`, `TIMEOUT`, `INVALID_ARGUMENT`.
 
@@ -1126,7 +1126,7 @@ filesystem. Sub-action routed via `action` field.
     "mode":    { "type": "string", "description": "(write/chmod/mkdir) Octal string e.g. '0644'" },
     "recursive": { "type": "boolean", "default": false, "description": "(mkdir/remove)" },
     "to":      { "type": "string", "description": "(rename/symlink) Destination path" },
-    "dry_run": { "type": "boolean", "default": false, "description": "(remove only) Report what would be removed without removing" }
+    "dry_run": { "type": "boolean", "default": false, "description": "Report intended action without mutating remote state" }
   },
   "required": ["action", "path"]
 }
@@ -1136,20 +1136,20 @@ filesystem. Sub-action routed via `action` field.
 
 | Action | Output |
 |---|---|
-| `write` | `{ "bytes_written": N, "path": "..." }` |
-| `mkdir` | `{ "created": true }` |
+| `write` | `{ "bytes_written": N, "path": "..." }`; dry-run returns `{ "bytes_written": 0, "bytes_would_write": N, "dry_run": true }` |
+| `mkdir` | `{ "created": true }`; dry-run returns `{ "created": false, "dry_run": true }` |
 | `remove` | `{ "removed": [paths...], "dry_run": false }` |
-| `rename` | `{ "from": "...", "to": "..." }` |
-| `chmod` | `{ "mode": "0644" }` |
-| `symlink` | `{ "target": "...", "link": "..." }` |
+| `rename` | `{ "from": "...", "to": "..." }`; supports dry-run |
+| `chmod` | `{ "mode": "0644" }`; supports dry-run |
+| `symlink` | `{ "target": "...", "link": "..." }`; supports dry-run |
 | `realpath` | `{ "resolved": "/abs/path" }` |
 
 **Safety:**
-- For `remove`, `dry_run: true` is the **default behavior printed in
-  examples**, but the schema default is `false` to match the action
-  semantics. The tool's description string explicitly suggests using
-  `dry_run: true` first. (We can't override schema defaults to
-  `dry_run: true` without breaking workflows.)
+- `dry_run: true` is honored by every mutating sub-action. For `write`,
+  `mkdir`, `rename`, `chmod`, and `symlink`, the tool returns the planned
+  operation without opening or mutating the remote SFTP target. For `remove`,
+  the tool may still enumerate the target tree to report the paths that would
+  be removed, but does not delete anything.
 - For `write` with `atomic: true`, we write to `<dir>/.<basename>.msb-tmp`
   then `Rename`. If `Rename` fails, the temp file is removed.
 - For `chmod`, mode strings are parsed as octal. Reject if the resulting
@@ -1237,7 +1237,8 @@ expose to the LAN the operator must explicitly pass `local_bind:
 
 ### 6.11 `list_servers`
 
-**Description:** Return all configured servers (without secrets).
+**Description:** Return all configured servers and live temporary servers
+(without secrets).
 
 **Input:**
 ```json
@@ -1262,7 +1263,18 @@ expose to the LAN the operator must explicitly pass `local_bind:
       "default_dir": "/var/www",
       "description": "Production web server",
       "tags": ["prod", "web"],
-      "proxy_jump": "bastion"
+      "proxy_jump": "bastion",
+      "source": "config"
+    },
+    {
+      "name": "qs-prod-test-1",
+      "host": "1.2.3.4",
+      "port": 22,
+      "user": "root",
+      "auth": "quick_setup",
+      "source": "quick_setup",
+      "ephemeral": true,
+      "expires_at": "2026-05-03T15:30:00Z"
     }
   ]
 }
@@ -1270,6 +1282,8 @@ expose to the LAN the operator must explicitly pass `local_bind:
 
 Credential fields are never included in output. The `auth` field reports
 the method (agent / key / password) but not the secret.
+When filtering by `tag`, only configured servers are returned because
+temporary registrations do not carry tags.
 
 ### 6.12 `audit_query`
 
@@ -1314,8 +1328,9 @@ mirror for indexed queries.
 
 **Description:** Register an ad-hoc server for the duration of this MCP
 session, prompting the user to confirm via the client's elicitation UI.
-After confirmation, subsequent `ssh_exec` and other tools can reference
-this server by name without re-passing credentials.
+After confirmation, subsequent `ssh_exec`, `ssh_group_exec`, `session_start`,
+`sftp_*`, and `tunnel` tools can reference this server by name without
+re-passing credentials.
 
 **Input:**
 ```json
@@ -1367,10 +1382,16 @@ this server by name without re-passing credentials.
 3. Wait for user response. If declined or timed out (60s), return
    `USER_DECLINED`.
 4. Sanitize `name_hint` (default `qs-<host>-<n>`) and store in an
-   in-memory registry with TTL.
+   in-memory registry with TTL. The returned name remains addressable until
+   TTL expiry, explicit registry removal, or MCP server shutdown.
 5. Credentials are stored in a `*Secret` with the same lifetime as the
    registry entry. On expiry, `Secret.Close()` is called and the entry
    is removed.
+
+`session_start.inline` follows the same promotion model: inline credentials
+are converted into an in-memory temporary server, and `session_close` closes
+only the shell session. It does not delete the temporary server; callers can
+reuse the returned server name until the normal temp-server lifetime ends.
 
 **Audit:** logs `tool: "ssh_quick_setup"`, host, user, `auth_mode:
 "quick_setup"`, but **not** the password or key body.
@@ -1808,10 +1829,10 @@ date, rotate.
      c. For each line:
           i.   json.Unmarshal into Entry.
           ii.  Apply filter predicates (server, tool, exit_code, errors_only).
-          iii. If matches, append to results.
-          iv.  If len(results) >= filter.Limit, break.
-     d. If broke out, set truncated=true.
-3. Return results, sort by timestamp descending.
+          iii. If matches, append to file results.
+     d. Append the file results to global results.
+     e. Stop before older dates once global results already cover filter.Limit.
+3. Sort global results by timestamp descending and apply filter.Limit.
 ```
 
 Performance is acceptable for MVP volumes. v0.2 adds SQLite with
@@ -2382,4 +2403,3 @@ Things to be aware of after migration:
 This document is the source of truth for the v1.0 MVP. Any deviation
 during implementation must be reflected back here via a PR that updates
 the SDD before the implementation lands.
-

@@ -29,6 +29,13 @@ type tempEntry struct {
 	expiresAt time.Time
 }
 
+// TempServerInfo is the safe, credential-free snapshot of a runtime
+// temp-server registration.
+type TempServerInfo struct {
+	Server    config.ServerConfig
+	ExpiresAt time.Time
+}
+
 // handshakeTimeout is the maximum time allowed for the SSH handshake phase
 // (after the TCP connection is established). The ctx deadline is used if it
 // fires sooner. 30 s is generous enough for slow links while still bounding
@@ -135,6 +142,26 @@ func (p *Pool) LookupTempServer(name string) (config.ServerConfig, bool) {
 		return config.ServerConfig{}, false
 	}
 	return te.srv, true
+}
+
+// ListTempServers returns all live temp-server registrations. Expired entries
+// are omitted; the reaper/lookup paths will evict them separately.
+func (p *Pool) ListTempServers() []TempServerInfo {
+	p.tempMu.RLock()
+	defer p.tempMu.RUnlock()
+
+	out := make([]TempServerInfo, 0, len(p.tempServers))
+	now := time.Now()
+	for _, te := range p.tempServers {
+		if !te.expiresAt.IsZero() && now.After(te.expiresAt) {
+			continue
+		}
+		out = append(out, TempServerInfo{
+			Server:    te.srv,
+			ExpiresAt: te.expiresAt,
+		})
+	}
+	return out
 }
 
 // AddTempServer registers an ad-hoc server configuration under the given name.

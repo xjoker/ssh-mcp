@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -131,6 +132,16 @@ func TestSessionSend_RejectsTooSmallTimeout(t *testing.T) {
 	}
 	if resp.Error == nil || resp.Error.Code != envelope.CodeInvalidArgument {
 		t.Fatalf("expected INVALID_ARGUMENT, got %+v", resp.Error)
+	}
+}
+
+func TestSessionSendOutput_IncludesTruncated(t *testing.T) {
+	raw, err := json.Marshal(sessionSendOutput{Truncated: true})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(raw), `"truncated":true`) {
+		t.Fatalf("expected truncated flag in JSON, got %s", raw)
 	}
 }
 
@@ -313,10 +324,10 @@ func TestSessionStart_InlineAcceptNewHostPlumbed(t *testing.T) {
 	}
 }
 
-// TestSessionClose_ReleasesInlineRegistration verifies that closing an inline
-// session scrubs the QuickSetup entry + Pool temp-server, so the credential
-// does not linger past the session lifetime.
-func TestSessionClose_ReleasesInlineRegistration(t *testing.T) {
+// TestSessionClose_KeepsInlineRegistration verifies that closing an inline
+// shell session does not remove the temp-server registration. The server name
+// remains reusable by ssh_exec/sftp/tunnel until TTL expiry or server shutdown.
+func TestSessionClose_KeepsInlineRegistration(t *testing.T) {
 	qs := &fakeQuickSetup{}
 	// Pre-populate the inline registration map as if session_start had succeeded.
 	const sessID = "sess-test-1"
@@ -333,11 +344,11 @@ func TestSessionClose_ReleasesInlineRegistration(t *testing.T) {
 	if !resp.OK {
 		t.Fatalf("session_close: %+v", resp.Error)
 	}
-	if len(qs.removed) != 1 || qs.removed[0] != regName {
-		t.Errorf("expected QuickSetup.Remove(%q); got removed=%v", regName, qs.removed)
+	if len(qs.removed) != 0 {
+		t.Errorf("session_close must not remove temp server %q; got removed=%v", regName, qs.removed)
 	}
 	if _, lingering := inlineSessionRegistrations.Load(sessID); lingering {
-		t.Error("inline registration should be removed from tracking map after close")
+		t.Error("session-to-registration tracking should be removed after close")
 	}
 }
 

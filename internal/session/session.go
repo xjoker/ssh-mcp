@@ -26,9 +26,10 @@ import (
 // internal/ssh.Client.
 type Transport interface {
 	// OpenShell opens an interactive shell channel on the named server.
-	// It must allocate a PTY and start a shell, then return the three streams
-	// and a close function. The caller owns all returned values and must call
-	// close() when done.
+	// It must start a shell and return the three streams and a close function.
+	// The caller owns all returned values and must call close() when done.
+	// Implementations should avoid allocating a PTY unless they explicitly
+	// want prompts/control sequences and merged stderr.
 	OpenShell(ctx context.Context, server string) (
 		stdin io.WriteCloser,
 		stdout io.Reader,
@@ -85,9 +86,9 @@ type session struct {
 
 	sentinel string // "msb-sentinel-<hex>"
 
-	stdin    io.WriteCloser
-	stdout   *bufio.Reader
-	stderr   *bufio.Reader
+	stdin      io.WriteCloser
+	stdout     *bufio.Reader
+	stderr     *bufio.Reader
 	closeShell func() error
 
 	// stderrBuf accumulates stderr lines read by the background stderr pump.

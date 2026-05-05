@@ -315,14 +315,13 @@ func (c *Client) ExecBuffered(ctx context.Context, cmd safety.RemoteCommand, opt
 	case waitErr = <-waitDone:
 		// normal completion
 	case <-ctx.Done():
-		// Context cancelled: send SIGTERM, wait briefly, then SIGKILL.
+		// Context cancelled: close the SSH channel promptly so callers get a
+		// TIMEOUT response without waiting for the remote command to finish.
 		_ = sess.Signal(gossh.SIGTERM)
+		_ = sess.Close()
 		select {
 		case <-waitDone:
-		case <-time.After(2 * time.Second):
-			_ = sess.Signal(gossh.SIGKILL)
-			_ = sess.Close()
-			<-waitDone
+		default:
 		}
 		waitErr = ctx.Err()
 	}
@@ -475,12 +474,10 @@ func (c *Client) ExecStreaming(ctx context.Context, cmd safety.RemoteCommand, op
 	case waitErr = <-waitDone:
 	case <-ctx.Done():
 		_ = sess.Signal(gossh.SIGTERM)
+		_ = sess.Close()
 		select {
 		case <-waitDone:
-		case <-time.After(2 * time.Second):
-			_ = sess.Signal(gossh.SIGKILL)
-			_ = sess.Close()
-			<-waitDone
+		default:
 		}
 		waitErr = ctx.Err()
 	}

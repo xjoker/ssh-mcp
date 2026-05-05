@@ -106,7 +106,7 @@ func middlewareChain(
 	resp := envelope.Response{}
 	shouldPostAudit := false
 	rawArgs := req.Params.Arguments
-	argsRedacted := string(safety.RedactSecret(rawArgs))
+	argsRedacted := redactAuditArgs(toolName, rawArgs)
 	serverName := extractServerName(rawArgs)
 	correlationID := newCorrelationID()
 	sessionID := requestSessionID(req, deps.SessionID)
@@ -229,6 +229,31 @@ func buildAuditEntry(start time.Time, toolName, sessionID, serverName, argsRedac
 		}
 	}
 	return auditEntry
+}
+
+func redactAuditArgs(toolName string, raw json.RawMessage) string {
+	raw = redactToolSpecificArgs(toolName, raw)
+	return string(safety.RedactSecret(raw))
+}
+
+func redactToolSpecificArgs(toolName string, raw json.RawMessage) json.RawMessage {
+	if toolName != "sftp_op" || len(raw) == 0 {
+		return raw
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return raw
+	}
+	if _, ok := m["content"]; !ok {
+		return raw
+	}
+	m["content"] = json.RawMessage(`"***REDACTED***"`)
+	m["content_redacted"] = json.RawMessage(`true`)
+	out, err := json.Marshal(m)
+	if err != nil {
+		return raw
+	}
+	return out
 }
 
 // buildProgressFunc builds a ProgressFunc from the MCP session's NotifyProgress.

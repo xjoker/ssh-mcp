@@ -324,7 +324,7 @@ func (l *Logger) Query(f Filter) ([]Entry, error) {
 			break
 		}
 		path := l.auditFilePath(date)
-		fileEntries, err := readFile(path, f, limit-len(results))
+		fileEntries, err := readFile(path, f)
 		if err != nil {
 			// File may not exist (e.g. no activity that day) — skip silently.
 			if os.IsNotExist(err) {
@@ -348,9 +348,9 @@ func (l *Logger) Query(f Filter) ([]Entry, error) {
 	return results, nil
 }
 
-// readFile reads up to maxResults entries from a single JSONL file that match
-// the filter. Entries are returned in file order (ascending timestamp).
-func readFile(path string, f Filter, maxResults int) ([]Entry, error) {
+// readFile reads every entry from a single JSONL file that matches the filter.
+// Entries are returned in file order (ascending timestamp).
+func readFile(path string, f Filter) ([]Entry, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -382,9 +382,6 @@ func readFile(path string, f Filter, maxResults int) ([]Entry, error) {
 			continue
 		}
 		results = append(results, e)
-		if len(results) >= maxResults {
-			break
-		}
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err

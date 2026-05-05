@@ -159,7 +159,7 @@ A two-server example with tags and keychain auth lives at
 - Plaintext passwords in config are rejected unless
   `allow_config_plaintext_password = true`. Use the keychain instead.
 - Inline credentials passed via `session_start.inline` or `ssh_quick_setup`
-  live only as long as the session/TTL window and are zeroed on exit.
+  become TTL-bounded in-memory temp servers and are zeroed on expiry/shutdown.
 - `allowed_paths` per server caps SFTP / cwd reach; symlink TOCTOU is closed
   by canonicalising through SFTP `realpath` before policy enforcement.
 

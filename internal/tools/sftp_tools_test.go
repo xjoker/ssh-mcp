@@ -5,6 +5,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -355,6 +356,101 @@ func TestSftpOp_WriteContentLimit(t *testing.T) {
 	}
 	if resp.Error == nil || resp.Error.Code != envelope.CodeInvalidArgument {
 		t.Fatalf("expected INVALID_ARGUMENT, got %+v", resp.Error)
+	}
+}
+
+func TestSftpOp_WriteDryRunDoesNotNeedClient(t *testing.T) {
+	rp, err := safety.ValidateRemotePath("/tmp/dry-run.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := sftpOpWrite(sftpOpArgs{
+		Action:  "write",
+		Path:    "/tmp/dry-run.txt",
+		Content: "secret-ish content",
+		DryRun:  true,
+	}, []byte("secret-ish content"), rp, nil, nil, "")
+	if !resp.OK {
+		t.Fatalf("expected dry-run OK without SFTP client, got %+v", resp.Error)
+	}
+	raw, _ := json.Marshal(resp.Data)
+	if !strings.Contains(string(raw), `"dry_run":true`) {
+		t.Fatalf("dry-run marker missing: %s", raw)
+	}
+	if strings.Contains(string(raw), "secret-ish") {
+		t.Fatalf("dry-run response must not echo file content: %s", raw)
+	}
+}
+
+func TestSftpOp_MkdirDryRunDoesNotNeedClient(t *testing.T) {
+	rp, err := safety.ValidateRemotePath("/tmp/dry-run-dir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := sftpOpMkdir(sftpOpArgs{
+		Action: "mkdir",
+		Path:   "/tmp/dry-run-dir",
+		DryRun: true,
+	}, rp, nil)
+	if !resp.OK {
+		t.Fatalf("expected dry-run OK without SFTP client, got %+v", resp.Error)
+	}
+	raw, _ := json.Marshal(resp.Data)
+	if strings.Contains(string(raw), `"created":true`) {
+		t.Fatalf("mkdir dry-run must not report actual creation: %s", raw)
+	}
+}
+
+func TestSftpOp_RenameDryRunDoesNotNeedClient(t *testing.T) {
+	from, err := safety.ValidateRemotePath("/tmp/from")
+	if err != nil {
+		t.Fatal(err)
+	}
+	to, err := safety.ValidateRemotePath("/tmp/to")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := sftpOpRename(sftpOpArgs{Action: "rename", DryRun: true}, from, to, nil)
+	if !resp.OK {
+		t.Fatalf("expected dry-run OK without SFTP client, got %+v", resp.Error)
+	}
+	raw, _ := json.Marshal(resp.Data)
+	if !strings.Contains(string(raw), `"dry_run":true`) {
+		t.Fatalf("dry-run marker missing: %s", raw)
+	}
+}
+
+func TestSftpOp_ChmodDryRunDoesNotNeedClient(t *testing.T) {
+	rp, err := safety.ValidateRemotePath("/tmp/file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := sftpOpChmod(sftpOpArgs{Action: "chmod", Mode: "0640", DryRun: true}, rp, nil)
+	if !resp.OK {
+		t.Fatalf("expected dry-run OK without SFTP client, got %+v", resp.Error)
+	}
+	raw, _ := json.Marshal(resp.Data)
+	if !strings.Contains(string(raw), `"mode":"0640"`) {
+		t.Fatalf("chmod dry-run should report target mode: %s", raw)
+	}
+}
+
+func TestSftpOp_SymlinkDryRunDoesNotNeedClient(t *testing.T) {
+	target, err := safety.ValidateRemotePath("/tmp/target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkPath, err := safety.ValidateRemotePath("/tmp/link")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := sftpOpSymlink(sftpOpArgs{Action: "symlink", DryRun: true}, target, linkPath, nil)
+	if !resp.OK {
+		t.Fatalf("expected dry-run OK without SFTP client, got %+v", resp.Error)
+	}
+	raw, _ := json.Marshal(resp.Data)
+	if !strings.Contains(string(raw), `"dry_run":true`) {
+		t.Fatalf("dry-run marker missing: %s", raw)
 	}
 }
 

@@ -147,6 +147,25 @@ func TestSSHGroupExec_MissingCommand(t *testing.T) {
 	}
 }
 
+func TestSSHGroupExec_RejectsTooSmallTimeout(t *testing.T) {
+	deps := minDeps(false)
+	deps.Cfg.Servers = map[string]config.ServerConfig{
+		"s1": {Name: "s1", Host: "localhost", User: "u", Auth: "agent"},
+	}
+	args := mustJSON(map[string]any{
+		"servers":    []string{"s1"},
+		"command":    "ls",
+		"timeout_ms": 1,
+	})
+	resp := handleSSHGroupExec(context.Background(), deps, args)
+	if resp.OK {
+		t.Fatal("expected not-OK for too-small timeout")
+	}
+	if resp.Error == nil || resp.Error.Code != envelope.CodeInvalidArgument {
+		t.Fatalf("expected INVALID_ARGUMENT, got %+v", resp.Error)
+	}
+}
+
 // TestSSHGroupExec_BothServersAndTag verifies INVALID_ARGUMENT when both servers and
 // tag are provided.
 func TestSSHGroupExec_BothServersAndTag(t *testing.T) {

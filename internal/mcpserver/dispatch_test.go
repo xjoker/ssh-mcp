@@ -177,6 +177,47 @@ func TestMiddlewareChain_AuditMetaEnrichment(t *testing.T) {
 	}
 }
 
+func TestMiddlewareChain_RedactsSFTPOpContent(t *testing.T) {
+	auditDir := t.TempDir()
+	auditLog, err := audit.New(auditDir, 90)
+	if err != nil {
+		t.Fatalf("audit.New: %v", err)
+	}
+	defer auditLog.Close()
+
+	deps := &tools.Deps{
+		Cfg:   &config.Config{Settings: config.Settings{}, Servers: map[string]config.ServerConfig{}},
+		Audit: auditLog,
+	}
+	fakeHandler := func(_ context.Context, _ *tools.Deps, _ json.RawMessage) envelope.Response {
+		return envelope.OK("ok")
+	}
+	req := &mcp.CallToolRequest{
+		Params: &mcp.CallToolParamsRaw{
+			Arguments: json.RawMessage(`{"server":"s1","action":"write","path":"/tmp/x","content":"DO-NOT-LOG"}`),
+		},
+	}
+	if _, err := middlewareChain(context.Background(), req, "sftp_op", fakeHandler, deps); err != nil {
+		t.Fatalf("middlewareChain: %v", err)
+	}
+
+	entries, qErr := auditLog.Query(audit.Filter{Tool: "sftp_op", Limit: 10})
+	if qErr != nil {
+		t.Fatalf("Query: %v", qErr)
+	}
+	if len(entries) == 0 {
+		t.Fatal("no audit entries")
+	}
+	for _, e := range entries {
+		if strings.Contains(e.ArgsRedacted, "DO-NOT-LOG") {
+			t.Fatalf("audit args leaked sftp content: %+v", entries)
+		}
+		if !strings.Contains(e.ArgsRedacted, "REDACTED") {
+			t.Fatalf("audit args should show redaction marker, got %q", e.ArgsRedacted)
+		}
+	}
+}
+
 // TestMiddlewareChain_AuditMetaNilNoOverride verifies that when a handler
 // does NOT set AuditMeta (nil), the dispatcher falls back to the envelope
 // success/failure mapping: OK → exit 0, error → exit 1.

@@ -99,8 +99,9 @@ If the user asks about a host that isn't listed:
 Never ask the user to paste a password into the chat. Passwords go to the
 OS keychain via `mcp-ssh-bridge auth set-keychain mcp-ssh-bridge
 ssh-password:<name>`. Inline passwords are accepted by `session_start`
-and `ssh_quick_setup` only because the bridge holds them in scrubbed
-memory and zeroes them on session_close — even so, prefer agent/key.
+and `ssh_quick_setup` only because the bridge promotes them to TTL-bounded
+in-memory temp servers and zeroes them on expiry/shutdown — even so, prefer
+agent/key.
 
 ---
 

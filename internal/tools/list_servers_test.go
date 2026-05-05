@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/xjoker/mcp-ssh-bridge/internal/config"
 	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
+	"github.com/xjoker/mcp-ssh-bridge/internal/ssh"
 )
 
 func TestHandleListServers_Basic(t *testing.T) {
@@ -74,6 +76,9 @@ func TestHandleListServers_Basic(t *testing.T) {
 	if s.ProxyJump != "bastion" {
 		t.Errorf("proxy_jump: want bastion, got %s", s.ProxyJump)
 	}
+	if s.Source != "config" {
+		t.Errorf("source: want config, got %s", s.Source)
+	}
 
 	// Ensure password is NOT leaked in the JSON output.
 	raw, _ := json.Marshal(s)
@@ -140,6 +145,64 @@ func TestHandleListServers_EmptyConfig(t *testing.T) {
 
 	if len(out.Servers) != 0 {
 		t.Errorf("expected empty list, got %d servers", len(out.Servers))
+	}
+}
+
+func TestHandleListServers_IncludesTempServers(t *testing.T) {
+	cfg := &config.Config{
+		Settings: config.Settings{},
+		Servers:  map[string]config.ServerConfig{},
+	}
+	pool := ssh.NewPool(cfg, nil)
+	pool.AddTempServer("qs-test", config.ServerConfig{
+		Name: "qs-test",
+		Host: "192.0.2.10",
+		Port: 2222,
+		User: "root",
+		Auth: "quick_setup",
+	}, time.Now().Add(30*time.Minute))
+
+	resp := handleListServers(context.Background(), &Deps{Cfg: cfg, Pool: pool}, json.RawMessage(`{}`))
+	if !resp.OK {
+		t.Fatalf("expected OK, got %+v", resp.Error)
+	}
+
+	data, _ := json.Marshal(resp.Data)
+	var out listServersOutput
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(out.Servers) != 1 {
+		t.Fatalf("expected 1 temp server, got %d", len(out.Servers))
+	}
+	got := out.Servers[0]
+	if got.Name != "qs-test" || got.Host != "192.0.2.10" || got.User != "root" {
+		t.Fatalf("unexpected temp server: %+v", got)
+	}
+	if !got.Ephemeral || got.Source != "quick_setup" || got.ExpiresAt == "" {
+		t.Fatalf("temp metadata missing: %+v", got)
+	}
+}
+
+func TestHandleListServers_TagFilterSkipsTempServers(t *testing.T) {
+	cfg := &config.Config{
+		Settings: config.Settings{},
+		Servers: map[string]config.ServerConfig{
+			"prod": {Name: "prod", Host: "h", User: "u", Auth: "agent", Tags: []string{"prod"}},
+		},
+	}
+	pool := ssh.NewPool(cfg, nil)
+	pool.AddTempServer("qs-test", config.ServerConfig{Name: "qs-test", Host: "h2", User: "u", Auth: "quick_setup"}, time.Now().Add(time.Hour))
+
+	resp := handleListServers(context.Background(), &Deps{Cfg: cfg, Pool: pool}, json.RawMessage(`{"tag":"prod"}`))
+	if !resp.OK {
+		t.Fatalf("expected OK, got %+v", resp.Error)
+	}
+	data, _ := json.Marshal(resp.Data)
+	var out listServersOutput
+	_ = json.Unmarshal(data, &out)
+	if len(out.Servers) != 1 || out.Servers[0].Name != "prod" {
+		t.Fatalf("tag filter should return only static prod server, got %+v", out.Servers)
 	}
 }
 
