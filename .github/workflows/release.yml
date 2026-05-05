@@ -7,8 +7,6 @@ on:
 
 permissions:
   contents: write      # Required for creating GitHub Releases
-  id-token: write      # Required for OIDC token (Sigstore signing)
-  attestations: write  # Required for storing build provenance
 
 jobs:
   release:
@@ -64,11 +62,6 @@ jobs:
           cd dist
           sha256sum * > checksums.sha256
           cat checksums.sha256
-
-      - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: dist/*
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
