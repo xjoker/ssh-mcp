@@ -1,0 +1,84 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'   # Only stable tags (no -dev suffix)
+
+permissions:
+  contents: write   # Required for creating GitHub Releases
+  id-token: write   # Required for OIDC attestation
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Extract version
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME}"          # e.g. v0.0.2
+          VERSION="${TAG#v}"                # e.g. 0.0.2
+          COMMIT="$(git rev-parse --short HEAD)"
+          echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "commit=$COMMIT"   >> "$GITHUB_OUTPUT"
+
+      - name: Build cross-platform binaries
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          COMMIT:  ${{ steps.version.outputs.commit }}
+        run: |
+          LDFLAGS="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}"
+          mkdir -p dist
+
+          build() {
+            local GOOS=$1 GOARCH=$2
+            local EXT=""
+            [ "$GOOS" = "windows" ] && EXT=".exe"
+            local OUT="dist/mcp-ssh-bridge_${GOOS}_${GOARCH}${EXT}"
+            echo "Building $OUT..."
+            GOOS=$GOOS GOARCH=$GOARCH go build \
+              -trimpath \
+              -ldflags="$LDFLAGS" \
+              -o "$OUT" \
+              ./cmd/mcp-ssh-bridge
+          }
+
+          build linux   amd64
+          build linux   arm64
+          build darwin  amd64
+          build darwin  arm64
+          build windows amd64
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum * > checksums.sha256
+          cat checksums.sha256
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: mcp-ssh-bridge ${{ steps.version.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            dist/mcp-ssh-bridge_linux_amd64
+            dist/mcp-ssh-bridge_linux_arm64
+            dist/mcp-ssh-bridge_darwin_amd64
+            dist/mcp-ssh-bridge_darwin_arm64
+            dist/mcp-ssh-bridge_windows_amd64.exe
+            dist/checksums.sha256

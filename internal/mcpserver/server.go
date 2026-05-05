@@ -41,7 +41,9 @@ type Server struct {
 
 // New creates a Server, initialising all subsystems.
 // auditDir overrides the default audit log directory (empty = use platform default).
-func New(cfg *config.Config, auditDir string) (*Server, error) {
+// updateNotice, if non-empty, is injected into the MCP server instructions so
+// connected clients (e.g. Claude Code) can display an update prompt.
+func New(cfg *config.Config, auditDir, updateNotice string) (*Server, error) {
 	// 1. Audit logger.
 	if auditDir == "" {
 		auditDir = defaultAuditDir()
@@ -104,12 +106,16 @@ func New(cfg *config.Config, auditDir string) (*Server, error) {
 	}
 
 	// 7. MCP SDK server.
+	var srvOpts *mcp.ServerOptions
+	if updateNotice != "" {
+		srvOpts = &mcp.ServerOptions{Instructions: updateNotice}
+	}
 	mcpSrv := mcp.NewServer(
 		&mcp.Implementation{
 			Name:    "mcp-ssh-bridge",
 			Version: "v1.0.0",
 		},
-		nil,
+		srvOpts,
 	)
 
 	s := &Server{
