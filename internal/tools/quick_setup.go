@@ -115,16 +115,21 @@ func handleSSHQuickSetup(ctx context.Context, deps *Deps, args json.RawMessage) 
 			"ttl_minutes must be between 1 and 240", false)
 	}
 
-	// 3. Issue MCP elicitation to confirm with user.
-	elicitResp, err := elicitConfirmation(ctx, deps, input.Host, input.User, ttl)
-	if err != nil {
-		// Elicitation itself failed (e.g., not supported or timed out).
-		return envelope.Err(envelope.CodeUserDeclined,
-			"elicitation failed or timed out: "+err.Error(), false)
-	}
-	if !elicitResp {
-		return envelope.Err(envelope.CodeUserDeclined,
-			"user declined to register temporary server", false)
+	// 3. Issue MCP elicitation to confirm with user — unless auto-confirm is
+	//    enabled in config (quick_setup_auto_confirm = true). When allow_quick_setup
+	//    is already set to true the admin has granted standing authorization, so
+	//    auto-confirm is safe and avoids repetitive per-call dialogs.
+	if !deps.Cfg.Settings.QuickSetupAutoConfirm {
+		elicitResp, err := elicitConfirmation(ctx, deps, input.Host, input.User, ttl)
+		if err != nil {
+			// Elicitation itself failed (e.g., not supported or timed out).
+			return envelope.Err(envelope.CodeUserDeclined,
+				"elicitation failed or timed out: "+err.Error(), false)
+		}
+		if !elicitResp {
+			return envelope.Err(envelope.CodeUserDeclined,
+				"user declined to register temporary server", false)
+		}
 	}
 
 	// 4. Determine secret bytes + auth kind. password takes priority.

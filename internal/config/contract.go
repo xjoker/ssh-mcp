@@ -9,6 +9,10 @@ type Settings struct {
 	AllowConfigPlaintextPassword bool     `toml:"allow_config_plaintext_password"`
 	AllowInlineCredentials       bool     `toml:"allow_inline_credentials"`
 	AllowQuickSetup              bool     `toml:"allow_quick_setup"`
+	// QuickSetupAutoConfirm skips the MCP elicitation confirmation dialog when
+	// true. Set to true if you find the per-call confirmation disruptive —
+	// allow_quick_setup = true already acts as blanket authorization.
+	QuickSetupAutoConfirm        bool     `toml:"quick_setup_auto_confirm"`
 	DefaultTimeoutMs             int      `toml:"default_timeout_ms"`
 	MaxTimeoutMs                 int      `toml:"max_timeout_ms"`
 	OutputMaxBytes               int      `toml:"output_max_bytes"`
