@@ -33,7 +33,7 @@ Install ssh-mcp on my machine by following these steps exactly:
 
 5. Ask me for my SSH server details (host, user, auth method), then run:
    ssh-mcp config add-server <name> --host <host> --user <user> --auth <agent|key|password>
-   For password auth also run: ssh-mcp auth set-keychain ssh-mcp ssh-password:<name>
+   For password auth also run: ssh-mcp auth set ssh-password:<name>
 
 6. Run: ssh-mcp trust <name>
 
@@ -102,7 +102,7 @@ For password auth:
 
 ```sh
 ssh-mcp config add-server prod --host example.com --user alice --auth password
-ssh-mcp auth set-keychain ssh-mcp ssh-password:prod
+ssh-mcp auth set ssh-password:prod
 # prompts for password; nothing sensitive lands in config.toml
 ```
 
@@ -155,6 +155,12 @@ Sessions are stateful: run `cd`, set environment variables, activate virtualenvs
 |------|-------------|
 | `audit_query` | Search the append-only JSONL audit log by server, tool, time range, exit code, or error status. |
 
+### Self-Update
+
+| Tool | Description |
+|------|-------------|
+| `self_update` | Check for a newer release and install it atomically. Use `check_only: true` to inspect availability without downloading. After update, restart the MCP server to apply the new binary. |
+
 ---
 
 ## Highlights
@@ -166,7 +172,7 @@ Route through bastion hosts transparently via `proxy_jump`. Chains of arbitrary 
 Full pseudo-terminal allocation for `ssh_exec` and `session_start`. Run `htop`, `btop`, `ncdu`, `vim` and other TUI programs; use `strip_ansi` to get clean text back.
 
 **OS keychain integration**
-Passwords are stored in macOS Keychain, Linux libsecret, or Windows Credential Manager — never in `config.toml`. `ssh-mcp auth set-keychain` handles enrollment.
+Passwords are stored in macOS Keychain, Linux libsecret, or Windows Credential Manager — never in `config.toml`. `ssh-mcp auth set` handles enrollment.
 
 **Tag-based group operations**
 Tag servers (`tags = ["prod", "eu"]`) and target entire fleets with a single `ssh_group_exec` call.
@@ -240,7 +246,7 @@ ssh-mcp config init
 ssh-mcp config validate
 ssh-mcp config add-server <name> --host H --user U --auth agent|key|password
 ssh-mcp trust <name>
-ssh-mcp auth set-keychain ssh-mcp ssh-password:<name>
+ssh-mcp auth set ssh-password:<name>
 ssh-mcp server list
 ssh-mcp server test <name>
 ssh-mcp audit query --tool ssh_exec --since 24h
@@ -257,7 +263,7 @@ ssh-mcp install claude-desktop  # print JSON snippet
 | Symptom | Fix |
 |---------|-----|
 | `HOST_KEY_UNKNOWN` | `ssh-mcp trust <name>` |
-| `unable to authenticate` (password) | `ssh-mcp auth set-keychain ssh-mcp ssh-password:<name>` |
+| `unable to authenticate` (password) | `ssh-mcp auth set ssh-password:<name>` |
 | `SESSION_LIMIT` | Close idle sessions or raise `settings.max_sessions` in config |
 | Bridge not appearing in AI client | Restart the AI client after `mcp add` |
 | `config: no such file` | `ssh-mcp config init` |

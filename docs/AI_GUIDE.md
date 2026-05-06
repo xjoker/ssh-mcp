@@ -160,7 +160,7 @@ If the user asks about a host that isn't listed:
 2. Propose `ssh_quick_setup` for an ad-hoc TTL-bounded entry.
 
 Never ask the user to paste a password into the chat. Passwords go to the
-OS keychain via `ssh-mcp auth set-keychain ssh-mcp
+OS keychain via `ssh-mcp auth set
 ssh-password:<name>`. Inline passwords are accepted by `session_start`
 and `ssh_quick_setup` only because the bridge promotes them to TTL-bounded
 in-memory temp servers and zeroes them on expiry/shutdown — even so, prefer
@@ -175,7 +175,7 @@ agent/key.
 | `INVALID_ARGUMENT` | Bad server name, wrong shape, missing field. | Re-read the schema; do **not** retry the same call verbatim. |
 | `HOST_KEY_UNKNOWN` | First contact, no `known_hosts` entry. | Tell the user to run `ssh-mcp trust <name>`; do not auto-accept. |
 | `HOST_KEY_MISMATCH` | Server's host key changed. | **Stop**. Surface this prominently — possible MITM. Do not retry. |
-| `AUTH_FAILED` | Wrong key / password / agent unavailable. | Suggest `auth set-keychain` (password) or `ssh-add` (agent). Do not loop. |
+| `AUTH_FAILED` | Wrong key / password / agent unavailable. | Suggest `auth set` (password) or `ssh-add` (agent). Do not loop. |
 | `PERMISSION_DENIED` | Path outside `allowed_paths`, or remote chmod refused. | Show the user the path and the configured prefix. Don't widen scope silently. |
 | `TIMEOUT` | Command hit `timeout_ms`. | Retry only with explicit user OK and a higher `timeout_ms`. Note the retriable flag. |
 | `SESSION_DEAD` | Persistent shell exited or got an error sentinel. | Discard the session_id; start a new session if the workflow needs to continue. |
@@ -246,7 +246,7 @@ session_start {server:"prod", pty:true, command:"btop",
 
 - Suggest setting `autoApprove` for any of these tools.
 - Echo a password the user pasted back into a tool call. If they pasted
-  one in chat, advise rotating it and using `auth set-keychain`.
+  one in chat, advise rotating it and using `auth set`.
 - Build SSH commands like `ssh user@host "cmd"` and shove them through
   some unrelated tool — every SSH path goes through the bridge.
 - Run `rm -rf` style commands without an explicit, specific user request

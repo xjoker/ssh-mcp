@@ -33,7 +33,7 @@
 
 5. 询问我的 SSH 服务器信息（主机、用户名、认证方式），然后运行：
    ssh-mcp config add-server <名称> --host <主机> --user <用户名> --auth <agent|key|password>
-   如果是密码认证，还需运行：ssh-mcp auth set-keychain ssh-mcp ssh-password:<名称>
+   如果是密码认证，还需运行：ssh-mcp auth set ssh-password:<名称>
 
 6. 运行：ssh-mcp trust <名称>
 
@@ -102,7 +102,7 @@ codex  mcp add ssh-bridge -- ~/.local/bin/ssh-mcp
 
 ```sh
 ssh-mcp config add-server prod --host example.com --user alice --auth password
-ssh-mcp auth set-keychain ssh-mcp ssh-password:prod
+ssh-mcp auth set ssh-password:prod
 # 提示输入密码，不回显；密码不会写入 config.toml
 ```
 
@@ -155,6 +155,12 @@ ssh-mcp auth set-keychain ssh-mcp ssh-password:prod
 |------|------|
 | `audit_query` | 搜索仅追加的 JSONL 审计日志，支持按服务器、工具、时间范围、退出码、错误状态过滤。 |
 
+### 自更新
+
+| 工具 | 说明 |
+|------|------|
+| `self_update` | 检查是否有新版本并原子替换二进制。`check_only: true` 仅检查不下载。更新后需重启 MCP server 以应用新版本。 |
+
 ---
 
 ## 核心亮点
@@ -166,7 +172,7 @@ ssh-mcp auth set-keychain ssh-mcp ssh-password:prod
 `ssh_exec` 和 `session_start` 均支持完整伪终端分配。可运行 `htop`、`btop`、`ncdu`、`vim` 等 TUI 程序；使用 `strip_ansi` 获取纯文本输出。
 
 **OS 密钥链集成**
-密码存储在 macOS 钥匙串、Linux libsecret 或 Windows 凭据管理器中，永远不写入 `config.toml`。`ssh-mcp auth set-keychain` 负责录入。
+密码存储在 macOS 钥匙串、Linux libsecret 或 Windows 凭据管理器中，永远不写入 `config.toml`。`ssh-mcp auth set` 负责录入。
 
 **标签批量操作**
 给服务器打标签（`tags = ["prod", "eu"]`），用一次 `ssh_group_exec` 调用操作整个服务器组。
@@ -240,7 +246,7 @@ ssh-mcp config init
 ssh-mcp config validate
 ssh-mcp config add-server <名称> --host H --user U --auth agent|key|password
 ssh-mcp trust <名称>
-ssh-mcp auth set-keychain ssh-mcp ssh-password:<名称>
+ssh-mcp auth set ssh-password:<名称>
 ssh-mcp server list
 ssh-mcp server test <名称>
 ssh-mcp audit query --tool ssh_exec --since 24h
@@ -257,7 +263,7 @@ ssh-mcp install claude-desktop  # 输出 JSON 片段
 | 现象 | 解决方法 |
 |------|---------|
 | `HOST_KEY_UNKNOWN` | `ssh-mcp trust <名称>` |
-| `unable to authenticate`（密码认证）| `ssh-mcp auth set-keychain ssh-mcp ssh-password:<名称>` |
+| `unable to authenticate`（密码认证）| `ssh-mcp auth set ssh-password:<名称>` |
 | `SESSION_LIMIT` | 关闭空闲会话，或在配置中提高 `settings.max_sessions` |
 | AI 客户端中看不到工具 | `mcp add` 后重启 AI 客户端 |
 | `config: no such file` | `ssh-mcp config init` |

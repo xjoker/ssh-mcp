@@ -56,7 +56,7 @@ ssh-mcp trust prod
 ssh-mcp config init
 ssh-mcp config add-server prod \
     --host example.com --user alice --auth password
-ssh-mcp auth set-keychain ssh-mcp ssh-password:prod
+ssh-mcp auth set ssh-password:prod
 ssh-mcp trust prod
 ```
 
