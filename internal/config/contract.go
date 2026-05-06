@@ -8,7 +8,6 @@ package config
 type Settings struct {
 	AllowConfigPlaintextPassword bool     `toml:"allow_config_plaintext_password"`
 	AllowInlineCredentials       bool     `toml:"allow_inline_credentials"`
-	AllowQuickSetup              bool     `toml:"allow_quick_setup"`
 	DefaultTimeoutMs             int      `toml:"default_timeout_ms"`
 	MaxTimeoutMs                 int      `toml:"max_timeout_ms"`
 	OutputMaxBytes               int      `toml:"output_max_bytes"`

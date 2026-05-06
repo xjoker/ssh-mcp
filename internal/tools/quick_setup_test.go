@@ -74,28 +74,8 @@ func (f *fakeQuickSetup) Remove(name string) {
 	f.registered = out
 }
 
-func TestHandleSSHQuickSetup_Disabled(t *testing.T) {
-	cfg := &config.Config{
-		Settings: config.Settings{AllowQuickSetup: false},
-	}
-	deps := &Deps{Cfg: cfg}
-
-	args := json.RawMessage(`{"host":"1.2.3.4","user":"root","password":"pw"}`)
-	resp := handleSSHQuickSetup(context.Background(), deps, args)
-
-	if resp.OK {
-		t.Fatal("expected error when quick_setup disabled")
-	}
-	if resp.Error.Code != envelope.CodeInlineCredsDisabled {
-		t.Errorf("expected INLINE_CREDS_DISABLED, got %s", resp.Error.Code)
-	}
-}
-
-
 func TestHandleSSHQuickSetup_Success(t *testing.T) {
-	cfg := &config.Config{
-		Settings: config.Settings{AllowQuickSetup: true},
-	}
+	cfg := &config.Config{}
 	qs := &fakeQuickSetup{}
 	deps := &Deps{
 		Cfg:        cfg,
@@ -133,8 +113,7 @@ func TestHandleSSHQuickSetup_Success(t *testing.T) {
 }
 
 func TestHandleSSHQuickSetup_NoCredentials(t *testing.T) {
-	cfg := &config.Config{Settings: config.Settings{AllowQuickSetup: true}}
-	deps := &Deps{Cfg: cfg}
+	deps := &Deps{Cfg: &config.Config{}}
 
 	args := json.RawMessage(`{"host":"1.2.3.4","user":"root"}`)
 	resp := handleSSHQuickSetup(context.Background(), deps, args)
@@ -154,10 +133,9 @@ func TestHandleSSHQuickSetup_NoCredentials(t *testing.T) {
 // TestHandleSSHQuickSetup_TTLZeroDefaultsTo30 verifies that ttl_minutes=0 (or
 // omitted) results in a 30-minute TTL being sent to the registry.
 func TestHandleSSHQuickSetup_TTLZeroDefaultsTo30(t *testing.T) {
-	cfg := &config.Config{Settings: config.Settings{AllowQuickSetup: true}}
 	qs := &fakeQuickSetup{}
 	deps := &Deps{
-		Cfg:        cfg,
+		Cfg:        &config.Config{},
 		QuickSetup: qs,
 	}
 
@@ -177,12 +155,11 @@ func TestHandleSSHQuickSetup_TTLZeroDefaultsTo30(t *testing.T) {
 }
 
 // TestHandleSSHQuickSetup_TTLOverMaxRejected verifies that ttl_minutes>240
-// returns INVALID_ARGUMENT without reaching elicitation or registration.
+// returns INVALID_ARGUMENT without reaching registration.
 func TestHandleSSHQuickSetup_TTLOverMaxRejected(t *testing.T) {
-	cfg := &config.Config{Settings: config.Settings{AllowQuickSetup: true}}
 	qs := &fakeQuickSetup{}
 	deps := &Deps{
-		Cfg:        cfg,
+		Cfg:        &config.Config{},
 		QuickSetup: qs,
 	}
 
@@ -214,7 +191,6 @@ func TestHandleSSHQuickSetup_TTLOverMaxRejected(t *testing.T) {
 // ServerConfig by checking the fakeQuickSetup-registered spec.
 func TestHandleSSHQuickSetup_AcceptNewHostPlumbedToPool(t *testing.T) {
 	cfg := &config.Config{
-		Settings: config.Settings{AllowQuickSetup: true},
 		Servers:  map[string]config.ServerConfig{},
 	}
 	qs := &fakeQuickSetup{}
@@ -247,7 +223,6 @@ func TestHandleSSHQuickSetup_AcceptNewHostPlumbedToPool(t *testing.T) {
 // accept_new_host results in AcceptNewHost=false (the safe default).
 func TestHandleSSHQuickSetup_AcceptNewHostDefaultFalse(t *testing.T) {
 	cfg := &config.Config{
-		Settings: config.Settings{AllowQuickSetup: true},
 		Servers:  map[string]config.ServerConfig{},
 	}
 	qs := &fakeQuickSetup{}
@@ -274,10 +249,9 @@ func TestHandleSSHQuickSetup_AcceptNewHostDefaultFalse(t *testing.T) {
 // TestHandleSSHQuickSetup_TTLBoundaryAllowed verifies that ttl_minutes=240
 // (the boundary value) is accepted.
 func TestHandleSSHQuickSetup_TTLBoundaryAllowed(t *testing.T) {
-	cfg := &config.Config{Settings: config.Settings{AllowQuickSetup: true}}
 	qs := &fakeQuickSetup{}
 	deps := &Deps{
-		Cfg:        cfg,
+		Cfg:        &config.Config{},
 		QuickSetup: qs,
 	}
 

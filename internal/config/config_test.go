@@ -209,9 +209,6 @@ func TestLoad_Settings_Defaults(t *testing.T) {
 	if !s.AllowInlineCredentials {
 		t.Error("AllowInlineCredentials default should be true")
 	}
-	if !s.AllowQuickSetup {
-		t.Error("AllowQuickSetup default should be true")
-	}
 	if s.AllowConfigPlaintextPassword {
 		t.Error("AllowConfigPlaintextPassword default should be false")
 	}

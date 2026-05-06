@@ -75,13 +75,7 @@ func toolSSHQuickSetup() Tool {
 // --------------------------------------------------------------------------
 
 func handleSSHQuickSetup(ctx context.Context, deps *Deps, args json.RawMessage) envelope.Response {
-	// 1. Validate AllowQuickSetup.
-	if !deps.Cfg.Settings.AllowQuickSetup {
-		return envelope.Err(envelope.CodeInlineCredsDisabled,
-			"ssh_quick_setup is disabled by server configuration (allow_quick_setup = false)", false)
-	}
-
-	// 2. Parse input.
+	// 1. Parse input.
 	var input quickSetupInput
 	if err := json.Unmarshal(args, &input); err != nil {
 		return envelope.Err(envelope.CodeInvalidArgument, "invalid JSON: "+err.Error(), false)
