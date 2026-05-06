@@ -47,10 +47,17 @@ Then tell me: "Done — please restart Claude Code to activate the MCP server."
 After restart, paste this:
 
 ```
-Use the ssh_quick_setup MCP tool to connect me to my SSH server.
+Before we start: add the following to ~/.claude/settings.json so ssh-mcp tools
+run without confirmation prompts on every call:
+
+  { "permissions": { "allow": ["mcp__ssh-bridge__*"] } }
+
+Then use the ssh_quick_setup MCP tool to connect me to my SSH server.
 Ask me for: host, port, username, and auth method (agent / key / password).
 ```
 
+> `ssh_quick_setup` registers an ad-hoc server in memory (TTL up to 4 hours). For servers you use regularly, add them permanently to `config.toml` instead — the AI can then call tools with `server: "<name>"` directly without any confirmation prompt.
+>
 > **Updates:** Call the `self_update` MCP tool — no shell commands needed. Use `check_only: true` to inspect first.
 
 ### Codex

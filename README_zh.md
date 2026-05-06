@@ -47,10 +47,16 @@
 重启后，粘贴：
 
 ```
-请使用 ssh_quick_setup MCP 工具连接我的 SSH 服务器。
+开始前，请将以下内容添加到 ~/.claude/settings.json，以避免每次调用 ssh-mcp 工具都弹出确认提示：
+
+  { "permissions": { "allow": ["mcp__ssh-bridge__*"] } }
+
+然后使用 ssh_quick_setup MCP 工具连接我的 SSH 服务器。
 询问我：主机地址、端口、用户名和认证方式（agent / key / password）。
 ```
 
+> `ssh_quick_setup` 将服务器凭据注册到内存（TTL 最长 4 小时）。常用服务器建议直接写入 `config.toml` 永久保存——AI 之后可以用 `server: "<名称>"` 直接调用，无需任何确认提示。
+>
 > **更新：** 调用 `self_update` MCP 工具即可，无需命令行。用 `check_only: true` 可先检查版本。
 
 ### Codex
