@@ -8,12 +8,12 @@
 
 ## 让 AI 助手帮你完成安装
 
-> 已经在用 Claude Code 或 Codex？把下面的提示词粘贴给 AI，让它一次性完成下载、配置和注册，无需手动操作。
+> 已经在用 Claude Code 或 Codex？粘贴**第一阶段**提示词完成安装和注册；重启 AI 客户端后，用**第二阶段**提示词通过 MCP 工具添加服务器，无需再执行命令行。
 
-### Claude Code
+### 第一阶段 — 安装与注册（Claude Code）
 
 ```
-帮我在我的机器上安装 ssh-mcp，按以下步骤操作：
+用命令行在我的机器上安装 ssh-mcp（此时 MCP 尚未启动）：
 
 1. 调用 GitHub releases API 获取最新版本号：
    GET https://api.github.com/repos/xjoker/ssh-mcp/releases
@@ -31,28 +31,35 @@
 
 4. 运行：ssh-mcp config init
 
-5. 询问我的 SSH 服务器信息（主机、用户名、认证方式），然后运行：
-   ssh-mcp config add-server <名称> --host <主机> --user <用户名> --auth <agent|key|password>
-   如果是密码认证，通过环境变量传入（避免交互式输入）：
-     SSH_MCP_SECRET=<密码> ssh-mcp auth set ssh-password:<名称>
-
-6. 运行：ssh-mcp trust <名称>
-
-7. 注册到 Claude Code：
+5. 注册到 Claude Code：
    claude mcp add --transport stdio --scope user ssh-bridge -- ~/.local/bin/ssh-mcp
    （Windows 使用第 3 步的完整 .exe 路径）
 
-8. 验证：ssh-mcp config validate
+6. 验证：ssh-mcp version
+
+然后告诉我："完成 —— 请重启 Claude Code 以激活 MCP server。"
 ```
 
-> **后续更新：** ssh-mcp 注册运行后，直接调用 `self_update` MCP 工具即可更新，无需任何命令行操作。用 `check_only: true` 可仅检查版本而不下载。
+> 重启 Claude Code 后，`ssh-mcp` MCP 工具即可使用。使用**第二阶段**提示词添加服务器。
+
+### 第二阶段 — 添加服务器（通过 MCP 工具）
+
+重启后，粘贴：
+
+```
+请使用 ssh_quick_setup MCP 工具连接我的 SSH 服务器。
+询问我：主机地址、端口、用户名和认证方式（agent / key / password）。
+```
+
+> **更新：** 调用 `self_update` MCP 工具即可，无需命令行。用 `check_only: true` 可先检查版本。
 
 ### Codex
 
-提示词与上面相同，把第 7 步替换为：
+第一阶段 — 把第 5 步替换为：
 ```
 codex mcp add ssh-bridge -- ~/.local/bin/ssh-mcp
 ```
+第二阶段 — 同上。
 
 ---
 

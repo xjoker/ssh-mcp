@@ -8,12 +8,12 @@ SSH operations as MCP tools for AI assistants — run commands, manage files, op
 
 ## Let Your AI Assistant Install This
 
-> Already running Claude Code or Codex? Skip the manual steps — paste the prompt below and let the AI handle the entire installation, configuration, and registration in one shot.
+> Already running Claude Code or Codex? Paste the **Phase 1** prompt to install and register ssh-mcp. After restarting your AI client, use the **Phase 2** prompt to add servers — no more shell commands needed.
 
-### Claude Code
+### Phase 1 — Install & Register (Claude Code)
 
 ```
-Install ssh-mcp on my machine by following these steps exactly:
+Install ssh-mcp on my machine using only shell commands (MCP is not yet available):
 
 1. Call the GitHub releases API to find the latest release tag:
    GET https://api.github.com/repos/xjoker/ssh-mcp/releases
@@ -31,28 +31,35 @@ Install ssh-mcp on my machine by following these steps exactly:
 
 4. Run: ssh-mcp config init
 
-5. Ask me for my SSH server details (host, user, auth method), then run:
-   ssh-mcp config add-server <name> --host <host> --user <user> --auth <agent|key|password>
-   For password auth run (SSH_MCP_SECRET avoids interactive prompt):
-     SSH_MCP_SECRET=<password> ssh-mcp auth set ssh-password:<name>
-
-6. Run: ssh-mcp trust <name>
-
-7. Register with Claude Code:
+5. Register with Claude Code:
    claude mcp add --transport stdio --scope user ssh-bridge -- ~/.local/bin/ssh-mcp
    (Windows: use the full .exe path from step 3)
 
-8. Confirm by running: ssh-mcp config validate
+6. Confirm with: ssh-mcp version
+
+Then tell me: "Done — please restart Claude Code to activate the MCP server."
 ```
 
-> **Future updates:** Once ssh-mcp is registered and running, call the `self_update` MCP tool directly — no shell commands needed. Use `check_only: true` to check without installing.
+> After restarting Claude Code, the `ssh-mcp` MCP tools are available. Use **Phase 2** to add servers.
+
+### Phase 2 — Add a Server (via MCP tool)
+
+After restart, paste this:
+
+```
+Use the ssh_quick_setup MCP tool to connect me to my SSH server.
+Ask me for: host, port, username, and auth method (agent / key / password).
+```
+
+> **Updates:** Call the `self_update` MCP tool — no shell commands needed. Use `check_only: true` to inspect first.
 
 ### Codex
 
-Same prompt as above — replace step 7 with:
+Phase 1 — replace step 5 with:
 ```
 codex mcp add ssh-bridge -- ~/.local/bin/ssh-mcp
 ```
+Phase 2 — same as above.
 
 ---
 
