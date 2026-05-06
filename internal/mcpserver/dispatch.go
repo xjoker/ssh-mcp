@@ -31,8 +31,9 @@ var destructiveTools = map[string]struct{}{
 	"session_send":    {},
 	"session_start":   {},
 	"session_close":   {},
-	"tunnel":          {},
-	"ssh_quick_setup": {},
+	"tunnel":               {},
+	"ssh_quick_setup":      {},
+	"ssh_persistent_setup": {},
 }
 
 func isDestructive(name string) bool {
