@@ -248,6 +248,27 @@ func (c *Client) ExecBuffered(ctx context.Context, cmd safety.RemoteCommand, opt
 	}
 	defer sess.Close()
 
+	// Request PTY before wiring pipes so the terminal type is negotiated
+	// before the server allocates the channel data streams.
+	if opts.PTY {
+		cols := opts.PTYCols
+		if cols == 0 {
+			cols = 220
+		}
+		rows := opts.PTYRows
+		if rows == 0 {
+			rows = 50
+		}
+		modes := gossh.TerminalModes{
+			gossh.ECHO:          0,     // no local echo — we read server output directly
+			gossh.TTY_OP_ISPEED: 38400,
+			gossh.TTY_OP_OSPEED: 38400,
+		}
+		if err := sess.RequestPty("xterm-256color", int(rows), int(cols), modes); err != nil {
+			return nil, fmt.Errorf("ssh: ExecBuffered: RequestPty: %w", err)
+		}
+	}
+
 	stdoutPipe, err := sess.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("ssh: ExecBuffered: StdoutPipe: %w", err)

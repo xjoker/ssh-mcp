@@ -69,6 +69,18 @@ type ExecOpts struct {
 
 	// Timeout for the command. Zero means no timeout (context deadline applies).
 	Timeout time.Duration
+
+	// PTY requests a pseudo-terminal before running the command.
+	// When true, the remote sshd merges stderr into stdout (standard PTY
+	// behaviour), so ExecResult.Stderr will be empty. Required for TUI
+	// programs such as btop, htop, and ncdu that check isatty(STDOUT_FILENO).
+	PTY bool
+
+	// PTYCols is the terminal width passed to RequestPty. Zero → 220.
+	PTYCols uint32
+
+	// PTYRows is the terminal height passed to RequestPty. Zero → 50.
+	PTYRows uint32
 }
 
 // StreamOpts controls streaming command execution.

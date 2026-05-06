@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,6 +36,18 @@ type execInput struct {
 	Cwd       string      `json:"cwd,omitempty"`
 	Stream    bool        `json:"stream"`
 	TimeoutMs int         `json:"timeout_ms"`
+	// PTY parameters
+	PTY       bool `json:"pty"`
+	PTYCols   int  `json:"cols"`
+	PTYRows   int  `json:"rows"`
+	StripANSI bool `json:"strip_ansi"`
+}
+
+// ansiEscape matches ANSI/VT100 escape sequences (CSI, OSC, etc.).
+var ansiEscape = regexp.MustCompile(`\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))`)
+
+func stripANSICodes(s string) string {
+	return ansiEscape.ReplaceAllString(s, "")
 }
 
 type execOutput struct {
@@ -73,7 +86,11 @@ var sshExecSchema = json.RawMessage(`{
     "command":    { "type": "string", "description": "Shell command to execute on the remote host." },
     "cwd":        { "type": "string", "description": "Working directory. Resolved via SFTP realpath; supports ~ expansion." },
     "stream":     { "type": "boolean", "default": false },
-    "timeout_ms": { "type": "integer", "minimum": 1000, "maximum": 1800000, "default": 120000 }
+    "timeout_ms": { "type": "integer", "minimum": 1000, "maximum": 1800000, "default": 120000 },
+    "pty":        { "type": "boolean", "default": false, "description": "Allocate a pseudo-terminal. Required for TUI programs (btop, htop, ncdu). Merges stderr into stdout." },
+    "cols":       { "type": "integer", "minimum": 10, "maximum": 500, "default": 220, "description": "Terminal width for PTY (columns). Only used when pty=true." },
+    "rows":       { "type": "integer", "minimum": 5, "maximum": 200, "default": 50, "description": "Terminal height for PTY (rows). Only used when pty=true." },
+    "strip_ansi": { "type": "boolean", "default": false, "description": "Strip ANSI escape sequences from output. Useful with pty=true to get plain text." }
   },
   "required": ["command"]
 }`)
@@ -246,10 +263,21 @@ func handleSSHExec(ctx context.Context, deps *Deps, args json.RawMessage) envelo
 		return handleSSHExecStreaming(ctx, deps, client, remoteCmd, timeout, hostLabel, userLabel, outputMax)
 	}
 
-	result, err := client.ExecBuffered(ctx, remoteCmd, ssh.ExecOpts{
+	ptyOpts := ssh.ExecOpts{
 		OutputMaxBytes: outputMax,
 		Timeout:        timeout,
-	})
+	}
+	if input.PTY {
+		ptyOpts.PTY = true
+		if input.PTYCols > 0 {
+			ptyOpts.PTYCols = uint32(input.PTYCols)
+		}
+		if input.PTYRows > 0 {
+			ptyOpts.PTYRows = uint32(input.PTYRows)
+		}
+	}
+
+	result, err := client.ExecBuffered(ctx, remoteCmd, ptyOpts)
 	if err != nil {
 		if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			return envelope.Err(envelope.CodeTimeout,
@@ -259,6 +287,9 @@ func handleSSHExec(ctx context.Context, deps *Deps, args json.RawMessage) envelo
 	}
 
 	stdoutStr := string(result.Stdout)
+	if input.StripANSI {
+		stdoutStr = stripANSICodes(stdoutStr)
+	}
 	if result.Truncated {
 		total := len(result.Stdout) + len(result.Stderr)
 		stdoutStr += fmt.Sprintf("...[truncated; %d bytes total]", total)
