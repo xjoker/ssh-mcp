@@ -29,6 +29,9 @@ func authCmd(args []string) int {
 		fmt.Fprintln(os.Stderr, "  get <name>    Check whether a secret is stored (does not print value)")
 		fmt.Fprintln(os.Stderr, "  remove <name> Delete a secret from the OS keychain")
 		fmt.Fprintln(os.Stderr, "  list          List stored accounts (not supported on all platforms)")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Non-interactive usage (AI assistants / CI):")
+		fmt.Fprintln(os.Stderr, "  SSH_MCP_SECRET=<secret> ssh-mcp auth set <name>")
 	}
 
 	if len(args) == 0 {
@@ -72,11 +75,19 @@ func authSetCmd(args []string) int {
 	}
 	account := remaining[0]
 
-	// Read password without echo using golang.org/x/term.
-	secret, err := readPasswordConfirmed(account)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "auth set: %v\n", err)
-		return 1
+	// Non-interactive path: SSH_MCP_SECRET env var (for AI assistants / CI).
+	var secret []byte
+	if envSecret := os.Getenv("SSH_MCP_SECRET"); envSecret != "" {
+		secret = []byte(envSecret)
+	} else {
+		// Interactive path: prompt with hidden input.
+		var err error
+		secret, err = readPasswordConfirmed(account)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "auth set: %v\n", err)
+			fmt.Fprintln(os.Stderr, "Tip: in non-interactive contexts set SSH_MCP_SECRET=<secret> before running this command.")
+			return 1
+		}
 	}
 	defer func() {
 		// Zero the secret bytes after use.

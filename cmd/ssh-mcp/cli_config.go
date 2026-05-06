@@ -260,7 +260,7 @@ func configAddServerCmd(args []string) int {
 	if *auth == "password" && *passwordKeychain {
 		ref := fmt.Sprintf("keychain:%s:ssh-password:%s", keychainService(), *name)
 		sb.WriteString(fmt.Sprintf("password = %q\n", ref))
-		keychainHint = fmt.Sprintf("ssh-mcp auth set-keychain %s ssh-password:%s", keychainService(), *name)
+		keychainHint = fmt.Sprintf("ssh-mcp auth set ssh-password:%s", *name)
 	}
 	if *description != "" {
 		sb.WriteString(fmt.Sprintf("description = %q\n", *description))
