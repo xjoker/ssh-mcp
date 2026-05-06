@@ -116,6 +116,40 @@ ssh-mcp auth set ssh-password:prod
 # 提示输入密码，不回显；密码不会写入 config.toml
 ```
 
+### 预授权工具（避免每次弹出确认提示）
+
+Claude Code 默认对每次 MCP 工具调用弹出确认提示。将以下内容加入 `~/.claude/settings.json`（用户全局）或 `.claude/settings.json`（仅当前项目），可预授权所有 ssh-mcp 工具：
+
+```json
+{
+  "permissions": {
+    "allow": ["mcp__ssh-bridge__*"]
+  }
+}
+```
+
+或按需授权单个工具以获得更精细的控制：
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "mcp__ssh-bridge__ssh_exec",
+      "mcp__ssh-bridge__sftp_list",
+      "mcp__ssh-bridge__sftp_read",
+      "mcp__ssh-bridge__list_servers",
+      "mcp__ssh-bridge__session_start",
+      "mcp__ssh-bridge__session_send",
+      "mcp__ssh-bridge__session_close",
+      "mcp__ssh-bridge__audit_query",
+      "mcp__ssh-bridge__self_update"
+    ]
+  }
+}
+```
+
+> `permissions.allow` 只预批准指定工具，有别于 MCP 配置中的 `autoApprove`（全局跳过所有确认）。ssh-mcp 示例配置中刻意不使用 `autoApprove`。
+
 ---
 
 ## 功能详解

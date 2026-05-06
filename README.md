@@ -116,6 +116,40 @@ ssh-mcp auth set ssh-password:prod
 # prompts for password; nothing sensitive lands in config.toml
 ```
 
+### Pre-authorise tools (avoid per-call permission prompts)
+
+By default Claude Code asks for confirmation on every MCP tool call. To pre-authorise all ssh-mcp tools, add the following to `~/.claude/settings.json` (user-wide) or `.claude/settings.json` (project-only):
+
+```json
+{
+  "permissions": {
+    "allow": ["mcp__ssh-bridge__*"]
+  }
+}
+```
+
+Or authorise individual tools for tighter control:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "mcp__ssh-bridge__ssh_exec",
+      "mcp__ssh-bridge__sftp_list",
+      "mcp__ssh-bridge__sftp_read",
+      "mcp__ssh-bridge__list_servers",
+      "mcp__ssh-bridge__session_start",
+      "mcp__ssh-bridge__session_send",
+      "mcp__ssh-bridge__session_close",
+      "mcp__ssh-bridge__audit_query",
+      "mcp__ssh-bridge__self_update"
+    ]
+  }
+}
+```
+
+> `permissions.allow` pre-approves specific tools — distinct from `autoApprove` in the MCP config, which bypasses all confirmation globally and is intentionally omitted from ssh-mcp examples.
+
 ---
 
 ## What ssh-mcp Can Do
