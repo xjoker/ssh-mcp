@@ -64,7 +64,7 @@ var quickSetupSchema = json.RawMessage(`{
 func toolSSHQuickSetup() Tool {
 	return Tool{
 		Name:        "ssh_quick_setup",
-		Description: "Register an ad-hoc SSH server for the duration of this session. Prompts the user to confirm before registering.",
+		Description: "Register an ad-hoc SSH server for the duration of this session (in-memory, TTL-bounded; max 240 min). Repeated calls for the same host+port+user reuse the existing registration. For permanent registration that survives restart, use ssh_persistent_setup instead.",
 		InputSchema: quickSetupSchema,
 		Handle:      handleSSHQuickSetup,
 	}

@@ -393,3 +393,97 @@ func TestQuickSetupRegistry_TTLBoundariesAllowed(t *testing.T) {
 		}
 	}
 }
+
+// TestQuickSetupRegistry_ReuseSameHostPortUser locks in the b1201c7 dedup
+// behaviour: a second Register() call for the same (host, port, user) tuple
+// must return the existing canonical name and refresh the secret/TTL in
+// place — never allocate a new -2 / -3 / ... suffix. This prevents the AI
+// from triggering a fresh confirmation dialog for every tool call on the
+// same server.
+func TestQuickSetupRegistry_ReuseSameHostPortUser(t *testing.T) {
+	r := newQuickSetupRegistry(nil, nil)
+	defer r.Close()
+
+	name1, exp1, err := r.Register(mkSpec("box", "10.0.0.1", "root", []byte("pw1"), 30))
+	if err != nil {
+		t.Fatalf("first Register: %v", err)
+	}
+
+	// Sleep a tick so we can verify TTL is *refreshed* (later) on the second
+	// call, not preserved.
+	time.Sleep(20 * time.Millisecond)
+
+	name2, exp2, err := r.Register(mkSpec("box", "10.0.0.1", "root", []byte("pw2"), 30))
+	if err != nil {
+		t.Fatalf("second Register: %v", err)
+	}
+
+	if name1 != name2 {
+		t.Fatalf("dedup broken: second Register returned %q, want same as first %q", name2, name1)
+	}
+	if exp2 < exp1 {
+		t.Errorf("TTL should be refreshed forward, got exp1=%d exp2=%d", exp1, exp2)
+	}
+
+	// Only one entry in the map.
+	r.mu.Lock()
+	count := len(r.m)
+	r.mu.Unlock()
+	if count != 1 {
+		t.Errorf("expected 1 entry after dedup, got %d", count)
+	}
+
+	// Secret was refreshed to "pw2".
+	view, ok := r.Lookup(name2)
+	if !ok {
+		t.Fatalf("Lookup(%q) after refresh: not found", name2)
+	}
+	if string(view.Secret) != "pw2" {
+		t.Errorf("secret not refreshed; want pw2, got %q", view.Secret)
+	}
+}
+
+// TestQuickSetupRegistry_DistinctTuplesGetDistinctNames is the negative twin
+// of the dedup test: differing host, port, or user must NOT collapse onto an
+// existing entry. Catches regressions where someone over-eagerly broadens
+// the dedup match to e.g. host-only.
+func TestQuickSetupRegistry_DistinctTuplesGetDistinctNames(t *testing.T) {
+	r := newQuickSetupRegistry(nil, nil)
+	defer r.Close()
+
+	base, _, err := r.Register(mkSpec("box", "10.0.0.1", "root", []byte("pw"), 30))
+	if err != nil {
+		t.Fatalf("Register base: %v", err)
+	}
+
+	cases := []struct {
+		label string
+		spec  tools.QuickSetupSpec
+	}{
+		{"different user", mkSpec("box", "10.0.0.1", "alice", []byte("pw"), 30)},
+		{"different host", mkSpec("box", "10.0.0.2", "root", []byte("pw"), 30)},
+		{
+			"different port",
+			tools.QuickSetupSpec{
+				NameHint:   "box",
+				Host:       "10.0.0.1",
+				Port:       2222,
+				User:       "root",
+				AuthKind:   "password",
+				Secret:     []byte("pw"),
+				TTLMinutes: 30,
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		got, _, err := r.Register(tc.spec)
+		if err != nil {
+			t.Errorf("%s: Register: %v", tc.label, err)
+			continue
+		}
+		if got == base {
+			t.Errorf("%s: should NOT collapse onto base name %q", tc.label, base)
+		}
+	}
+}

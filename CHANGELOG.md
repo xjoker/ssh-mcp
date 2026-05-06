@@ -13,9 +13,36 @@ Branch / version convention:
 ## [Unreleased]
 
 ### Added
+- New `ssh_persistent_setup` tool: appends a `[servers.<name>]` block to
+  `config.toml` so the entry survives restart and has no TTL. Plaintext
+  password storage is gated by `settings.allow_config_plaintext_password`;
+  validation failure restores the original file (atomic temp + rename).
+  The new entry is also live in the current MCP session via
+  `Pool.AddTempServer` with zero expiry — no restart required.
 - `session_start` now accepts `pty: true` with optional `cols`, `rows`, `command`, and `init_wait_ms` parameters to open a PTY-backed interactive session (e.g. btop, htop, ncdu). Returns `mode: "pty"` and `initial_output` with the shell/command banner.
 - `session_send` in PTY mode uses time-based output collection (`timeout_ms`) instead of the sentinel protocol. Supports `strip_ansi: true` to remove ANSI escape sequences.
 - PTY sessions support interactive programs: send Ctrl-C as `"\x03"` to terminate TUI programs.
+
+### Changed
+- `ssh_quick_setup` description rewritten to drop the misleading
+  "Prompts the user to confirm before registering" claim (the bridge
+  itself never issued an MCP elicitation) and instead documents the
+  TTL ceiling, the `host+port+user` dedup, and points at
+  `ssh_persistent_setup` for long-lived registrations.
+- README + README_zh: new *Why does Claude Code prompt every time?*
+  section explaining that per-call confirmations come from the client's
+  permission UI (not the bridge); `permissions.allow` examples now
+  include `ssh_quick_setup` and `ssh_persistent_setup`.
+
+### Fixed
+- Regression tests for the b1201c7 dedup behaviour
+  (`TestQuickSetupRegistry_ReuseSameHostPortUser`,
+  `TestQuickSetupRegistry_DistinctTuplesGetDistinctNames`) lock in that
+  repeated `ssh_quick_setup` calls for the same host/port/user reuse the
+  existing registration, while differing tuples allocate distinct names.
+- `quickSetupRegistry.Register` now documents that `r.mu` must remain a
+  full `sync.Mutex` (not RWMutex) because the dedup scan and allocation
+  share the same critical section.
 
 ### Changed
 - Installers default to **user-level** install (no sudo / admin):

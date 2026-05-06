@@ -144,6 +144,8 @@ Claude Code 默认对每次 MCP 工具调用弹出确认提示。将以下内容
       "mcp__ssh-bridge__sftp_list",
       "mcp__ssh-bridge__sftp_read",
       "mcp__ssh-bridge__list_servers",
+      "mcp__ssh-bridge__ssh_quick_setup",
+      "mcp__ssh-bridge__ssh_persistent_setup",
       "mcp__ssh-bridge__session_start",
       "mcp__ssh-bridge__session_send",
       "mcp__ssh-bridge__session_close",
@@ -155,6 +157,15 @@ Claude Code 默认对每次 MCP 工具调用弹出确认提示。将以下内容
 ```
 
 > `permissions.allow` 只预批准指定工具，有别于 MCP 配置中的 `autoApprove`（全局跳过所有确认）。ssh-mcp 示例配置中刻意不使用 `autoApprove`。
+
+#### 为什么每次调用 `ssh_quick_setup` 都会弹确认？
+
+你看到的"信任 host_key / 注册临时服务器"对话框来自 **Claude Code 自身的工具权限 UI**，不是 ssh-mcp 发出的。bridge 端没有任何 MCP elicitation 调用 —— 服务端代码里没有逐次确认逻辑。两个推论：
+
+1. 把工具加入上方 `permissions.allow` 即可一劳永逸消除提示。
+2. 如果是固定经常使用的服务器，**用 `ssh_persistent_setup` 注册一次**胜过反复调用 `ssh_quick_setup`。永久注册后用 `name` 直接 `ssh_exec` / `sftp_*`，不会再走 setup 工具。
+
+对同一 `host+port+user` 重复调用 `ssh_quick_setup` 已经在内部做了去重 —— 复用既有内存注册，不分配新 name —— 但仍然会触发 Claude Code 自己的逐次工具权限检查。
 
 ---
 
@@ -197,7 +208,8 @@ Claude Code 默认对每次 MCP 工具调用弹出确认提示。将以下内容
 | 工具 | 说明 |
 |------|------|
 | `list_servers` | 列出已配置的服务器，支持标签过滤。 |
-| `ssh_quick_setup` | 使用内联凭据注册临时服务器 —— 存储在内存中，有 TTL（最长 4 小时），不写入磁盘。 |
+| `ssh_quick_setup` | 使用内联凭据注册临时服务器 —— 存储在内存中，有 TTL（最长 4 小时），不写入磁盘。同 `host+port+user` 重复调用复用既有注册。 |
+| `ssh_persistent_setup` | 把 `[servers.<name>]` 块追加到 `config.toml`，重启后仍存在且无 TTL。明文密码需 `settings.allow_config_plaintext_password = true`。 |
 
 ### 审计
 

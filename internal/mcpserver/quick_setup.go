@@ -82,6 +82,13 @@ func newQuickSetupRegistry(staticNames map[string]struct{}, onEvict func(name st
 // If a non-expired entry with the same host, port, and user already exists,
 // that entry is reused (its secret refreshed and TTL extended) so the AI does
 // not trigger a new confirmation dialog for every tool call on the same server.
+//
+// Concurrency: r.mu is held for the whole call, including the dedup scan.
+// Concurrent Register() invocations for the same (host, port, user) are
+// therefore strictly serialised — the second call observes the first call's
+// entry and reuses it. Do NOT relax this to RWMutex without re-checking the
+// dedup invariant; readers under RLock would be able to allocate duplicate
+// names racing against each other.
 func (r *quickSetupRegistry) Register(spec tools.QuickSetupSpec) (string, int64, error) {
 	if spec.AuthKind != "password" && spec.AuthKind != "key" {
 		return "", 0, fmt.Errorf("quickSetupRegistry: invalid auth kind %q", spec.AuthKind)

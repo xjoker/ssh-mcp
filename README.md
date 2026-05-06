@@ -145,6 +145,8 @@ Or authorise individual tools for tighter control:
       "mcp__ssh-bridge__sftp_list",
       "mcp__ssh-bridge__sftp_read",
       "mcp__ssh-bridge__list_servers",
+      "mcp__ssh-bridge__ssh_quick_setup",
+      "mcp__ssh-bridge__ssh_persistent_setup",
       "mcp__ssh-bridge__session_start",
       "mcp__ssh-bridge__session_send",
       "mcp__ssh-bridge__session_close",
@@ -156,6 +158,15 @@ Or authorise individual tools for tighter control:
 ```
 
 > `permissions.allow` pre-approves specific tools — distinct from `autoApprove` in the MCP config, which bypasses all confirmation globally and is intentionally omitted from ssh-mcp examples.
+
+#### Why does Claude Code prompt every time I call `ssh_quick_setup`?
+
+The confirmation dialog you see (host-key trust / "register temp server …") comes from **Claude Code's own tool-permission UI**, not from ssh-mcp. The bridge does not issue MCP elicitations of its own — there is no per-call confirmation in the server code. Two consequences:
+
+1. Adding the tool to `permissions.allow` (above) silences the prompt across every call.
+2. If you frequently use the same host, prefer `ssh_persistent_setup` once over `ssh_quick_setup` repeatedly. Permanent entries are addressed by `name` in subsequent `ssh_exec` / `sftp_*` calls and don't go through the setup tool again.
+
+Repeated `ssh_quick_setup` calls for the same `host+port+user` already dedup internally — they reuse the existing in-memory registration and do not allocate a new name — but they still go through Claude Code's per-tool-call permission check.
 
 ---
 
@@ -198,7 +209,8 @@ Sessions are stateful: run `cd`, set environment variables, activate virtualenvs
 | Tool | Description |
 |------|-------------|
 | `list_servers` | List configured servers with optional tag filter. |
-| `ssh_quick_setup` | Register an ad-hoc server using inline credentials — stored in memory with a TTL (max 4 hours), never written to disk. |
+| `ssh_quick_setup` | Register an ad-hoc server using inline credentials — stored in memory with a TTL (max 4 hours), never written to disk. Repeated calls for the same `host+port+user` reuse the existing registration. |
+| `ssh_persistent_setup` | Append a `[servers.<name>]` block to `config.toml` so the entry survives restart and has no TTL. Plaintext passwords require `settings.allow_config_plaintext_password = true`. |
 
 ### Audit
 
