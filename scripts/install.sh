@@ -1,76 +1,81 @@
 #!/usr/bin/env bash
-# install.sh — user-level installer for mcp-ssh-bridge (macOS / Linux).
+# install.sh — download pre-built mcp-ssh-bridge binary (macOS / Linux).
 #
-# Default install location is ~/.local/bin — no sudo required. The MCP
-# binary is just a stdio process spawned by your AI client; it does not
-# need /usr/local/bin or root.
+# No Go, no git, no build tools required.
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/xjoker/ssh-mcp/main/scripts/install.sh | bash
 #   bash scripts/install.sh                 # from a local checkout
 #
 # Env vars:
-#   PREFIX        install destination (default: $HOME/.local/bin)
-#   BRANCH        git branch to clone when fetching from network (default: main)
-#   REPO_URL      git URL (default: https://github.com/xjoker/ssh-mcp.git)
-#   SKIP_BUILD=1  if the source tree is already built, just install the binary
+#   PREFIX    install destination (default: $HOME/.local/bin)
+#   VERSION   specific release tag to install (default: latest)
 
 set -euo pipefail
 
-REPO_URL="${REPO_URL:-https://github.com/xjoker/ssh-mcp.git}"
-BRANCH="${BRANCH:-main}"
+REPO="xjoker/ssh-mcp"
 PREFIX="${PREFIX:-$HOME/.local/bin}"
 
 log()  { printf '\033[36m[install]\033[0m %s\n' "$*"; }
 warn() { printf '\033[33m[install]\033[0m %s\n' "$*"; }
 fail() { printf '\033[31m[install]\033[0m %s\n' "$*" >&2; exit 1; }
 
-# 1. Ensure PREFIX exists and is writable. We never escalate; if PREFIX is
-#    a system path the user picked, we fail loudly so they know to drop
-#    sudo or set PREFIX explicitly.
-mkdir -p "$PREFIX" 2>/dev/null || fail "cannot create $PREFIX (set PREFIX=... to a writable directory)"
-[ -w "$PREFIX" ] || fail "$PREFIX is not writable. Set PREFIX=... or rerun with appropriate permissions."
-
-# 2. Locate (or fetch) the source tree.
-if [ -f "go.mod" ] && [ -d "cmd/mcp-ssh-bridge" ]; then
-  log "using local source tree: $(pwd)"
-  SRC="$(pwd)"
-  cleanup_src=0
-else
-  command -v git >/dev/null 2>&1 || fail "git not found; install git first"
-  SRC="$(mktemp -d)"
-  log "cloning $REPO_URL@$BRANCH → $SRC"
-  git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$SRC" >/dev/null
-  cleanup_src=1
-fi
-
-# 3. Build (unless caller provides a prebuilt binary).
-if [ "${SKIP_BUILD:-0}" != "1" ]; then
-  command -v go >/dev/null 2>&1 || fail "go not found; install Go 1.22+ from https://go.dev/dl/"
-  log "building..."
-  ( cd "$SRC" && go build -trimpath -o bin/mcp-ssh-bridge ./cmd/mcp-ssh-bridge )
-fi
-
-BIN="$SRC/bin/mcp-ssh-bridge"
-[ -x "$BIN" ] || fail "binary missing: $BIN (set SKIP_BUILD=0 to rebuild)"
-
-# 4. Install (user-level, no sudo).
-DEST="$PREFIX/mcp-ssh-bridge"
-log "installing → $DEST"
-install -m 0755 "$BIN" "$DEST"
-
-# 5. Cleanup tempdir if we cloned.
-if [ "$cleanup_src" = "1" ]; then
-  rm -rf "$SRC"
-fi
-
-# 6. PATH hint when ~/.local/bin isn't on PATH yet.
-case ":$PATH:" in
-  *":$PREFIX:"*) ;;
-  *) warn "$PREFIX is not in PATH — add 'export PATH=\"$PREFIX:\$PATH\"' to your shell profile";;
+# 1. Detect OS.
+case "$(uname -s)" in
+  Linux)  os="linux"  ;;
+  Darwin) os="darwin" ;;
+  *)      fail "Unsupported OS: $(uname -s). Download manually from https://github.com/$REPO/releases" ;;
 esac
 
-log "done."
+# 2. Detect architecture.
+case "$(uname -m)" in
+  x86_64|amd64)   arch="amd64" ;;
+  aarch64|arm64)  arch="arm64" ;;
+  *)               fail "Unsupported architecture: $(uname -m). Download manually from https://github.com/$REPO/releases" ;;
+esac
+
+# 3. Resolve release tag.
+TAG="${VERSION:-}"
+if [ -z "$TAG" ]; then
+  log "fetching latest release..."
+  API="https://api.github.com/repos/$REPO/releases"
+  if command -v python3 >/dev/null 2>&1; then
+    TAG="$(curl -fsSL "$API" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0]['tag_name'] if d else '')" 2>/dev/null || true)"
+  else
+    TAG="$(curl -fsSL "$API" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/' || true)"
+  fi
+  [ -n "$TAG" ] || fail "could not determine latest release. Set VERSION=vX.Y.Z or visit https://github.com/$REPO/releases"
+fi
+
+# 4. Build asset URL.
+ASSET="mcp-ssh-bridge_${os}_${arch}"
+URL="https://github.com/$REPO/releases/download/$TAG/$ASSET"
+
+# 5. Ensure PREFIX exists and is writable.
+mkdir -p "$PREFIX" 2>/dev/null || fail "cannot create $PREFIX — set PREFIX=... to a writable directory"
+[ -w "$PREFIX" ] || fail "$PREFIX is not writable — set PREFIX=... to a writable directory"
+
+# 6. Download binary.
+DEST="$PREFIX/mcp-ssh-bridge"
+log "downloading $TAG ($os/$arch)..."
+if command -v curl >/dev/null 2>&1; then
+  curl -fsSL "$URL" -o "$DEST" || fail "download failed: $URL"
+elif command -v wget >/dev/null 2>&1; then
+  wget -qO "$DEST" "$URL" || fail "download failed: $URL"
+else
+  fail "curl or wget is required to download the binary"
+fi
+chmod 0755 "$DEST"
+
+# 7. PATH hint when ~/.local/bin is not on PATH.
+case ":$PATH:" in
+  *":$PREFIX:"*) ;;
+  *) warn "$PREFIX is not in PATH — add this to your shell profile:"
+     warn "  export PATH=\"$PREFIX:\$PATH\""
+     ;;
+esac
+
+log "installed $TAG → $DEST"
 log ""
 log "next steps:"
 log "  $DEST config init"
@@ -78,4 +83,4 @@ log "  $DEST config add-server prod --host example.com --user alice --auth agent
 log ""
 log "register with your AI client (use the official CLI, not file-editing):"
 log "  claude mcp add --transport stdio --scope user ssh-bridge -- $DEST"
-log "  codex mcp add ssh-bridge -- $DEST"
+log "  codex  mcp add ssh-bridge -- $DEST"
