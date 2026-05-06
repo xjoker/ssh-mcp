@@ -79,7 +79,8 @@ func handleSelfUpdate(ctx context.Context, deps *Deps, args json.RawMessage) env
 	}
 
 	// Dev builds include pre-releases so users on -dev can receive dev updates.
-	includePrerelease := strings.HasSuffix(current, "-dev")
+	// Match any version containing "-dev" (e.g. "0.0.1-dev.20260506.1").
+	includePrerelease := strings.Contains(current, "-dev")
 
 	rel, err := updater.CheckLatest(ctx, includePrerelease)
 	if err != nil {

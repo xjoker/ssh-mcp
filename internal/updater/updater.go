@@ -247,12 +247,21 @@ func fetchSHA256(ctx context.Context, url, binName string) (string, error) {
 type semver struct {
 	major, minor, patch int
 	dev                 bool
+	preRelease          string // suffix after "-dev." e.g. "20260506.1"
 }
 
 func parseVer(s string) *semver {
 	s = strings.TrimPrefix(s, "v")
-	dev := strings.HasSuffix(s, "-dev")
-	s = strings.TrimSuffix(s, "-dev")
+	var preRelease string
+	dev := false
+	if idx := strings.Index(s, "-dev"); idx >= 0 {
+		dev = true
+		rest := s[idx+4:] // everything after "-dev"
+		if strings.HasPrefix(rest, ".") {
+			preRelease = rest[1:] // "20260506.1"
+		}
+		s = s[:idx] // keep only "major.minor.patch"
+	}
 	parts := strings.SplitN(s, ".", 3)
 	if len(parts) != 3 {
 		return nil
@@ -263,11 +272,13 @@ func parseVer(s string) *semver {
 	if e1 != nil || e2 != nil || e3 != nil {
 		return nil
 	}
-	return &semver{major, minor, patch, dev}
+	return &semver{major, minor, patch, dev, preRelease}
 }
 
 // cmpVer returns >0 if a > b, 0 if equal, <0 if a < b.
-// Among equal numeric versions, release > dev.
+// Among equal numeric versions: release > dev. Among two dev builds with the
+// same numeric base, the pre-release suffix is compared lexicographically
+// (date-stamped suffixes like "20260506.1" < "20260506.2" sort correctly).
 func cmpVer(a, b *semver) int {
 	if d := a.major - b.major; d != 0 {
 		return d
@@ -283,6 +294,8 @@ func cmpVer(a, b *semver) int {
 		return -1
 	case !a.dev && b.dev:
 		return 1
+	case a.dev && b.dev:
+		return strings.Compare(a.preRelease, b.preRelease)
 	default:
 		return 0
 	}
