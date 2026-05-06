@@ -22,7 +22,7 @@ import (
 // Branch convention: -dev suffix on dev/feature branches; release builds
 // from main strip the suffix via -X main.version=<tag>.
 var (
-	version = "0.0.2-dev"
+	version = "0.0.1-dev"
 	commit  = "unknown"
 )
 
