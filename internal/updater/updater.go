@@ -17,7 +17,13 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 )
+
+// httpClient is used for all outbound requests. The 5-minute Timeout is a
+// transport-level backstop; callers also set context deadlines (1.5 s for
+// startup checks, 60 s for user-triggered updates).
+var httpClient = &http.Client{Timeout: 5 * time.Minute}
 
 const (
 	releaseLatestURL = "https://api.github.com/repos/xjoker/mcp-ssh-bridge/releases/latest"
@@ -51,7 +57,7 @@ func CheckLatest(ctx context.Context, includePrerelease bool) (*Release, error) 
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
 	req.Header.Set("User-Agent", "mcp-ssh-bridge-updater/1")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("updater: fetch latest: %w", err)
 	}
@@ -163,7 +169,7 @@ func Download(ctx context.Context, rel *Release, destPath string) error {
 	}
 	req.Header.Set("User-Agent", "mcp-ssh-bridge-updater/1")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("updater: download: %w", err)
 	}
@@ -216,7 +222,7 @@ func fetchSHA256(ctx context.Context, url, binName string) (string, error) {
 		return "", err
 	}
 	req.Header.Set("User-Agent", "mcp-ssh-bridge-updater/1")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", err
 	}
