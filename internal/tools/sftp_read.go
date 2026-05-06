@@ -7,9 +7,9 @@ import (
 	"encoding/json"
 	"unicode/utf8"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
-	internalsftp "github.com/xjoker/mcp-ssh-bridge/internal/sftp"
-	"github.com/xjoker/mcp-ssh-bridge/internal/safety"
+	"github.com/xjoker/ssh-mcp/internal/envelope"
+	internalsftp "github.com/xjoker/ssh-mcp/internal/sftp"
+	"github.com/xjoker/ssh-mcp/internal/safety"
 )
 
 const sftpReadMaxBytes = 16 * 1024 * 1024 // 16 MiB

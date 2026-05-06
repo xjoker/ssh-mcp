@@ -1,5 +1,5 @@
 // Package updater handles version checking and binary self-update for
-// mcp-ssh-bridge. It fetches release metadata from GitHub and can atomically
+// ssh-mcp. It fetches release metadata from GitHub and can atomically
 // replace the running binary with a newer version.
 package updater
 
@@ -26,9 +26,9 @@ import (
 var httpClient = &http.Client{Timeout: 5 * time.Minute}
 
 const (
-	releaseLatestURL = "https://api.github.com/repos/xjoker/mcp-ssh-bridge/releases/latest"
+	releaseLatestURL = "https://api.github.com/repos/xjoker/ssh-mcp/releases/latest"
 	// releasesListURL returns all releases including pre-releases (newest first).
-	releasesListURL = "https://api.github.com/repos/xjoker/mcp-ssh-bridge/releases?per_page=5"
+	releasesListURL = "https://api.github.com/repos/xjoker/ssh-mcp/releases?per_page=5"
 )
 
 // Release holds metadata for a published GitHub release.
@@ -55,7 +55,7 @@ func CheckLatest(ctx context.Context, includePrerelease bool) (*Release, error) 
 		return nil, fmt.Errorf("updater: build request: %w", err)
 	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
-	req.Header.Set("User-Agent", "mcp-ssh-bridge-updater/1")
+	req.Header.Set("User-Agent", "ssh-mcp-updater/1")
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -148,7 +148,7 @@ func Download(ctx context.Context, rel *Release, destPath string) error {
 	if _, err := rand.Read(rnd[:]); err != nil {
 		return fmt.Errorf("updater: generate temp name: %w", err)
 	}
-	tmpPath := filepath.Join(dir, fmt.Sprintf(".mcp-ssh-bridge-update-%s-%x", rel.Version, rnd))
+	tmpPath := filepath.Join(dir, fmt.Sprintf(".ssh-mcp-update-%s-%x", rel.Version, rnd))
 
 	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o755)
 	if err != nil {
@@ -167,7 +167,7 @@ func Download(ctx context.Context, rel *Release, destPath string) error {
 	if err != nil {
 		return fmt.Errorf("updater: build download request: %w", err)
 	}
-	req.Header.Set("User-Agent", "mcp-ssh-bridge-updater/1")
+	req.Header.Set("User-Agent", "ssh-mcp-updater/1")
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -207,7 +207,7 @@ func Download(ctx context.Context, rel *Release, destPath string) error {
 
 // assetName returns the GitHub release asset file name for the given platform.
 func assetName(goos, goarch string) string {
-	name := "mcp-ssh-bridge_" + goos + "_" + goarch
+	name := "ssh-mcp_" + goos + "_" + goarch
 	if goos == "windows" {
 		name += ".exe"
 	}
@@ -221,7 +221,7 @@ func fetchSHA256(ctx context.Context, url, binName string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "mcp-ssh-bridge-updater/1")
+	req.Header.Set("User-Agent", "ssh-mcp-updater/1")
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", err

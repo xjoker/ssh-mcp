@@ -10,10 +10,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/config"
-	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
-	"github.com/xjoker/mcp-ssh-bridge/internal/safety"
-	"github.com/xjoker/mcp-ssh-bridge/internal/tunnel"
+	"github.com/xjoker/ssh-mcp/internal/config"
+	"github.com/xjoker/ssh-mcp/internal/envelope"
+	"github.com/xjoker/ssh-mcp/internal/safety"
+	"github.com/xjoker/ssh-mcp/internal/tunnel"
 )
 
 // --------------------------------------------------------------------------

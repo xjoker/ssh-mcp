@@ -12,12 +12,12 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/audit"
-	"github.com/xjoker/mcp-ssh-bridge/internal/config"
-	"github.com/xjoker/mcp-ssh-bridge/internal/session"
-	sshpkg "github.com/xjoker/mcp-ssh-bridge/internal/ssh"
-	"github.com/xjoker/mcp-ssh-bridge/internal/tools"
-	"github.com/xjoker/mcp-ssh-bridge/internal/tunnel"
+	"github.com/xjoker/ssh-mcp/internal/audit"
+	"github.com/xjoker/ssh-mcp/internal/config"
+	"github.com/xjoker/ssh-mcp/internal/session"
+	sshpkg "github.com/xjoker/ssh-mcp/internal/ssh"
+	"github.com/xjoker/ssh-mcp/internal/tools"
+	"github.com/xjoker/ssh-mcp/internal/tunnel"
 )
 
 // stderrWriter is used by dispatch.go for runtime error logging.
@@ -116,7 +116,7 @@ func New(cfg *config.Config, auditDir, updateNotice, ver string) (*Server, error
 	}
 	mcpSrv := mcp.NewServer(
 		&mcp.Implementation{
-			Name:    "mcp-ssh-bridge",
+			Name:    "ssh-mcp",
 			Version: ver,
 		},
 		srvOpts,
@@ -253,17 +253,17 @@ func defaultAuditDir() string {
 		if appData == "" {
 			appData = os.Getenv("APPDATA")
 		}
-		return appData + `\mcp-ssh-bridge\audit`
+		return appData + `\ssh-mcp\audit`
 	default:
 		// macOS / Linux: use XDG_STATE_HOME or ~/.local/state
 		stateHome := os.Getenv("XDG_STATE_HOME")
 		if stateHome == "" {
 			home, err := os.UserHomeDir()
 			if err != nil {
-				return "/tmp/mcp-ssh-bridge/audit"
+				return "/tmp/ssh-mcp/audit"
 			}
 			stateHome = home + "/.local/state"
 		}
-		return stateHome + "/mcp-ssh-bridge"
+		return stateHome + "/ssh-mcp"
 	}
 }

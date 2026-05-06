@@ -12,7 +12,7 @@ import (
 	sftppkg "github.com/pkg/sftp"
 	gossh "golang.org/x/crypto/ssh"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/safety"
+	"github.com/xjoker/ssh-mcp/internal/safety"
 )
 
 // Client wraps a *gossh.Client with metadata and convenience methods.

@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
+	"github.com/xjoker/ssh-mcp/internal/envelope"
 )
 
 // mustJSON marshals v to JSON or panics. Used for concise test args.

@@ -1,4 +1,4 @@
-# mcp-ssh-bridge — Software Design Document
+# ssh-mcp — Software Design Document
 
 **Version:** 1.0 (MVP design lock)
 **Status:** Approved for implementation
@@ -36,7 +36,7 @@
 
 ### 1.1 Goals
 
-`mcp-ssh-bridge` is a Model Context Protocol (MCP) server that exposes SSH and
+`ssh-mcp` is a Model Context Protocol (MCP) server that exposes SSH and
 SFTP capabilities to LLM clients (Claude Desktop, Claude Code, OpenAI Codex,
 Cursor, etc.) through a small, security-first tool surface.
 
@@ -132,7 +132,7 @@ project. Every other section depends on it.
 └──────────────┬─────────────────┘  the conversation
                │ stdio JSON-RPC
 ┌──────────────▼─────────────────┐
-│   mcp-ssh-bridge process       │  TRUSTED — is the policy enforcer
+│   ssh-mcp process       │  TRUSTED — is the policy enforcer
 │   (THIS PROJECT)               │
 └──────────────┬─────────────────┘
                │ SSH/SFTP
@@ -200,13 +200,13 @@ But the bridge must not weaken those.
 
 ### 4.1 Process Model
 
-`mcp-ssh-bridge` is a single Go binary running as a child process of the LLM
+`ssh-mcp` is a single Go binary running as a child process of the LLM
 client (Claude Desktop, Claude Code, etc.) over stdio.
 
 ```
                      stdio (JSON-RPC 2.0)
    ┌─────────────┐ ◄──────────────────────► ┌─────────────────────┐
-   │ LLM client  │                          │ mcp-ssh-bridge      │
+   │ LLM client  │                          │ ssh-mcp      │
    └─────────────┘                          │  ┌──────────────┐   │
                                             │  │ MCP layer    │   │
                                             │  │ (go-sdk)     │   │
@@ -236,7 +236,7 @@ A second invocation mode exists for CLI subcommands (`trust`, `auth set`,
 
 ```
                    ┌──────────────────────────────┐
-   entry           │ cmd/mcp-ssh-bridge           │
+   entry           │ cmd/ssh-mcp           │
                    │  main.go (MCP) │ cli.go (CLI)│
                    └───────────┬──────────────────┘
                                │
@@ -412,9 +412,9 @@ type Config struct {
 func Load(path string) (*Config, error)
 
 // DefaultPath returns the OS-appropriate config path:
-//   macOS:   $XDG_CONFIG_HOME/mcp-ssh-bridge/config.toml or ~/.config/...
-//   Linux:   $XDG_CONFIG_HOME/mcp-ssh-bridge/config.toml or ~/.config/...
-//   Windows: %APPDATA%\mcp-ssh-bridge\config.toml
+//   macOS:   $XDG_CONFIG_HOME/ssh-mcp/config.toml or ~/.config/...
+//   Linux:   $XDG_CONFIG_HOME/ssh-mcp/config.toml or ~/.config/...
+//   Windows: %APPDATA%\ssh-mcp\config.toml
 func DefaultPath() string
 
 // PrintPlaintextWarning emits the stderr warning when plaintext passwords
@@ -458,7 +458,7 @@ func (s *Secret) Close()           // overwrites with zeros and releases
 //   - ErrPlaintextDisabled (when opt-in is false)
 func Resolve(ctx context.Context, ref config.CredRef, allowPlaintext bool) (*Secret, error)
 
-// SetKeychain stores a secret. Used by 'mcp-ssh-bridge auth set'.
+// SetKeychain stores a secret. Used by 'ssh-mcp auth set'.
 func SetKeychain(service, account string, secret []byte) error
 func DeleteKeychain(service, account string) error
 func ListKeychain(service string) ([]string, error)
@@ -852,7 +852,7 @@ type Filter struct {
 }
 ```
 
-**File layout:** `~/.local/state/mcp-ssh-bridge/audit-2026-05-03.jsonl`,
+**File layout:** `~/.local/state/ssh-mcp/audit-2026-05-03.jsonl`,
 mode `0600`, parent dir `0700`. One file per UTC date. On startup, files
 older than `retention_days` are deleted (synchronous, before MCP ready).
 
@@ -1410,9 +1410,9 @@ TOML format. Default path:
 
 | OS | Path |
 |---|---|
-| macOS | `~/.config/mcp-ssh-bridge/config.toml` |
-| Linux | `$XDG_CONFIG_HOME/mcp-ssh-bridge/config.toml` (default `~/.config/...`) |
-| Windows | `%APPDATA%\mcp-ssh-bridge\config.toml` |
+| macOS | `~/.config/ssh-mcp/config.toml` |
+| Linux | `$XDG_CONFIG_HOME/ssh-mcp/config.toml` (default `~/.config/...`) |
+| Windows | `%APPDATA%\ssh-mcp\config.toml` |
 
 Override via `MCP_SSH_BRIDGE_CONFIG=/path/to/config.toml` env var or
 `--config` CLI flag.
@@ -1472,7 +1472,7 @@ host           = "10.0.1.10"
 user           = "postgres"
 auth           = "key"
 key_path       = "~/.ssh/id_db"
-key_passphrase = "keychain:mcp-ssh-bridge:prod-db"
+key_passphrase = "keychain:ssh-mcp:prod-db"
 
 [servers.prod-cache]
 host     = "10.0.1.20"
@@ -1525,7 +1525,7 @@ A `CredRef` is a string with one of these prefixes:
 
 | Form | Resolution |
 |---|---|
-| `keychain:<service>:<account>` | OS keychain query. The `<service>` should be `mcp-ssh-bridge` for secrets managed by our CLI; arbitrary values permitted to allow sharing with other tools. |
+| `keychain:<service>:<account>` | OS keychain query. The `<service>` should be `ssh-mcp` for secrets managed by our CLI; arbitrary values permitted to allow sharing with other tools. |
 | `env:<NAME>` | `os.Getenv(NAME)`. Empty value at resolve time → `ErrEmptyEnv`. |
 | `plaintext:<value>` | Inline plaintext (rejected without opt-in). |
 | `<bareword>` | Implicit `plaintext:`; same opt-in rule. |
@@ -1535,14 +1535,14 @@ A `CredRef` is a string with one of these prefixes:
 **First-time setup (recommended):**
 ```bash
 # 1. Install
-$ go install github.com/<owner>/mcp-ssh-bridge/cmd/mcp-ssh-bridge@latest
+$ go install github.com/<owner>/ssh-mcp/cmd/ssh-mcp@latest
 
 # 2. Init config
-$ mcp-ssh-bridge config init
-Wrote config to ~/.config/mcp-ssh-bridge/config.toml
+$ ssh-mcp config init
+Wrote config to ~/.config/ssh-mcp/config.toml
 
 # 3. Add a server (interactive)
-$ mcp-ssh-bridge server add prod-web
+$ ssh-mcp server add prod-web
 Host: prod-web.example.com
 User: deploy
 Auth method [agent/key/password]: agent
@@ -1554,47 +1554,47 @@ Trust the host's SSH key? (y/n): y
 Added to ~/.ssh/known_hosts.
 
 # 4. Test
-$ mcp-ssh-bridge server test prod-web
+$ ssh-mcp server test prod-web
 ✓ Connected
 ✓ Auth: ssh-agent (key SHA256:xyz...)
 ✓ Host key verified
 
 # 5. Wire to Claude Desktop
-$ mcp-ssh-bridge install claude-desktop
+$ ssh-mcp install claude-desktop
 Wrote MCP server entry to ~/Library/Application Support/Claude/claude_desktop_config.json
 Restart Claude Desktop to apply.
 ```
 
 **Adding a server with passphrase via keychain:**
 ```bash
-$ mcp-ssh-bridge auth set prod-db
+$ ssh-mcp auth set prod-db
 Enter secret: ****
-Stored as keychain:mcp-ssh-bridge:prod-db
+Stored as keychain:ssh-mcp:prod-db
 
-$ mcp-ssh-bridge server add prod-db
+$ ssh-mcp server add prod-db
 Host: 10.0.1.10
 User: postgres
 Auth method: key
 Key path: ~/.ssh/id_db
-Key passphrase reference [keychain:mcp-ssh-bridge:prod-db]:  # default suggested
+Key passphrase reference [keychain:ssh-mcp:prod-db]:  # default suggested
 [...]
 ```
 
 **Migrating from a legacy `.env` setup:**
 ```bash
-$ mcp-ssh-bridge migrate-from-legacy ~/.config/legacy-ssh-tool/.env
+$ ssh-mcp migrate-from-legacy ~/.config/legacy-ssh-tool/.env
 Found 5 servers, 3 with plaintext passwords.
 
 Migration plan:
   prod-web  : key auth, no migration needed
-  prod-db   : plaintext password → keychain:mcp-ssh-bridge:prod-db
-  staging   : plaintext password → keychain:mcp-ssh-bridge:staging
+  prod-db   : plaintext password → keychain:ssh-mcp:prod-db
+  staging   : plaintext password → keychain:ssh-mcp:staging
   test-vm   : plaintext password → KEEP (will require allow_config_plaintext_password=true)
   bastion   : agent auth, no migration needed
 
 Proceed? (y/n): y
 ✓ Stored 2 secrets in keychain
-✓ Wrote ~/.config/mcp-ssh-bridge/config.toml
+✓ Wrote ~/.config/ssh-mcp/config.toml
 ℹ test-vm uses plaintext; set allow_config_plaintext_password=true to enable, or run 'auth set test-vm' to migrate.
 ```
 
@@ -1717,13 +1717,13 @@ Inline credentials passed in `ssh_exec.inline.password` etc.:
 ### 9.1 File Layout
 
 ```
-~/.local/state/mcp-ssh-bridge/
+~/.local/state/ssh-mcp/
 ├── audit-2026-05-01.jsonl     mode 0600
 ├── audit-2026-05-02.jsonl     mode 0600
 └── audit-2026-05-03.jsonl     mode 0600  (current)
 ```
 
-Parent directory mode `0700`. On Windows: `%LOCALAPPDATA%\mcp-ssh-bridge\state\`.
+Parent directory mode `0700`. On Windows: `%LOCALAPPDATA%\ssh-mcp\state\`.
 
 ### 9.2 Entry Schema (JSONL)
 
@@ -1874,14 +1874,14 @@ The complete set of `Response.error.code` values:
   the remote stderr when relevant.
 - `hint` is optional; populated for codes where actionable guidance
   helps the LLM:
-  - `HOST_KEY_UNKNOWN` → "Run `mcp-ssh-bridge trust <server>` from a
+  - `HOST_KEY_UNKNOWN` → "Run `ssh-mcp trust <server>` from a
     terminal, or set `accept_new_host: true` in the inline params."
   - `INLINE_CREDS_DISABLED` → "The operator has disabled inline
     credentials. Use a configured server or have the operator enable
     `allow_inline_credentials`."
   - `PLAINTEXT_PASSWORD_DISABLED` → "The server is configured with a
     plaintext password but `allow_config_plaintext_password` is false.
-    Migrate to keychain via `mcp-ssh-bridge auth set <server>`."
+    Migrate to keychain via `ssh-mcp auth set <server>`."
 - `retriable` reflects whether *the same call with the same args* might
   succeed if retried. `TIMEOUT` is true; `INVALID_ARGUMENT` is false.
 
@@ -1909,36 +1909,36 @@ configuration. CLI is invoked when `argv[1]` matches a known subcommand;
 otherwise stdio MCP server starts.
 
 ```
-mcp-ssh-bridge                          Run as MCP server (stdio)
-mcp-ssh-bridge --config <path>          Same with custom config
-mcp-ssh-bridge config init              Write default config.toml
-mcp-ssh-bridge config validate          Validate current config, print errors
+ssh-mcp                          Run as MCP server (stdio)
+ssh-mcp --config <path>          Same with custom config
+ssh-mcp config init              Write default config.toml
+ssh-mcp config validate          Validate current config, print errors
 
-mcp-ssh-bridge server add <name>        Interactive add
-mcp-ssh-bridge server list              List configured servers
-mcp-ssh-bridge server remove <name>     Remove from config
-mcp-ssh-bridge server test <name>       Connect, exec `echo ok`, report
-mcp-ssh-bridge server show <name>       Print server config (no secrets)
+ssh-mcp server add <name>        Interactive add
+ssh-mcp server list              List configured servers
+ssh-mcp server remove <name>     Remove from config
+ssh-mcp server test <name>       Connect, exec `echo ok`, report
+ssh-mcp server show <name>       Print server config (no secrets)
 
-mcp-ssh-bridge trust <name>             Fetch and store host key in known_hosts
-mcp-ssh-bridge trust --host <h> --port <p>  Same, ad-hoc
+ssh-mcp trust <name>             Fetch and store host key in known_hosts
+ssh-mcp trust --host <h> --port <p>  Same, ad-hoc
 
-mcp-ssh-bridge auth set <name>          Prompt for secret, store in keychain
-mcp-ssh-bridge auth get <name>          Print metadata about stored secret (not the value)
-mcp-ssh-bridge auth remove <name>       Delete from keychain
-mcp-ssh-bridge auth list                List keychain entries for service mcp-ssh-bridge
+ssh-mcp auth set <name>          Prompt for secret, store in keychain
+ssh-mcp auth get <name>          Print metadata about stored secret (not the value)
+ssh-mcp auth remove <name>       Delete from keychain
+ssh-mcp auth list                List keychain entries for service ssh-mcp
 
-mcp-ssh-bridge migrate-from-legacy <env-file>     Import a legacy SSH-tool .env
-mcp-ssh-bridge migrate-passwords        Walk config, move plaintext to keychain
+ssh-mcp migrate-from-legacy <env-file>     Import a legacy SSH-tool .env
+ssh-mcp migrate-passwords        Walk config, move plaintext to keychain
 
-mcp-ssh-bridge install claude-desktop   Write MCP entry to Claude Desktop config
-mcp-ssh-bridge install claude-code      Write MCP entry for Claude Code
-mcp-ssh-bridge install codex            Write MCP entry for Codex (TOML)
+ssh-mcp install claude-desktop   Write MCP entry to Claude Desktop config
+ssh-mcp install claude-code      Write MCP entry for Claude Code
+ssh-mcp install codex            Write MCP entry for Codex (TOML)
 
-mcp-ssh-bridge audit query [--server X] [--tool Y] [--since 1h]
+ssh-mcp audit query [--server X] [--tool Y] [--since 1h]
                                         Query audit log from CLI
 
-mcp-ssh-bridge version                  Print version + Go version + commit
+ssh-mcp version                  Print version + Go version + commit
 ```
 
 CLI subcommands use `os.Stdin` / `os.Stdout` directly (not stdio JSON-RPC).
@@ -2072,13 +2072,13 @@ These constraints **cannot be removed without a major-version bump**.
 ### 14.1 Repository Structure
 
 ```
-mcp-ssh-bridge/
+ssh-mcp/
 ├── .github/
 │   └── workflows/
 │       ├── ci.yml                # tests, lint, security checks
 │       └── release.yml           # goreleaser binaries
 ├── cmd/
-│   └── mcp-ssh-bridge/
+│   └── ssh-mcp/
 │       ├── main.go               # entrypoint, dispatch CLI vs MCP
 │       ├── cli.go                # CLI subcommand routing
 │       ├── cli_server.go         # `server add/list/remove/test/show`
@@ -2162,7 +2162,7 @@ Violations break CI. This avoids the original project's 4,700-line
 
 ```bash
 # Development
-go build -o bin/mcp-ssh-bridge ./cmd/mcp-ssh-bridge
+go build -o bin/ssh-mcp ./cmd/ssh-mcp
 
 # Release (multi-platform)
 # Done by goreleaser; produces tarballs for:
@@ -2176,7 +2176,7 @@ Build flags:
 ```bash
 go build -trimpath \
          -ldflags "-s -w -X main.version=$VERSION -X main.commit=$COMMIT" \
-         -o mcp-ssh-bridge ./cmd/mcp-ssh-bridge
+         -o ssh-mcp ./cmd/ssh-mcp
 ```
 
 `-trimpath` removes local file paths from the binary (important since
@@ -2299,9 +2299,9 @@ against the Go vuln database.
 |---|---|
 | `go install` | source build from tag |
 | GitHub Releases | pre-built binaries, signed with cosign |
-| Homebrew tap | `brew install <tap>/mcp-ssh-bridge` |
+| Homebrew tap | `brew install <tap>/ssh-mcp` |
 | (later) AUR | community-maintained |
-| (later) `npm install -g mcp-ssh-bridge` | wrapper that downloads correct binary |
+| (later) `npm install -g ssh-mcp` | wrapper that downloads correct binary |
 
 We do **not** publish to npm as a primary channel because that's the
 distribution model of the project we're improving on.
@@ -2321,7 +2321,7 @@ distribution model of the project we're improving on.
 `go.mod` (target versions, frozen at MVP start):
 
 ```
-module github.com/<owner>/mcp-ssh-bridge
+module github.com/<owner>/ssh-mcp
 
 go 1.22
 
@@ -2363,7 +2363,7 @@ any plaintext passwords into the OS keychain.
 ### B.1 Inventory
 
 ```bash
-$ mcp-ssh-bridge migrate-from-legacy ~/path/to/legacy.env --dry-run
+$ ssh-mcp migrate-from-legacy ~/path/to/legacy.env --dry-run
 ```
 
 This prints a report:
@@ -2386,7 +2386,7 @@ Things to be aware of after migration:
 
 2. **First connection requires `trust`.** The pattern
    `ssh-keyscan host >> known_hosts` no longer happens silently.
-   Run `mcp-ssh-bridge trust <name>` when adding a server.
+   Run `ssh-mcp trust <name>` when adding a server.
 
 3. **Sudo:** configure `NOPASSWD` for the relevant commands on the
    remote system, or use a `session_*` flow where you can interactively

@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/config"
-	"github.com/xjoker/mcp-ssh-bridge/internal/tools"
+	"github.com/xjoker/ssh-mcp/internal/config"
+	"github.com/xjoker/ssh-mcp/internal/tools"
 )
 
 func TestServerNew_AuditDirWritable(t *testing.T) {

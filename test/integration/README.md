@@ -7,7 +7,7 @@ transport against two `linuxserver/openssh-server` containers.
 
 - Docker (compose v2)
 - Go 1.22+
-- A built binary at `bin/mcp-ssh-bridge`
+- A built binary at `bin/ssh-mcp`
 
 ## Setup
 
@@ -19,13 +19,13 @@ ssh-keygen -t ed25519 -N '' -f test/integration/test_key -C test@msb-integration
 docker compose -f test/integration/docker-compose.yml up -d
 
 # 3. Build the bridge
-go build -trimpath -o bin/mcp-ssh-bridge ./cmd/mcp-ssh-bridge
+go build -trimpath -o bin/ssh-mcp ./cmd/ssh-mcp
 
 # 4. Trust the host keys once
 MCP_SSH_BRIDGE_CONFIG=$PWD/test/integration/config.toml \
-  ./bin/mcp-ssh-bridge trust test-pwd
+  ./bin/ssh-mcp trust test-pwd
 MCP_SSH_BRIDGE_CONFIG=$PWD/test/integration/config.toml \
-  ./bin/mcp-ssh-bridge trust test-key
+  ./bin/ssh-mcp trust test-key
 ```
 
 ## Run

@@ -10,8 +10,8 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/config"
-	"github.com/xjoker/mcp-ssh-bridge/internal/safety"
+	"github.com/xjoker/ssh-mcp/internal/config"
+	"github.com/xjoker/ssh-mcp/internal/safety"
 )
 
 // CredResolver is an abstraction injected into Pool so that internal/ssh

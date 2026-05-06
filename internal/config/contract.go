@@ -71,7 +71,7 @@ type ServerConfig struct {
 	// inline registrations to honour their accept_new_host argument.
 	//
 	// Static config entries always leave this false; trust grants for static
-	// servers go through `mcp-ssh-bridge trust <name>` which writes the key
+	// servers go through `ssh-mcp trust <name>` which writes the key
 	// to known_hosts in advance. Setting accept_new_host in config.toml has
 	// no effect because the toml:"-" tag prevents deserialisation.
 	AcceptNewHost bool `toml:"-"`

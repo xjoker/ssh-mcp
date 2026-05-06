@@ -17,15 +17,15 @@ iwr -useb https://raw.githubusercontent.com/xjoker/ssh-mcp/main/scripts/install.
 ```
 
 Both install user-level — no sudo / admin elevation. Defaults:
-- macOS / Linux: `~/.local/bin/mcp-ssh-bridge`
-- Windows: `%LOCALAPPDATA%\Programs\mcp-ssh-bridge\mcp-ssh-bridge.exe`
+- macOS / Linux: `~/.local/bin/ssh-mcp`
+- Windows: `%LOCALAPPDATA%\Programs\ssh-mcp\ssh-mcp.exe`
 
 Or, from a local checkout: `bash scripts/install.sh` (or `.\scripts\install.ps1`).
 
 Verify:
 
 ```sh
-mcp-ssh-bridge version
+ssh-mcp version
 ```
 
 ## 2. Pick your auth flow
@@ -33,31 +33,31 @@ mcp-ssh-bridge version
 ### a) SSH agent (no secrets in config)
 
 ```sh
-mcp-ssh-bridge config init
-mcp-ssh-bridge config add-server prod \
+ssh-mcp config init
+ssh-mcp config add-server prod \
     --host example.com --user alice --auth agent \
     --tags prod,web --description "primary web box"
-mcp-ssh-bridge trust prod
+ssh-mcp trust prod
 ```
 
 ### b) Public key on disk
 
 ```sh
-mcp-ssh-bridge config init
-mcp-ssh-bridge config add-server prod \
+ssh-mcp config init
+ssh-mcp config add-server prod \
     --host example.com --user alice \
     --auth key --key-path ~/.ssh/id_ed25519
-mcp-ssh-bridge trust prod
+ssh-mcp trust prod
 ```
 
 ### c) Password (stored in OS keychain, never in config)
 
 ```sh
-mcp-ssh-bridge config init
-mcp-ssh-bridge config add-server prod \
+ssh-mcp config init
+ssh-mcp config add-server prod \
     --host example.com --user alice --auth password
-mcp-ssh-bridge auth set-keychain mcp-ssh-bridge ssh-password:prod
-mcp-ssh-bridge trust prod
+ssh-mcp auth set-keychain ssh-mcp ssh-password:prod
+ssh-mcp trust prod
 ```
 
 `set-keychain` reads the password from stdin without echoing.
@@ -69,10 +69,10 @@ that, no file-editing required:
 
 ```sh
 # Claude Code (user scope = available in every project)
-claude mcp add --transport stdio --scope user ssh-bridge -- ~/.local/bin/mcp-ssh-bridge
+claude mcp add --transport stdio --scope user ssh-bridge -- ~/.local/bin/ssh-mcp
 
 # Codex
-codex mcp add ssh-bridge -- ~/.local/bin/mcp-ssh-bridge
+codex mcp add ssh-bridge -- ~/.local/bin/ssh-mcp
 ```
 
 Verify:
@@ -86,7 +86,7 @@ Claude **Desktop** (the macOS / Windows app) does not yet ship an MCP
 CLI, so paste a small JSON snippet manually:
 
 ```sh
-mcp-ssh-bridge install claude-desktop
+ssh-mcp install claude-desktop
 ```
 
 Then copy the printed block into the file the command names. **Never add
@@ -98,15 +98,15 @@ Restart whichever client you registered with.
 ## 4. Validate before first use
 
 ```sh
-mcp-ssh-bridge config validate     # parses + applies all SDD rules
-mcp-ssh-bridge audit query --since 1h     # confirms audit dir + read path
+ssh-mcp config validate     # parses + applies all SDD rules
+ssh-mcp audit query --since 1h     # confirms audit dir + read path
 ```
 
 ## 5. Onboard your AI assistant (one-time)
 
 In your AI client's first message of the session:
 
-> Read `docs/AI_GUIDE.md` from the mcp-ssh-bridge repo and follow it for
+> Read `docs/AI_GUIDE.md` from the ssh-mcp repo and follow it for
 > the rest of this session. Then call `list_servers` to see what's
 > available.
 
@@ -123,8 +123,8 @@ In your AI client, ask the agent something like:
 
 The agent prompts you to confirm; on approval the command runs and the
 result is returned. Each invocation appends a row to the JSONL audit
-log under `~/.local/state/mcp-ssh-bridge/` (Linux/macOS) or
-`%LOCALAPPDATA%\mcp-ssh-bridge\audit\` (Windows).
+log under `~/.local/state/ssh-mcp/` (Linux/macOS) or
+`%LOCALAPPDATA%\ssh-mcp\audit\` (Windows).
 
 ## 7. Common follow-ups
 

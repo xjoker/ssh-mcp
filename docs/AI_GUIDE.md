@@ -1,4 +1,4 @@
-# AI Assistant Guide for `mcp-ssh-bridge`
+# AI Assistant Guide for `ssh-mcp`
 
 > Written for the AI assistant (Claude, Codex, GPT, Gemini, …) that has been
 > given access to this MCP server. Read this once at session start; it
@@ -8,8 +8,8 @@
 > time you connect the bridge. After that the AI will know the rules.
 >
 > **Quick install reminder for humans:** the binary lives at
-> `~/.local/bin/mcp-ssh-bridge` (macOS/Linux) or
-> `%LOCALAPPDATA%\Programs\mcp-ssh-bridge\mcp-ssh-bridge.exe` (Windows).
+> `~/.local/bin/ssh-mcp` (macOS/Linux) or
+> `%LOCALAPPDATA%\Programs\ssh-mcp\ssh-mcp.exe` (Windows).
 > Register it once with your client via `claude mcp add ... ssh-bridge`
 > or `codex mcp add ssh-bridge ...` — never hand-edit the client config
 > if a CLI exists.
@@ -18,7 +18,7 @@
 
 ## 1. Mental model
 
-`mcp-ssh-bridge` exposes a small fixed set of SSH/SFTP tools over MCP.
+`ssh-mcp` exposes a small fixed set of SSH/SFTP tools over MCP.
 Tools fall into two operational classes:
 
 | Class | Tools | Behavior contract |
@@ -156,11 +156,11 @@ this to:
 If the user asks about a host that isn't listed:
 
 1. Ask whether they want a permanent entry (instruct the human to run
-   `mcp-ssh-bridge config add-server <name> --host H --user U ...`), or
+   `ssh-mcp config add-server <name> --host H --user U ...`), or
 2. Propose `ssh_quick_setup` for an ad-hoc TTL-bounded entry.
 
 Never ask the user to paste a password into the chat. Passwords go to the
-OS keychain via `mcp-ssh-bridge auth set-keychain mcp-ssh-bridge
+OS keychain via `ssh-mcp auth set-keychain ssh-mcp
 ssh-password:<name>`. Inline passwords are accepted by `session_start`
 and `ssh_quick_setup` only because the bridge promotes them to TTL-bounded
 in-memory temp servers and zeroes them on expiry/shutdown — even so, prefer
@@ -173,7 +173,7 @@ agent/key.
 | `error.code` | Cause | Right next step |
 |----|----|----|
 | `INVALID_ARGUMENT` | Bad server name, wrong shape, missing field. | Re-read the schema; do **not** retry the same call verbatim. |
-| `HOST_KEY_UNKNOWN` | First contact, no `known_hosts` entry. | Tell the user to run `mcp-ssh-bridge trust <name>`; do not auto-accept. |
+| `HOST_KEY_UNKNOWN` | First contact, no `known_hosts` entry. | Tell the user to run `ssh-mcp trust <name>`; do not auto-accept. |
 | `HOST_KEY_MISMATCH` | Server's host key changed. | **Stop**. Surface this prominently — possible MITM. Do not retry. |
 | `AUTH_FAILED` | Wrong key / password / agent unavailable. | Suggest `auth set-keychain` (password) or `ssh-add` (agent). Do not loop. |
 | `PERMISSION_DENIED` | Path outside `allowed_paths`, or remote chmod refused. | Show the user the path and the configured prefix. Don't widen scope silently. |
@@ -270,7 +270,7 @@ proper context — stop and surface it. Acceptable phrasing:
 > I'm pausing here: server `prod-db` returned `HOST_KEY_MISMATCH`. This
 > usually means the host key changed (re-imaged box, MITM, or rotated
 > infra). Before any further command on this host, please confirm via
-> another channel and either re-run `mcp-ssh-bridge trust prod-db` or
+> another channel and either re-run `ssh-mcp trust prod-db` or
 > investigate.
 
 That paragraph is more useful than three more retries.

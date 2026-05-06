@@ -19,10 +19,10 @@ Branch / version convention:
 
 ### Changed
 - Installers default to **user-level** install (no sudo / admin):
-  `~/.local/bin/mcp-ssh-bridge` on macOS/Linux,
-  `%LOCALAPPDATA%\Programs\mcp-ssh-bridge\mcp-ssh-bridge.exe` on Windows.
+  `~/.local/bin/ssh-mcp` on macOS/Linux,
+  `%LOCALAPPDATA%\Programs\ssh-mcp\ssh-mcp.exe` on Windows.
 - New `scripts/install.ps1` for Windows (PowerShell one-liner).
-- `mcp-ssh-bridge install claude-code` and `install codex` now print the
+- `ssh-mcp install claude-code` and `install codex` now print the
   official client-side CLI command (`claude mcp add ...` /
   `codex mcp add ...`) instead of a JSON/TOML snippet — those clients
   ship MCP-management CLIs as of late 2025/early 2026, and using them is

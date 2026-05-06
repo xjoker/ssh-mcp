@@ -35,7 +35,7 @@ func repoRoot(t *testing.T) string {
 func startBridge(t *testing.T, ctx context.Context) (*mcp.ClientSession, func()) {
 	t.Helper()
 	root := repoRoot(t)
-	bin := filepath.Join(root, "bin", "mcp-ssh-bridge")
+	bin := filepath.Join(root, "bin", "ssh-mcp")
 	if _, err := os.Stat(bin); err != nil {
 		t.Skipf("binary not built at %s: %v", bin, err)
 	}

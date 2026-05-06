@@ -42,13 +42,13 @@ jobs:
             local GOOS=$1 GOARCH=$2
             local EXT=""
             [ "$GOOS" = "windows" ] && EXT=".exe"
-            local OUT="dist/mcp-ssh-bridge_${GOOS}_${GOARCH}${EXT}"
+            local OUT="dist/ssh-mcp_${GOOS}_${GOARCH}${EXT}"
             echo "Building $OUT..."
             GOOS=$GOOS GOARCH=$GOARCH go build \
               -trimpath \
               -ldflags="$LDFLAGS" \
               -o "$OUT" \
-              ./cmd/mcp-ssh-bridge
+              ./cmd/ssh-mcp
           }
 
           build linux   amd64
@@ -67,12 +67,12 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          name: mcp-ssh-bridge ${{ steps.version.outputs.tag }}
+          name: ssh-mcp ${{ steps.version.outputs.tag }}
           generate_release_notes: true
           files: |
-            dist/mcp-ssh-bridge_linux_amd64
-            dist/mcp-ssh-bridge_linux_arm64
-            dist/mcp-ssh-bridge_darwin_amd64
-            dist/mcp-ssh-bridge_darwin_arm64
-            dist/mcp-ssh-bridge_windows_amd64.exe
+            dist/ssh-mcp_linux_amd64
+            dist/ssh-mcp_linux_arm64
+            dist/ssh-mcp_darwin_amd64
+            dist/ssh-mcp_darwin_arm64
+            dist/ssh-mcp_windows_amd64.exe
             dist/checksums.sha256

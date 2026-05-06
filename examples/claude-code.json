@@ -1,21 +1,21 @@
 {
   "_comment": [
     "Claude Code ships an MCP-management CLI. Prefer running:",
-    "  claude mcp add --transport stdio --scope user ssh-bridge -- ~/.local/bin/mcp-ssh-bridge",
+    "  claude mcp add --transport stdio --scope user ssh-bridge -- ~/.local/bin/ssh-mcp",
     "rather than editing ~/.claude.json by hand.",
     "",
     "If you do edit by hand, this is the shape of the entry to add under the",
     "top-level mcpServers key in ~/.claude.json (Linux/macOS) or",
     "%USERPROFILE%\\.claude.json (Windows).",
     "",
-    "WARNING: Do NOT add autoApprove for any of mcp-ssh-bridge tools.",
+    "WARNING: Do NOT add autoApprove for any of ssh-mcp tools.",
     "The tools provided (ssh_exec, sftp_op, ssh_group_exec, etc.) can have",
     "unbounded effects on remote systems and must not be auto-approved."
   ],
   "mcpServers": {
     "ssh-bridge": {
       "type": "stdio",
-      "command": "/Users/<you>/.local/bin/mcp-ssh-bridge",
+      "command": "/Users/<you>/.local/bin/ssh-mcp",
       "args": []
     }
   }

@@ -10,9 +10,9 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
-	"github.com/xjoker/mcp-ssh-bridge/internal/safety"
-	internalsftp "github.com/xjoker/mcp-ssh-bridge/internal/sftp"
+	"github.com/xjoker/ssh-mcp/internal/envelope"
+	"github.com/xjoker/ssh-mcp/internal/safety"
+	internalsftp "github.com/xjoker/ssh-mcp/internal/sftp"
 )
 
 const sftpWriteMaxBytes = sftpReadMaxBytes

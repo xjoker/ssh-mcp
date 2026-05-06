@@ -9,7 +9,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/safety"
+	"github.com/xjoker/ssh-mcp/internal/safety"
 )
 
 const (

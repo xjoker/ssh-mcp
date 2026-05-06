@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh — download pre-built mcp-ssh-bridge binary (macOS / Linux).
+# install.sh — download pre-built ssh-mcp binary (macOS / Linux).
 #
 # No Go, no git, no build tools required.
 #
@@ -48,7 +48,7 @@ if [ -z "$TAG" ]; then
 fi
 
 # 4. Build asset URL.
-ASSET="mcp-ssh-bridge_${os}_${arch}"
+ASSET="ssh-mcp_${os}_${arch}"
 URL="https://github.com/$REPO/releases/download/$TAG/$ASSET"
 
 # 5. Ensure PREFIX exists and is writable.
@@ -56,7 +56,7 @@ mkdir -p "$PREFIX" 2>/dev/null || fail "cannot create $PREFIX — set PREFIX=...
 [ -w "$PREFIX" ] || fail "$PREFIX is not writable — set PREFIX=... to a writable directory"
 
 # 6. Download binary.
-DEST="$PREFIX/mcp-ssh-bridge"
+DEST="$PREFIX/ssh-mcp"
 log "downloading $TAG ($os/$arch)..."
 if command -v curl >/dev/null 2>&1; then
   curl -fsSL "$URL" -o "$DEST" || fail "download failed: $URL"

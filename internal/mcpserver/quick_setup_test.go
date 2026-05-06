@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/tools"
+	"github.com/xjoker/ssh-mcp/internal/tools"
 )
 
 // --------------------------------------------------------------------------

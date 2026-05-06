@@ -1,6 +1,6 @@
-# mcp-ssh-bridge minimal configuration — one server, agent auth
+# ssh-mcp minimal configuration — one server, agent auth
 #
-# WARNING: Do not add autoApprove for any of mcp-ssh-bridge tools.
+# WARNING: Do not add autoApprove for any of ssh-mcp tools.
 # The tools provided (ssh_exec, sftp_op, ssh_group_exec, etc.) can have
 # unbounded effects on remote systems and must not be auto-approved.
 

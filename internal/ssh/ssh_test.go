@@ -13,7 +13,7 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/config"
+	"github.com/xjoker/ssh-mcp/internal/config"
 )
 
 // --------------------------------------------------------------------------

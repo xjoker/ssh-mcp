@@ -8,10 +8,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
-	"github.com/xjoker/mcp-ssh-bridge/internal/safety"
-	internalsftp "github.com/xjoker/mcp-ssh-bridge/internal/sftp"
-	"github.com/xjoker/mcp-ssh-bridge/internal/ssh"
+	"github.com/xjoker/ssh-mcp/internal/envelope"
+	"github.com/xjoker/ssh-mcp/internal/safety"
+	internalsftp "github.com/xjoker/ssh-mcp/internal/sftp"
+	"github.com/xjoker/ssh-mcp/internal/ssh"
 )
 
 func init() {

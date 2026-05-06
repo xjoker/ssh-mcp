@@ -1,4 +1,4 @@
-# mcp-ssh-bridge
+# ssh-mcp
 
 SSH operations as MCP tools for AI assistants — run commands, manage files, open tunnels, maintain persistent sessions.
 
@@ -13,42 +13,42 @@ SSH operations as MCP tools for AI assistants — run commands, manage files, op
 ### Claude Code
 
 ```
-Install mcp-ssh-bridge on my machine by following these steps exactly:
+Install ssh-mcp on my machine by following these steps exactly:
 
 1. Call the GitHub releases API to find the latest release tag:
    GET https://api.github.com/repos/xjoker/ssh-mcp/releases
    Use releases[0].tag_name as the version.
 
 2. Detect my OS and architecture, then download the matching binary:
-   URL: https://github.com/xjoker/ssh-mcp/releases/download/{tag}/mcp-ssh-bridge_{os}_{arch}
+   URL: https://github.com/xjoker/ssh-mcp/releases/download/{tag}/ssh-mcp_{os}_{arch}
    os values : linux | darwin | windows
    arch values: amd64 | arm64  (windows supports amd64 only)
    Append .exe on Windows.
 
 3. Install the binary:
-   macOS/Linux → ~/.local/bin/mcp-ssh-bridge  (chmod +x, create dir if needed)
-   Windows     → %LOCALAPPDATA%\Programs\mcp-ssh-bridge\mcp-ssh-bridge.exe
+   macOS/Linux → ~/.local/bin/ssh-mcp  (chmod +x, create dir if needed)
+   Windows     → %LOCALAPPDATA%\Programs\ssh-mcp\ssh-mcp.exe
 
-4. Run: mcp-ssh-bridge config init
+4. Run: ssh-mcp config init
 
 5. Ask me for my SSH server details (host, user, auth method), then run:
-   mcp-ssh-bridge config add-server <name> --host <host> --user <user> --auth <agent|key|password>
-   For password auth also run: mcp-ssh-bridge auth set-keychain mcp-ssh-bridge ssh-password:<name>
+   ssh-mcp config add-server <name> --host <host> --user <user> --auth <agent|key|password>
+   For password auth also run: ssh-mcp auth set-keychain ssh-mcp ssh-password:<name>
 
-6. Run: mcp-ssh-bridge trust <name>
+6. Run: ssh-mcp trust <name>
 
 7. Register with Claude Code:
-   claude mcp add --transport stdio --scope user ssh-bridge -- ~/.local/bin/mcp-ssh-bridge
+   claude mcp add --transport stdio --scope user ssh-bridge -- ~/.local/bin/ssh-mcp
    (Windows: use the full .exe path from step 3)
 
-8. Confirm by running: mcp-ssh-bridge config validate
+8. Confirm by running: ssh-mcp config validate
 ```
 
 ### Codex
 
 Same prompt as above — replace step 7 with:
 ```
-codex mcp add ssh-bridge -- ~/.local/bin/mcp-ssh-bridge
+codex mcp add ssh-bridge -- ~/.local/bin/ssh-mcp
 ```
 
 ---
@@ -71,8 +71,8 @@ No Go, no build tools, no admin rights. The binary is downloaded directly from [
 
 | Platform | Default install path |
 |----------|----------------------|
-| macOS / Linux | `~/.local/bin/mcp-ssh-bridge` |
-| Windows | `%LOCALAPPDATA%\Programs\mcp-ssh-bridge\mcp-ssh-bridge.exe` |
+| macOS / Linux | `~/.local/bin/ssh-mcp` |
+| Windows | `%LOCALAPPDATA%\Programs\ssh-mcp\ssh-mcp.exe` |
 
 Override with `PREFIX=...` (bash) or `$env:PREFIX=...` (PowerShell).
 
@@ -81,7 +81,7 @@ Override with `PREFIX=...` (bash) or `$env:PREFIX=...` (PowerShell).
 ```sh
 git clone https://github.com/xjoker/ssh-mcp.git
 cd ssh-mcp
-make build   # binary at bin/mcp-ssh-bridge
+make build   # binary at bin/ssh-mcp
 ```
 
 ---
@@ -89,26 +89,26 @@ make build   # binary at bin/mcp-ssh-bridge
 ## Post-install Setup
 
 ```sh
-mcp-ssh-bridge config init
-mcp-ssh-bridge config add-server prod --host example.com --user alice --auth agent
-mcp-ssh-bridge trust prod
+ssh-mcp config init
+ssh-mcp config add-server prod --host example.com --user alice --auth agent
+ssh-mcp trust prod
 
 # Register with your AI client:
-claude mcp add --transport stdio --scope user ssh-bridge -- ~/.local/bin/mcp-ssh-bridge
-codex  mcp add ssh-bridge -- ~/.local/bin/mcp-ssh-bridge
+claude mcp add --transport stdio --scope user ssh-bridge -- ~/.local/bin/ssh-mcp
+codex  mcp add ssh-bridge -- ~/.local/bin/ssh-mcp
 ```
 
 For password auth:
 
 ```sh
-mcp-ssh-bridge config add-server prod --host example.com --user alice --auth password
-mcp-ssh-bridge auth set-keychain mcp-ssh-bridge ssh-password:prod
+ssh-mcp config add-server prod --host example.com --user alice --auth password
+ssh-mcp auth set-keychain ssh-mcp ssh-password:prod
 # prompts for password; nothing sensitive lands in config.toml
 ```
 
 ---
 
-## What mcp-ssh-bridge Can Do
+## What ssh-mcp Can Do
 
 ### Command Execution
 
@@ -166,7 +166,7 @@ Route through bastion hosts transparently via `proxy_jump`. Chains of arbitrary 
 Full pseudo-terminal allocation for `ssh_exec` and `session_start`. Run `htop`, `btop`, `ncdu`, `vim` and other TUI programs; use `strip_ansi` to get clean text back.
 
 **OS keychain integration**
-Passwords are stored in macOS Keychain, Linux libsecret, or Windows Credential Manager — never in `config.toml`. `mcp-ssh-bridge auth set-keychain` handles enrollment.
+Passwords are stored in macOS Keychain, Linux libsecret, or Windows Credential Manager — never in `config.toml`. `ssh-mcp auth set-keychain` handles enrollment.
 
 **Tag-based group operations**
 Tag servers (`tags = ["prod", "eu"]`) and target entire fleets with a single `ssh_group_exec` call.
@@ -178,7 +178,7 @@ Tag servers (`tags = ["prod", "eu"]`) and target entire fleets with a single `ss
 Every tool call is pre-recorded in a JSONL audit log before execution. `audit_query` provides structured search; credentials appear only as `{"redacted":true}`.
 
 **Self-update**
-`mcp-ssh-bridge update` fetches the latest release binary, verifies its SHA-256, and atomically replaces the running binary. The bridge also surfaces an update notice on startup when a newer version is available.
+`ssh-mcp update` fetches the latest release binary, verifies its SHA-256, and atomically replaces the running binary. The bridge also surfaces an update notice on startup when a newer version is available.
 
 ---
 
@@ -198,8 +198,8 @@ Default locations (no admin / sudo required):
 
 | OS | Config | Audit log |
 |----|--------|-----------|
-| macOS / Linux | `~/.config/mcp-ssh-bridge/config.toml` | `~/.local/state/mcp-ssh-bridge/` |
-| Windows | `%APPDATA%\mcp-ssh-bridge\config.toml` | `%LOCALAPPDATA%\mcp-ssh-bridge\audit\` |
+| macOS / Linux | `~/.config/ssh-mcp/config.toml` | `~/.local/state/ssh-mcp/` |
+| Windows | `%APPDATA%\ssh-mcp\config.toml` | `%LOCALAPPDATA%\ssh-mcp\audit\` |
 
 Override with `MCP_SSH_BRIDGE_CONFIG=/path/to/config.toml`.
 
@@ -236,18 +236,18 @@ Full example: [`examples/config.toml`](examples/config.toml)
 ## CLI Reference
 
 ```sh
-mcp-ssh-bridge config init
-mcp-ssh-bridge config validate
-mcp-ssh-bridge config add-server <name> --host H --user U --auth agent|key|password
-mcp-ssh-bridge trust <name>
-mcp-ssh-bridge auth set-keychain mcp-ssh-bridge ssh-password:<name>
-mcp-ssh-bridge server list
-mcp-ssh-bridge server test <name>
-mcp-ssh-bridge audit query --tool ssh_exec --since 24h
-mcp-ssh-bridge update
-mcp-ssh-bridge install claude-code     # print claude mcp add command
-mcp-ssh-bridge install codex           # print codex mcp add command
-mcp-ssh-bridge install claude-desktop  # print JSON snippet
+ssh-mcp config init
+ssh-mcp config validate
+ssh-mcp config add-server <name> --host H --user U --auth agent|key|password
+ssh-mcp trust <name>
+ssh-mcp auth set-keychain ssh-mcp ssh-password:<name>
+ssh-mcp server list
+ssh-mcp server test <name>
+ssh-mcp audit query --tool ssh_exec --since 24h
+ssh-mcp update
+ssh-mcp install claude-code     # print claude mcp add command
+ssh-mcp install codex           # print codex mcp add command
+ssh-mcp install claude-desktop  # print JSON snippet
 ```
 
 ---
@@ -256,11 +256,11 @@ mcp-ssh-bridge install claude-desktop  # print JSON snippet
 
 | Symptom | Fix |
 |---------|-----|
-| `HOST_KEY_UNKNOWN` | `mcp-ssh-bridge trust <name>` |
-| `unable to authenticate` (password) | `mcp-ssh-bridge auth set-keychain mcp-ssh-bridge ssh-password:<name>` |
+| `HOST_KEY_UNKNOWN` | `ssh-mcp trust <name>` |
+| `unable to authenticate` (password) | `ssh-mcp auth set-keychain ssh-mcp ssh-password:<name>` |
 | `SESSION_LIMIT` | Close idle sessions or raise `settings.max_sessions` in config |
 | Bridge not appearing in AI client | Restart the AI client after `mcp add` |
-| `config: no such file` | `mcp-ssh-bridge config init` |
+| `config: no such file` | `ssh-mcp config init` |
 
 ---
 

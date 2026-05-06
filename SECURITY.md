@@ -27,7 +27,7 @@ Do not disclose the vulnerability publicly until a coordinated fix has been rele
 
 ## Threat Model
 
-`mcp-ssh-bridge` is a stdio MCP server that runs SSH commands on behalf of an AI assistant. The primary trust boundary is between the AI client (Claude Desktop, Claude Code, Codex) and the set of servers listed in `config.toml`. The bridge acts as a policy enforcement point between the AI and those servers.
+`ssh-mcp` is a stdio MCP server that runs SSH commands on behalf of an AI assistant. The primary trust boundary is between the AI client (Claude Desktop, Claude Code, Codex) and the set of servers listed in `config.toml`. The bridge acts as a policy enforcement point between the AI and those servers.
 
 Key assumptions:
 

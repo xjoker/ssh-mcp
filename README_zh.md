@@ -1,4 +1,4 @@
-# mcp-ssh-bridge
+# ssh-mcp
 
 将 SSH 操作封装为 MCP 工具，供 AI 助手直接调用 —— 执行命令、管理文件、建立隧道、维持持久会话。
 
@@ -13,42 +13,42 @@
 ### Claude Code
 
 ```
-帮我在我的机器上安装 mcp-ssh-bridge，按以下步骤操作：
+帮我在我的机器上安装 ssh-mcp，按以下步骤操作：
 
 1. 调用 GitHub releases API 获取最新版本号：
    GET https://api.github.com/repos/xjoker/ssh-mcp/releases
    使用 releases[0].tag_name 作为版本号。
 
 2. 检测我的操作系统和 CPU 架构，下载对应二进制文件：
-   URL: https://github.com/xjoker/ssh-mcp/releases/download/{tag}/mcp-ssh-bridge_{os}_{arch}
+   URL: https://github.com/xjoker/ssh-mcp/releases/download/{tag}/ssh-mcp_{os}_{arch}
    os 取值：linux | darwin | windows
    arch 取值：amd64 | arm64（Windows 仅支持 amd64）
    Windows 下文件名添加 .exe 后缀。
 
 3. 安装二进制：
-   macOS/Linux → ~/.local/bin/mcp-ssh-bridge（chmod +x，目录不存在则创建）
-   Windows     → %LOCALAPPDATA%\Programs\mcp-ssh-bridge\mcp-ssh-bridge.exe
+   macOS/Linux → ~/.local/bin/ssh-mcp（chmod +x，目录不存在则创建）
+   Windows     → %LOCALAPPDATA%\Programs\ssh-mcp\ssh-mcp.exe
 
-4. 运行：mcp-ssh-bridge config init
+4. 运行：ssh-mcp config init
 
 5. 询问我的 SSH 服务器信息（主机、用户名、认证方式），然后运行：
-   mcp-ssh-bridge config add-server <名称> --host <主机> --user <用户名> --auth <agent|key|password>
-   如果是密码认证，还需运行：mcp-ssh-bridge auth set-keychain mcp-ssh-bridge ssh-password:<名称>
+   ssh-mcp config add-server <名称> --host <主机> --user <用户名> --auth <agent|key|password>
+   如果是密码认证，还需运行：ssh-mcp auth set-keychain ssh-mcp ssh-password:<名称>
 
-6. 运行：mcp-ssh-bridge trust <名称>
+6. 运行：ssh-mcp trust <名称>
 
 7. 注册到 Claude Code：
-   claude mcp add --transport stdio --scope user ssh-bridge -- ~/.local/bin/mcp-ssh-bridge
+   claude mcp add --transport stdio --scope user ssh-bridge -- ~/.local/bin/ssh-mcp
    （Windows 使用第 3 步的完整 .exe 路径）
 
-8. 验证：mcp-ssh-bridge config validate
+8. 验证：ssh-mcp config validate
 ```
 
 ### Codex
 
 提示词与上面相同，把第 7 步替换为：
 ```
-codex mcp add ssh-bridge -- ~/.local/bin/mcp-ssh-bridge
+codex mcp add ssh-bridge -- ~/.local/bin/ssh-mcp
 ```
 
 ---
@@ -71,8 +71,8 @@ iwr -useb https://raw.githubusercontent.com/xjoker/ssh-mcp/main/scripts/install.
 
 | 平台 | 默认安装路径 |
 |------|------------|
-| macOS / Linux | `~/.local/bin/mcp-ssh-bridge` |
-| Windows | `%LOCALAPPDATA%\Programs\mcp-ssh-bridge\mcp-ssh-bridge.exe` |
+| macOS / Linux | `~/.local/bin/ssh-mcp` |
+| Windows | `%LOCALAPPDATA%\Programs\ssh-mcp\ssh-mcp.exe` |
 
 可通过 `PREFIX=...`（bash）或 `$env:PREFIX=...`（PowerShell）自定义安装目录。
 
@@ -81,7 +81,7 @@ iwr -useb https://raw.githubusercontent.com/xjoker/ssh-mcp/main/scripts/install.
 ```sh
 git clone https://github.com/xjoker/ssh-mcp.git
 cd ssh-mcp
-make build   # 二进制输出到 bin/mcp-ssh-bridge
+make build   # 二进制输出到 bin/ssh-mcp
 ```
 
 ---
@@ -89,20 +89,20 @@ make build   # 二进制输出到 bin/mcp-ssh-bridge
 ## 安装后配置
 
 ```sh
-mcp-ssh-bridge config init
-mcp-ssh-bridge config add-server prod --host example.com --user alice --auth agent
-mcp-ssh-bridge trust prod
+ssh-mcp config init
+ssh-mcp config add-server prod --host example.com --user alice --auth agent
+ssh-mcp trust prod
 
 # 注册到你的 AI 客户端：
-claude mcp add --transport stdio --scope user ssh-bridge -- ~/.local/bin/mcp-ssh-bridge
-codex  mcp add ssh-bridge -- ~/.local/bin/mcp-ssh-bridge
+claude mcp add --transport stdio --scope user ssh-bridge -- ~/.local/bin/ssh-mcp
+codex  mcp add ssh-bridge -- ~/.local/bin/ssh-mcp
 ```
 
 密码认证：
 
 ```sh
-mcp-ssh-bridge config add-server prod --host example.com --user alice --auth password
-mcp-ssh-bridge auth set-keychain mcp-ssh-bridge ssh-password:prod
+ssh-mcp config add-server prod --host example.com --user alice --auth password
+ssh-mcp auth set-keychain ssh-mcp ssh-password:prod
 # 提示输入密码，不回显；密码不会写入 config.toml
 ```
 
@@ -166,7 +166,7 @@ mcp-ssh-bridge auth set-keychain mcp-ssh-bridge ssh-password:prod
 `ssh_exec` 和 `session_start` 均支持完整伪终端分配。可运行 `htop`、`btop`、`ncdu`、`vim` 等 TUI 程序；使用 `strip_ansi` 获取纯文本输出。
 
 **OS 密钥链集成**
-密码存储在 macOS 钥匙串、Linux libsecret 或 Windows 凭据管理器中，永远不写入 `config.toml`。`mcp-ssh-bridge auth set-keychain` 负责录入。
+密码存储在 macOS 钥匙串、Linux libsecret 或 Windows 凭据管理器中，永远不写入 `config.toml`。`ssh-mcp auth set-keychain` 负责录入。
 
 **标签批量操作**
 给服务器打标签（`tags = ["prod", "eu"]`），用一次 `ssh_group_exec` 调用操作整个服务器组。
@@ -178,7 +178,7 @@ mcp-ssh-bridge auth set-keychain mcp-ssh-bridge ssh-password:prod
 每次工具调用在执行前预先写入 JSONL 审计日志。`audit_query` 提供结构化查询；凭据字段仅显示 `{"redacted":true}`。
 
 **自动更新**
-`mcp-ssh-bridge update` 获取最新版本二进制，验证 SHA-256 后原子替换当前运行的二进制。启动时若有新版本可用，也会在 AI 客户端界面显示更新提示。
+`ssh-mcp update` 获取最新版本二进制，验证 SHA-256 后原子替换当前运行的二进制。启动时若有新版本可用，也会在 AI 客户端界面显示更新提示。
 
 ---
 
@@ -198,8 +198,8 @@ mcp-ssh-bridge auth set-keychain mcp-ssh-bridge ssh-password:prod
 
 | 操作系统 | 配置文件 | 审计日志 |
 |---------|---------|---------|
-| macOS / Linux | `~/.config/mcp-ssh-bridge/config.toml` | `~/.local/state/mcp-ssh-bridge/` |
-| Windows | `%APPDATA%\mcp-ssh-bridge\config.toml` | `%LOCALAPPDATA%\mcp-ssh-bridge\audit\` |
+| macOS / Linux | `~/.config/ssh-mcp/config.toml` | `~/.local/state/ssh-mcp/` |
+| Windows | `%APPDATA%\ssh-mcp\config.toml` | `%LOCALAPPDATA%\ssh-mcp\audit\` |
 
 通过 `MCP_SSH_BRIDGE_CONFIG=/path/to/config.toml` 覆盖配置路径。
 
@@ -236,18 +236,18 @@ proxy_jump = "bastion"
 ## CLI 速查
 
 ```sh
-mcp-ssh-bridge config init
-mcp-ssh-bridge config validate
-mcp-ssh-bridge config add-server <名称> --host H --user U --auth agent|key|password
-mcp-ssh-bridge trust <名称>
-mcp-ssh-bridge auth set-keychain mcp-ssh-bridge ssh-password:<名称>
-mcp-ssh-bridge server list
-mcp-ssh-bridge server test <名称>
-mcp-ssh-bridge audit query --tool ssh_exec --since 24h
-mcp-ssh-bridge update
-mcp-ssh-bridge install claude-code     # 输出 claude mcp add 命令
-mcp-ssh-bridge install codex           # 输出 codex mcp add 命令
-mcp-ssh-bridge install claude-desktop  # 输出 JSON 片段
+ssh-mcp config init
+ssh-mcp config validate
+ssh-mcp config add-server <名称> --host H --user U --auth agent|key|password
+ssh-mcp trust <名称>
+ssh-mcp auth set-keychain ssh-mcp ssh-password:<名称>
+ssh-mcp server list
+ssh-mcp server test <名称>
+ssh-mcp audit query --tool ssh_exec --since 24h
+ssh-mcp update
+ssh-mcp install claude-code     # 输出 claude mcp add 命令
+ssh-mcp install codex           # 输出 codex mcp add 命令
+ssh-mcp install claude-desktop  # 输出 JSON 片段
 ```
 
 ---
@@ -256,11 +256,11 @@ mcp-ssh-bridge install claude-desktop  # 输出 JSON 片段
 
 | 现象 | 解决方法 |
 |------|---------|
-| `HOST_KEY_UNKNOWN` | `mcp-ssh-bridge trust <名称>` |
-| `unable to authenticate`（密码认证）| `mcp-ssh-bridge auth set-keychain mcp-ssh-bridge ssh-password:<名称>` |
+| `HOST_KEY_UNKNOWN` | `ssh-mcp trust <名称>` |
+| `unable to authenticate`（密码认证）| `ssh-mcp auth set-keychain ssh-mcp ssh-password:<名称>` |
 | `SESSION_LIMIT` | 关闭空闲会话，或在配置中提高 `settings.max_sessions` |
 | AI 客户端中看不到工具 | `mcp add` 后重启 AI 客户端 |
-| `config: no such file` | `mcp-ssh-bridge config init` |
+| `config: no such file` | `ssh-mcp config init` |
 
 ---
 

@@ -1,4 +1,4 @@
-# install.ps1 — download pre-built mcp-ssh-bridge binary (Windows amd64).
+# install.ps1 — download pre-built ssh-mcp binary (Windows amd64).
 #
 # No Go, no git, no build tools required.
 #
@@ -7,13 +7,13 @@
 #   .\scripts\install.ps1                  # from a local checkout
 #
 # Env vars:
-#   $env:PREFIX    install directory (default: %LOCALAPPDATA%\Programs\mcp-ssh-bridge)
+#   $env:PREFIX    install directory (default: %LOCALAPPDATA%\Programs\ssh-mcp)
 #   $env:VERSION   specific release tag (default: latest)
 
 $ErrorActionPreference = 'Stop'
 
 $Repo   = 'xjoker/ssh-mcp'
-$Prefix = if ($env:PREFIX) { $env:PREFIX } else { Join-Path $env:LOCALAPPDATA 'Programs\mcp-ssh-bridge' }
+$Prefix = if ($env:PREFIX) { $env:PREFIX } else { Join-Path $env:LOCALAPPDATA 'Programs\ssh-mcp' }
 
 function Log  ($m) { Write-Host "[install] $m" -ForegroundColor Cyan }
 function Warn ($m) { Write-Host "[install] $m" -ForegroundColor Yellow }
@@ -33,14 +33,14 @@ if (-not $Tag) {
 }
 
 # 2. Build asset URL (Windows: amd64 only for now).
-$Asset = 'mcp-ssh-bridge_windows_amd64.exe'
+$Asset = 'ssh-mcp_windows_amd64.exe'
 $Url   = "https://github.com/$Repo/releases/download/$Tag/$Asset"
 
 # 3. Ensure prefix directory exists.
 New-Item -ItemType Directory -Force -Path $Prefix | Out-Null
 
 # 4. Download binary.
-$Dest = Join-Path $Prefix 'mcp-ssh-bridge.exe'
+$Dest = Join-Path $Prefix 'ssh-mcp.exe'
 Log "downloading $Tag (windows/amd64)..."
 try {
   Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing

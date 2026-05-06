@@ -1,4 +1,4 @@
-# Contributing to mcp-ssh-bridge
+# Contributing to ssh-mcp
 
 ## Development Setup
 

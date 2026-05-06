@@ -1,18 +1,18 @@
-# Codex MCP server configuration for mcp-ssh-bridge.
+# Codex MCP server configuration for ssh-mcp.
 #
 # Codex ships an MCP-management CLI. Prefer running:
-#   codex mcp add ssh-bridge -- ~/.local/bin/mcp-ssh-bridge
+#   codex mcp add ssh-bridge -- ~/.local/bin/ssh-mcp
 # rather than editing ~/.codex/config.toml by hand.
 #
 # If you do edit by hand, this is the shape of the section to append.
 # Replace the command path with the actual install location:
-#   macOS / Linux: ~/.local/bin/mcp-ssh-bridge
-#   Windows      : %LOCALAPPDATA%\Programs\mcp-ssh-bridge\mcp-ssh-bridge.exe
+#   macOS / Linux: ~/.local/bin/ssh-mcp
+#   Windows      : %LOCALAPPDATA%\Programs\ssh-mcp\ssh-mcp.exe
 #
-# WARNING: Do NOT add autoApprove for any of mcp-ssh-bridge tools.
+# WARNING: Do NOT add autoApprove for any of ssh-mcp tools.
 # The tools provided (ssh_exec, sftp_op, ssh_group_exec, etc.) can have
 # unbounded effects on remote systems and must not be auto-approved.
 
 [mcp_servers.ssh-bridge]
-command = "/Users/<you>/.local/bin/mcp-ssh-bridge"
+command = "/Users/<you>/.local/bin/ssh-mcp"
 args    = []

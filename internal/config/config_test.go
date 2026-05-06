@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/config"
+	"github.com/xjoker/ssh-mcp/internal/config"
 )
 
 // ---- helpers ----------------------------------------------------------------
@@ -62,26 +62,26 @@ func TestParseCredRef_Empty(t *testing.T) {
 }
 
 func TestParseCredRef_Keychain(t *testing.T) {
-	ref, err := config.ParseCredRef("keychain:mcp-ssh-bridge:prod-db")
+	ref, err := config.ParseCredRef("keychain:ssh-mcp:prod-db")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if ref.Kind != config.CredRefKeychain {
 		t.Errorf("expected CredRefKeychain, got %v", ref.Kind)
 	}
-	if ref.Service != "mcp-ssh-bridge" {
-		t.Errorf("Service = %q, want %q", ref.Service, "mcp-ssh-bridge")
+	if ref.Service != "ssh-mcp" {
+		t.Errorf("Service = %q, want %q", ref.Service, "ssh-mcp")
 	}
 	if ref.Account != "prod-db" {
 		t.Errorf("Account = %q, want %q", ref.Account, "prod-db")
 	}
-	if ref.Raw != "keychain:mcp-ssh-bridge:prod-db" {
+	if ref.Raw != "keychain:ssh-mcp:prod-db" {
 		t.Errorf("Raw = %q", ref.Raw)
 	}
 }
 
 func TestParseCredRef_Keychain_MissingAccount(t *testing.T) {
-	_, err := config.ParseCredRef("keychain:mcp-ssh-bridge")
+	_, err := config.ParseCredRef("keychain:ssh-mcp")
 	if err == nil {
 		t.Fatal("expected error for keychain with missing account, got nil")
 	}
@@ -401,7 +401,7 @@ host           = "example.com"
 user           = "deploy"
 auth           = "key"
 key_path       = "~/.ssh/id_ed25519"
-key_passphrase = "keychain:mcp-ssh-bridge:myserver"
+key_passphrase = "keychain:ssh-mcp:myserver"
 `)
 	srv := cfg.Servers["myserver"]
 	if srv.KeyPassphrase.Kind != config.CredRefKeychain {
@@ -417,11 +417,11 @@ func TestDefaultPath_NonEmpty(t *testing.T) {
 		t.Fatal("DefaultPath() returned empty string")
 	}
 	if runtime.GOOS == "windows" {
-		if !strings.Contains(p, "mcp-ssh-bridge") {
+		if !strings.Contains(p, "ssh-mcp") {
 			t.Errorf("DefaultPath on Windows missing expected component: %q", p)
 		}
 	} else {
-		if !strings.Contains(p, "mcp-ssh-bridge/config.toml") {
+		if !strings.Contains(p, "ssh-mcp/config.toml") {
 			t.Errorf("DefaultPath missing expected suffix: %q", p)
 		}
 	}
@@ -491,7 +491,7 @@ func TestValidate_AuthAgentRejectsKeyPassphrase(t *testing.T) {
 host           = "example.com"
 user           = "deploy"
 auth           = "agent"
-key_passphrase = "keychain:mcp-ssh-bridge:myserver"
+key_passphrase = "keychain:ssh-mcp:myserver"
 `, "auth=agent must not set key_passphrase")
 }
 
@@ -552,7 +552,7 @@ host           = "example.com"
 user           = "deploy"
 auth           = "password"
 password       = "plaintext:secret"
-key_passphrase = "keychain:mcp-ssh-bridge:myserver"
+key_passphrase = "keychain:ssh-mcp:myserver"
 `, "auth=password must not set key_passphrase")
 }
 
@@ -562,7 +562,7 @@ func TestValidate_AuthPasswordWithKeychainOK(t *testing.T) {
 host     = "example.com"
 user     = "deploy"
 auth     = "password"
-password = "keychain:mcp-ssh-bridge:myserver"
+password = "keychain:ssh-mcp:myserver"
 `)
 	srv := cfg.Servers["myserver"]
 	if srv.Password.Kind != config.CredRefKeychain {

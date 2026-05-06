@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/safety"
+	"github.com/xjoker/ssh-mcp/internal/safety"
 )
 
 // dateLayout is the UTC date format used in filenames.

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/safety"
+	"github.com/xjoker/ssh-mcp/internal/safety"
 )
 
 // ---------------------------------------------------------------------------

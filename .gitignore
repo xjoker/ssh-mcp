@@ -1,7 +1,7 @@
 /bin/
 /dist/
-/mcp-ssh-bridge
-/mcp-ssh-bridge.exe
+/ssh-mcp
+/ssh-mcp.exe
 *.test
 *.out
 .DS_Store

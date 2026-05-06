@@ -10,12 +10,12 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/audit"
-	"github.com/xjoker/mcp-ssh-bridge/internal/config"
-	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
-	"github.com/xjoker/mcp-ssh-bridge/internal/session"
-	"github.com/xjoker/mcp-ssh-bridge/internal/ssh"
-	"github.com/xjoker/mcp-ssh-bridge/internal/tunnel"
+	"github.com/xjoker/ssh-mcp/internal/audit"
+	"github.com/xjoker/ssh-mcp/internal/config"
+	"github.com/xjoker/ssh-mcp/internal/envelope"
+	"github.com/xjoker/ssh-mcp/internal/session"
+	"github.com/xjoker/ssh-mcp/internal/ssh"
+	"github.com/xjoker/ssh-mcp/internal/tunnel"
 )
 
 // HandlerFunc is the signature implemented by every tool.

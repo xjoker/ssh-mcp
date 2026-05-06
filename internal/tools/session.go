@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/config"
-	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
+	"github.com/xjoker/ssh-mcp/internal/config"
+	"github.com/xjoker/ssh-mcp/internal/envelope"
 )
 
 // inlineSessionRegistrations records session_id → registered temp-server name
@@ -467,7 +467,7 @@ func mapSessionError(err error) envelope.Response {
 		return envelope.Err(envelope.CodeHostKeyMismatch, msg, false)
 	case strings.Contains(msg, "HOST_KEY_UNKNOWN"):
 		return envelope.ErrWithHint(envelope.CodeHostKeyUnknown, msg,
-			"Run 'mcp-ssh-bridge trust <host>' to add the host to known_hosts", false)
+			"Run 'ssh-mcp trust <host>' to add the host to known_hosts", false)
 	case strings.Contains(msg, "unable to authenticate") ||
 		strings.Contains(msg, "Authentication failed") ||
 		strings.Contains(msg, "auth failed"):

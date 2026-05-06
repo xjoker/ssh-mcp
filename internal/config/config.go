@@ -388,7 +388,7 @@ func DefaultPath() string {
 	switch runtime.GOOS {
 	case "windows":
 		appdata := os.Getenv("APPDATA")
-		return appdata + `\mcp-ssh-bridge\config.toml`
+		return appdata + `\ssh-mcp\config.toml`
 	default:
 		// macOS and Linux: prefer XDG_CONFIG_HOME, fall back to ~/.config
 		xdg := os.Getenv("XDG_CONFIG_HOME")
@@ -396,7 +396,7 @@ func DefaultPath() string {
 			home, _ := os.UserHomeDir()
 			xdg = home + "/.config"
 		}
-		return xdg + "/mcp-ssh-bridge/config.toml"
+		return xdg + "/ssh-mcp/config.toml"
 	}
 }
 
