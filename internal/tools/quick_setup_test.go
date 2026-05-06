@@ -91,33 +91,6 @@ func TestHandleSSHQuickSetup_Disabled(t *testing.T) {
 	}
 }
 
-func TestHandleSSHQuickSetup_UserDeclined(t *testing.T) {
-	cfg := &config.Config{
-		Settings: config.Settings{AllowQuickSetup: true},
-	}
-	qs := &fakeQuickSetup{}
-	deps := &Deps{
-		Cfg:        cfg,
-		QuickSetup: qs,
-		// Elicit returns confirm=false
-		Elicit: func(_ context.Context, _ json.RawMessage, _ string) (json.RawMessage, error) {
-			return json.RawMessage(`{"confirm":false}`), nil
-		},
-	}
-
-	args := json.RawMessage(`{"host":"1.2.3.4","user":"root","password":"pw"}`)
-	resp := handleSSHQuickSetup(context.Background(), deps, args)
-
-	if resp.OK {
-		t.Fatal("expected error when user declines")
-	}
-	if resp.Error.Code != envelope.CodeUserDeclined {
-		t.Errorf("expected USER_DECLINED, got %s", resp.Error.Code)
-	}
-	if len(qs.registered) != 0 {
-		t.Error("no server should be registered when user declines")
-	}
-}
 
 func TestHandleSSHQuickSetup_Success(t *testing.T) {
 	cfg := &config.Config{
@@ -127,10 +100,6 @@ func TestHandleSSHQuickSetup_Success(t *testing.T) {
 	deps := &Deps{
 		Cfg:        cfg,
 		QuickSetup: qs,
-		// Elicit returns confirm=true
-		Elicit: func(_ context.Context, _ json.RawMessage, _ string) (json.RawMessage, error) {
-			return json.RawMessage(`{"confirm":true}`), nil
-		},
 	}
 
 	args := json.RawMessage(`{"host":"1.2.3.4","user":"root","password":"pw","ttl_minutes":15,"name_hint":"mytest"}`)
@@ -178,28 +147,6 @@ func TestHandleSSHQuickSetup_NoCredentials(t *testing.T) {
 	}
 }
 
-func TestHandleSSHQuickSetup_ElicitError(t *testing.T) {
-	cfg := &config.Config{Settings: config.Settings{AllowQuickSetup: true}}
-	qs := &fakeQuickSetup{}
-	deps := &Deps{
-		Cfg:        cfg,
-		QuickSetup: qs,
-		Elicit: func(_ context.Context, _ json.RawMessage, _ string) (json.RawMessage, error) {
-			return nil, fmt.Errorf("elicitation timed out")
-		},
-	}
-
-	args := json.RawMessage(`{"host":"1.2.3.4","user":"root","password":"pw"}`)
-	resp := handleSSHQuickSetup(context.Background(), deps, args)
-
-	if resp.OK {
-		t.Fatal("expected error on elicitation failure")
-	}
-	if resp.Error.Code != envelope.CodeUserDeclined {
-		t.Errorf("expected USER_DECLINED, got %s", resp.Error.Code)
-	}
-}
-
 // --------------------------------------------------------------------------
 // H02 — handler-layer TTL clamp/reject
 // --------------------------------------------------------------------------
@@ -212,9 +159,6 @@ func TestHandleSSHQuickSetup_TTLZeroDefaultsTo30(t *testing.T) {
 	deps := &Deps{
 		Cfg:        cfg,
 		QuickSetup: qs,
-		Elicit: func(_ context.Context, _ json.RawMessage, _ string) (json.RawMessage, error) {
-			return json.RawMessage(`{"confirm":true}`), nil
-		},
 	}
 
 	// ttl_minutes not supplied → should default to 30.
@@ -237,14 +181,9 @@ func TestHandleSSHQuickSetup_TTLZeroDefaultsTo30(t *testing.T) {
 func TestHandleSSHQuickSetup_TTLOverMaxRejected(t *testing.T) {
 	cfg := &config.Config{Settings: config.Settings{AllowQuickSetup: true}}
 	qs := &fakeQuickSetup{}
-	elicitCalled := false
 	deps := &Deps{
 		Cfg:        cfg,
 		QuickSetup: qs,
-		Elicit: func(_ context.Context, _ json.RawMessage, _ string) (json.RawMessage, error) {
-			elicitCalled = true
-			return json.RawMessage(`{"confirm":true}`), nil
-		},
 	}
 
 	args := json.RawMessage(`{"host":"1.2.3.4","user":"root","password":"pw","ttl_minutes":9999}`)
@@ -255,9 +194,6 @@ func TestHandleSSHQuickSetup_TTLOverMaxRejected(t *testing.T) {
 	}
 	if resp.Error == nil || resp.Error.Code != envelope.CodeInvalidArgument {
 		t.Errorf("expected INVALID_ARGUMENT, got %+v", resp.Error)
-	}
-	if elicitCalled {
-		t.Error("elicitation must not be called when TTL is invalid")
 	}
 	if len(qs.registered) != 0 {
 		t.Error("no registration should occur when TTL is rejected")
@@ -290,9 +226,6 @@ func TestHandleSSHQuickSetup_AcceptNewHostPlumbedToPool(t *testing.T) {
 		Cfg:        cfg,
 		QuickSetup: qs,
 		Pool:       pool,
-		Elicit: func(_ context.Context, _ json.RawMessage, _ string) (json.RawMessage, error) {
-			return json.RawMessage(`{"confirm":true}`), nil
-		},
 	}
 
 	args := json.RawMessage(`{"host":"1.2.3.4","user":"root","password":"pw","accept_new_host":true}`)
@@ -323,9 +256,6 @@ func TestHandleSSHQuickSetup_AcceptNewHostDefaultFalse(t *testing.T) {
 		Cfg:        cfg,
 		QuickSetup: qs,
 		Pool:       pool,
-		Elicit: func(_ context.Context, _ json.RawMessage, _ string) (json.RawMessage, error) {
-			return json.RawMessage(`{"confirm":true}`), nil
-		},
 	}
 
 	args := json.RawMessage(`{"host":"1.2.3.4","user":"root","password":"pw"}`)
@@ -349,9 +279,6 @@ func TestHandleSSHQuickSetup_TTLBoundaryAllowed(t *testing.T) {
 	deps := &Deps{
 		Cfg:        cfg,
 		QuickSetup: qs,
-		Elicit: func(_ context.Context, _ json.RawMessage, _ string) (json.RawMessage, error) {
-			return json.RawMessage(`{"confirm":true}`), nil
-		},
 	}
 
 	args := json.RawMessage(`{"host":"1.2.3.4","user":"root","password":"pw","ttl_minutes":240}`)
@@ -368,54 +295,3 @@ func TestHandleSSHQuickSetup_TTLBoundaryAllowed(t *testing.T) {
 	}
 }
 
-// --------------------------------------------------------------------------
-// M05 — elicitation schema JSON injection safety
-// --------------------------------------------------------------------------
-
-// TestElicitConfirmation_SpecialCharsInHostUser verifies that host/user values
-// containing quotes or injection characters produce valid JSON in the
-// elicitation schema (M05 fix: struct + json.Marshal instead of fmt.Sprintf).
-func TestElicitConfirmation_SpecialCharsInHostUser(t *testing.T) {
-	cfg := &config.Config{Settings: config.Settings{AllowQuickSetup: true}}
-	qs := &fakeQuickSetup{}
-
-	// Capture the raw schema bytes passed to Elicit.
-	var capturedSchema json.RawMessage
-	deps := &Deps{
-		Cfg:        cfg,
-		QuickSetup: qs,
-		Elicit: func(_ context.Context, schema json.RawMessage, _ string) (json.RawMessage, error) {
-			capturedSchema = schema
-			return json.RawMessage(`{"confirm":true}`), nil
-		},
-	}
-
-	// Inject the dangerous strings via json.Marshal so the test args itself is
-	// valid JSON, while the host/user values still contain the problematic chars.
-	type tArgs struct {
-		Host       string `json:"host"`
-		User       string `json:"user"`
-		Password   string `json:"password"`
-		TTLMinutes int    `json:"ttl_minutes"`
-	}
-	rawArgs, err := json.Marshal(tArgs{
-		Host:       `"; rm -rf /`, // would break naive fmt.Sprintf JSON
-		User:       "user",
-		Password:   "pw",
-		TTLMinutes: 1,
-	})
-	if err != nil {
-		t.Fatalf("marshal test args: %v", err)
-	}
-
-	resp := handleSSHQuickSetup(context.Background(), deps, json.RawMessage(rawArgs))
-	if !resp.OK {
-		t.Fatalf("expected OK, got error: %+v", resp.Error)
-	}
-
-	// The schema passed to Elicit must be valid JSON regardless of host/user content.
-	var parsed interface{}
-	if err := json.Unmarshal(capturedSchema, &parsed); err != nil {
-		t.Errorf("elicitation schema is not valid JSON: %v\nschema: %s", err, capturedSchema)
-	}
-}

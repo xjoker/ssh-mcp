@@ -140,11 +140,9 @@ func middlewareChain(
 		}
 	}()
 
-	// 2. Build per-request Deps: wire progress and elicit adapters from the
-	//    MCP session available in req.Session.
+	// 2. Build per-request Deps: wire progress adapter from the MCP session.
 	reqDeps := *deps // shallow copy so we can add per-request fields
 	reqDeps.Progress = buildProgressFunc(ctx, req)
-	reqDeps.Elicit = buildElicitFunc(req)
 	reqDeps.SessionID = sessionID
 
 	// 3. Pre-record (fail-closed) — destructive tools only.
@@ -271,32 +269,6 @@ func buildProgressFunc(ctx context.Context, req *mcp.CallToolRequest) tools.Prog
 			ProgressToken: token,
 			Message:       fmt.Sprintf("%v", value),
 		})
-	}
-}
-
-// buildElicitFunc builds an ElicitFunc from the MCP session.
-func buildElicitFunc(req *mcp.CallToolRequest) tools.ElicitFunc {
-	if req.Session == nil {
-		return nil
-	}
-	return func(ctx context.Context, schema json.RawMessage, message string) (json.RawMessage, error) {
-		result, err := req.Session.Elicit(ctx, &mcp.ElicitParams{
-			Message:         message,
-			RequestedSchema: schema,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("elicit: %w", err)
-		}
-		// Check if user declined.
-		if result.Action != "accept" {
-			return json.RawMessage(`{"confirm":false}`), nil
-		}
-		// Marshal the content map back to JSON for the tool handler.
-		raw, err := json.Marshal(result.Content)
-		if err != nil {
-			return nil, fmt.Errorf("elicit: marshal response: %w", err)
-		}
-		return raw, nil
 	}
 }
 

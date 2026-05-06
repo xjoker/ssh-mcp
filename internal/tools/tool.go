@@ -58,10 +58,6 @@ type Deps struct {
 	// passed to auth.Resolve when handling CredRefPlaintext.
 	AllowPlaintext bool
 
-	// Elicit issues an MCP elicitation/create request. Returns the user's
-	// response or an error. Used by ssh_quick_setup.
-	Elicit ElicitFunc
-
 	// Progress emits an MCP progress notification with the given message
 	// payload. Returns nil if no progress token is associated with the
 	// current request (i.e., client did not request streaming).
@@ -111,9 +107,6 @@ type QuickSetupRegistry interface {
 	// only for the lifetime of the session, not the registry's TTL.
 	Remove(name string)
 }
-
-// ElicitFunc requests user confirmation via MCP elicitation/create.
-type ElicitFunc func(ctx context.Context, schema json.RawMessage, message string) (json.RawMessage, error)
 
 // ProgressFunc sends a progress notification. value is an arbitrary
 // JSON-encodable payload (e.g., {bytes_read, total} or stdout chunk).

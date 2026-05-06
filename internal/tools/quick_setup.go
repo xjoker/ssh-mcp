@@ -4,7 +4,6 @@ package tools
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"time"
 
 	"github.com/xjoker/mcp-ssh-bridge/internal/config"
@@ -115,24 +114,7 @@ func handleSSHQuickSetup(ctx context.Context, deps *Deps, args json.RawMessage) 
 			"ttl_minutes must be between 1 and 240", false)
 	}
 
-	// 3. Issue MCP elicitation to confirm with user — unless auto-confirm is
-	//    enabled in config (quick_setup_auto_confirm = true). When allow_quick_setup
-	//    is already set to true the admin has granted standing authorization, so
-	//    auto-confirm is safe and avoids repetitive per-call dialogs.
-	if !deps.Cfg.Settings.QuickSetupAutoConfirm {
-		elicitResp, err := elicitConfirmation(ctx, deps, input.Host, input.User, ttl)
-		if err != nil {
-			// Elicitation itself failed (e.g., not supported or timed out).
-			return envelope.Err(envelope.CodeUserDeclined,
-				"elicitation failed or timed out: "+err.Error(), false)
-		}
-		if !elicitResp {
-			return envelope.Err(envelope.CodeUserDeclined,
-				"user declined to register temporary server", false)
-		}
-	}
-
-	// 4. Determine secret bytes + auth kind. password takes priority.
+	// 3. Determine secret bytes + auth kind. password takes priority.
 	spec := QuickSetupSpec{
 		NameHint:      input.NameHint,
 		Host:          input.Host,
@@ -186,63 +168,3 @@ func handleSSHQuickSetup(ctx context.Context, deps *Deps, args json.RawMessage) 
 	})
 }
 
-// elicitProp is the JSON schema shape for a single elicitation property (M05).
-type elicitProp struct {
-	Type        string `json:"type"`
-	Description string `json:"description"`
-}
-
-// elicitSchemaDoc is the JSON schema sent to the MCP elicitation/create endpoint (M05).
-type elicitSchemaDoc struct {
-	Type       string                `json:"type"`
-	Properties map[string]elicitProp `json:"properties"`
-	Required   []string              `json:"required"`
-}
-
-// elicitConfirmation issues an MCP elicitation/create request asking the user
-// to confirm registration of a temporary server. Returns true if confirmed,
-// false if declined or timed out.
-func elicitConfirmation(ctx context.Context, deps *Deps, host, user string, ttlMinutes int) (bool, error) {
-	if deps.Elicit == nil {
-		// No elicitation func wired — behave as if declined.
-		return false, fmt.Errorf("elicitation not supported by this session")
-	}
-
-	// Build elicitation schema with a 60-second context deadline.
-	elicitCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
-
-	// M05: use struct + json.Marshal so that host/user values containing
-	// quotes or control characters cannot produce invalid JSON.
-	desc := fmt.Sprintf("Register temp server %q as user %q for %d minutes?", host, user, ttlMinutes)
-	schemaSrc := elicitSchemaDoc{
-		Type: "object",
-		Properties: map[string]elicitProp{
-			"confirm": {Type: "boolean", Description: desc},
-		},
-		Required: []string{"confirm"},
-	}
-	schemaBytes, marshalErr := json.Marshal(schemaSrc)
-	if marshalErr != nil {
-		return false, fmt.Errorf("elicitConfirmation: marshal schema: %w", marshalErr)
-	}
-	schema := json.RawMessage(schemaBytes)
-
-	msg := fmt.Sprintf("Allow mcp-ssh-bridge to register a temporary connection to %s@%s for %d minutes?",
-		user, host, ttlMinutes)
-
-	responseRaw, err := deps.Elicit(elicitCtx, schema, msg)
-	if err != nil {
-		return false, err
-	}
-
-	// Parse the response. Expect {"confirm": true/false}.
-	var resp struct {
-		Confirm bool `json:"confirm"`
-	}
-	if err := json.Unmarshal(responseRaw, &resp); err != nil {
-		return false, fmt.Errorf("invalid elicitation response: %w", err)
-	}
-
-	return resp.Confirm, nil
-}

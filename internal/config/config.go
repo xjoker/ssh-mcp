@@ -91,7 +91,6 @@ type rawSettings struct {
 	AllowConfigPlaintextPassword *bool    `toml:"allow_config_plaintext_password"`
 	AllowInlineCredentials       *bool    `toml:"allow_inline_credentials"`
 	AllowQuickSetup              *bool    `toml:"allow_quick_setup"`
-	QuickSetupAutoConfirm        *bool    `toml:"quick_setup_auto_confirm"`
 	DefaultTimeoutMs             *int     `toml:"default_timeout_ms"`
 	MaxTimeoutMs                 *int     `toml:"max_timeout_ms"`
 	OutputMaxBytes               *int     `toml:"output_max_bytes"`
@@ -147,7 +146,6 @@ func Load(path string) (*Config, error) {
 		AllowConfigPlaintextPassword: boolVal(rs.AllowConfigPlaintextPassword, false),
 		AllowInlineCredentials:       boolVal(rs.AllowInlineCredentials, true),
 		AllowQuickSetup:              boolVal(rs.AllowQuickSetup, true),
-		QuickSetupAutoConfirm:        boolVal(rs.QuickSetupAutoConfirm, false),
 		DefaultTimeoutMs:             intVal(rs.DefaultTimeoutMs, 120_000),
 		MaxTimeoutMs:                 intVal(rs.MaxTimeoutMs, 1_800_000),
 		OutputMaxBytes:               intVal(rs.OutputMaxBytes, 65_536),
