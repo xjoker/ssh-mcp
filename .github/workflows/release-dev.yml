@@ -63,22 +63,30 @@ jobs:
           sha256sum * > checksums.sha256
           cat checksums.sha256
 
-      - name: Delete existing release (idempotent re-tag support)
+      - name: Delete all releases for tag (published + orphaned drafts)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release delete "${{ steps.version.outputs.tag }}" --yes 2>/dev/null || true
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          REPO="${{ github.repository }}"
+          # Delete every release (including drafts) that points at this tag.
+          gh api "repos/$REPO/releases" --paginate \
+            --jq ".[] | select(.tag_name == \"$TAG\") | .id" | \
+            while read -r id; do
+              gh api -X DELETE "repos/$REPO/releases/$id" && echo "Deleted release $id"
+            done || true
 
       - name: Create GitHub Pre-Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: ssh-mcp ${{ steps.version.outputs.tag }}
-          prerelease: true
-          generate_release_notes: true
-          files: |
-            dist/ssh-mcp_linux_amd64
-            dist/ssh-mcp_linux_arm64
-            dist/ssh-mcp_darwin_amd64
-            dist/ssh-mcp_darwin_arm64
-            dist/ssh-mcp_windows_amd64.exe
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --title "ssh-mcp ${{ steps.version.outputs.tag }}" \
+            --prerelease \
+            --generate-notes \
+            dist/ssh-mcp_linux_amd64 \
+            dist/ssh-mcp_linux_arm64 \
+            dist/ssh-mcp_darwin_amd64 \
+            dist/ssh-mcp_darwin_arm64 \
+            dist/ssh-mcp_windows_amd64.exe \
             dist/checksums.sha256
