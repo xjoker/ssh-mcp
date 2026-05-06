@@ -54,6 +54,10 @@ type Deps struct {
 	Audit        *audit.Logger
 	QuickSetup   QuickSetupRegistry
 
+	// Version is the running binary's version string (e.g. "0.0.1-dev"),
+	// used by the self_update tool for version comparison.
+	Version string
+
 	// AllowPlaintext mirrors Cfg.Settings.AllowConfigPlaintextPassword,
 	// passed to auth.Resolve when handling CredRefPlaintext.
 	AllowPlaintext bool

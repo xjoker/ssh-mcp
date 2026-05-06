@@ -102,6 +102,7 @@ func New(cfg *config.Config, auditDir, updateNotice, ver string) (*Server, error
 		TunnelMgr:      tunnelMgr,
 		Audit:          auditLog,
 		QuickSetup:     qs,
+		Version:        ver,
 		AllowPlaintext: cfg.Settings.AllowConfigPlaintextPassword,
 		// Elicit and Progress are injected per-request by dispatch.go.
 	}
