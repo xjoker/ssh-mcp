@@ -63,6 +63,11 @@ jobs:
           sha256sum * > checksums.sha256
           cat checksums.sha256
 
+      - name: Delete existing release (idempotent re-tag support)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release delete "${{ steps.version.outputs.tag }}" --yes 2>/dev/null || true
+
       - name: Create GitHub Pre-Release
         uses: softprops/action-gh-release@v2
         with:
