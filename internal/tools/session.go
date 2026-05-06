@@ -325,12 +325,13 @@ func handleSessionSend(ctx context.Context, deps *Deps, args json.RawMessage) en
 	if input.SessionID == "" {
 		return envelope.Err(envelope.CodeInvalidArgument, "'session_id' is required", false)
 	}
-	if input.Command == "" {
-		return envelope.Err(envelope.CodeInvalidArgument, "'command' is required", false)
-	}
 
 	timeoutMs := input.TimeoutMs
 	if deps.SessionMgr != nil && deps.SessionMgr.IsPTY(input.SessionID) {
+		// PTY: empty command is allowed — means "drain output without sending input".
+		if input.Command == "" && timeoutMs <= 0 {
+			timeoutMs = 2000
+		}
 		// PTY sessions use time-based drain; allow shorter timeouts.
 		if timeoutMs <= 0 {
 			timeoutMs = 2000 // default 2 s for PTY
@@ -356,6 +357,9 @@ func handleSessionSend(ctx context.Context, deps *Deps, args json.RawMessage) en
 	}
 
 	// Sentinel-based session.
+	if input.Command == "" {
+		return envelope.Err(envelope.CodeInvalidArgument, "'command' is required for non-PTY sessions", false)
+	}
 	if input.TimeoutMs > 0 && input.TimeoutMs < 1000 {
 		return envelope.Err(envelope.CodeInvalidArgument, "timeout_ms must be >= 1000", false)
 	}
@@ -380,12 +384,14 @@ func handleSessionSend(ctx context.Context, deps *Deps, args json.RawMessage) en
 	}
 
 	stdout := result.Stdout
+	stderr := result.Stderr
 	if input.StripANSI {
 		stdout = stripANSICodes(stdout)
+		stderr = stripANSICodes(stderr)
 	}
 	return envelope.OK(sessionSendOutput{
 		Stdout:     stdout,
-		Stderr:     result.Stderr,
+		Stderr:     stderr,
 		ExitCode:   result.ExitCode,
 		DurationMs: result.Duration.Milliseconds(),
 		Truncated:  result.Truncated,

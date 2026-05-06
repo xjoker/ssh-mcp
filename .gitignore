@@ -1,11 +1,15 @@
 /bin/
 /dist/
+/mcp-ssh-bridge
+/mcp-ssh-bridge.exe
 *.test
 *.out
 .DS_Store
 .idea/
 .vscode/
 .claude/
+.env
+.env.*
 test/integration/test_key
 test/integration/test_key.pub
 test/integration/.state/

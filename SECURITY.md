@@ -41,7 +41,7 @@ Key assumptions:
 - **Host key verification** — all connections are checked against `~/.ssh/known_hosts` (or the path in config). `HOST_KEY_MISMATCH` is a hard stop; the bridge never auto-accepts changed keys.
 - **Credential lifecycle** — inline credentials (via `session_start.inline` or `ssh_quick_setup`) are promoted to TTL-bounded in-memory temp servers and zeroed on expiry or shutdown. Plaintext passwords in `config.toml` are rejected unless `allow_config_plaintext_password = true`; the keychain backend is the default.
 - **Append-only audit log** — every destructive tool call is pre-recorded before execution. The query path uses a read-only file opener (`audit.NewReader`).
-- **RemoteCommand sanitisation** — no shell expansion is performed on command strings passed to `ssh_exec`. Commands are sent verbatim over the SSH exec channel, not via `/bin/sh -c`.
+- **RemoteCommand sanitisation** — command strings are validated and sent verbatim over the SSH exec channel (not constructed via local `/bin/sh -c`), preventing local shell-injection. The remote SSH server interprets the exec request through the user's login shell, so standard quoting rules still apply on the remote side.
 - **allowed_paths enforcement** — SFTP paths are canonicalised through the remote SFTP `realpath` RPC before `allowed_paths` policy is applied, closing symlink TOCTOU.
 - **Session limits** — concurrent session count is capped (`settings.max_sessions`, default 16) to limit blast radius from runaway automation.
 - **No autoApprove** — the example client configurations intentionally omit `autoApprove`. Destructive tools remain on the human-confirmation path.

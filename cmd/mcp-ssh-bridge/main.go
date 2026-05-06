@@ -69,7 +69,7 @@ func runMCPServer() {
 	}
 	cfg.PrintPlaintextWarning()
 
-	server, err := mcpserver.New(cfg, "", checkForUpdate()) // empty auditDir → use platform default
+	server, err := mcpserver.New(cfg, "", checkForUpdate(), version) // empty auditDir → use platform default
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mcpserver: %v\n", err)
 		os.Exit(1)

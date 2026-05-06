@@ -530,22 +530,29 @@ func (m *Manager) CloseAll() {
 // --------------------------------------------------------------------------
 
 // drainPTY collects raw PTY output for the given duration and returns a
-// SendResult with everything accumulated in Stdout.
+// SendResult with everything accumulated in Stdout. Output is capped at
+// sessionOutputMaxBytes to match sentinel-session behaviour (S-DoS defence).
 func (m *Manager) drainPTY(ctx context.Context, s *session, timeout time.Duration) *SendResult {
 	var buf strings.Builder
+	var truncated bool
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	for {
 		select {
 		case chunk, ok := <-s.ptyChunks:
 			if !ok {
-				return &SendResult{Stdout: buf.String()}
+				return &SendResult{Stdout: buf.String(), Truncated: truncated}
+			}
+			if int64(buf.Len())+int64(len(chunk)) > sessionOutputMaxBytes {
+				truncated = true
+				// Drain remaining chunks without buffering to keep ptyReadLoop moving.
+				continue
 			}
 			buf.Write(chunk)
 		case <-timer.C:
-			return &SendResult{Stdout: buf.String()}
+			return &SendResult{Stdout: buf.String(), Truncated: truncated}
 		case <-ctx.Done():
-			return &SendResult{Stdout: buf.String()}
+			return &SendResult{Stdout: buf.String(), Truncated: truncated}
 		}
 	}
 }
@@ -638,9 +645,12 @@ func (m *Manager) SendRaw(ctx context.Context, id, input string, timeout time.Du
 		return nil, fmt.Errorf("session: SendRaw: SESSION_DEAD (session in error state)")
 	}
 
-	if _, werr := fmt.Fprintf(s.stdin, "%s\n", input); werr != nil {
-		s.state = stateError
-		return nil, fmt.Errorf("session: SendRaw: write: %w", werr)
+	// Empty input means "drain without sending" (pure read for PTY).
+	if input != "" {
+		if _, werr := fmt.Fprintf(s.stdin, "%s\n", input); werr != nil {
+			s.state = stateError
+			return nil, fmt.Errorf("session: SendRaw: write: %w", werr)
+		}
 	}
 
 	s.state = stateBusy

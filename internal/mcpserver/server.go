@@ -43,7 +43,8 @@ type Server struct {
 // auditDir overrides the default audit log directory (empty = use platform default).
 // updateNotice, if non-empty, is injected into the MCP server instructions so
 // connected clients (e.g. Claude Code) can display an update prompt.
-func New(cfg *config.Config, auditDir, updateNotice string) (*Server, error) {
+// ver is the binary version string (e.g. "0.0.1-dev"), injected via ldflags.
+func New(cfg *config.Config, auditDir, updateNotice, ver string) (*Server, error) {
 	// 1. Audit logger.
 	if auditDir == "" {
 		auditDir = defaultAuditDir()
@@ -110,10 +111,13 @@ func New(cfg *config.Config, auditDir, updateNotice string) (*Server, error) {
 	if updateNotice != "" {
 		srvOpts = &mcp.ServerOptions{Instructions: updateNotice}
 	}
+	if ver == "" {
+		ver = "dev"
+	}
 	mcpSrv := mcp.NewServer(
 		&mcp.Implementation{
 			Name:    "mcp-ssh-bridge",
-			Version: "v1.0.0",
+			Version: ver,
 		},
 		srvOpts,
 	)
