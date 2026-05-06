@@ -92,8 +92,8 @@ go install github.com/xjoker/mcp-ssh-bridge/cmd/mcp-ssh-bridge@latest
 ### From source
 
 ```sh
-git clone https://github.com/xjoker/mcp-ssh-bridge.git
-cd mcp-ssh-bridge
+git clone https://github.com/xjoker/ssh-mcp.git
+cd ssh-mcp
 make build       # binary at bin/mcp-ssh-bridge
 ```
 
