@@ -358,7 +358,10 @@ func (c *Client) Chmod(p safety.RemotePath, mode os.FileMode) error {
 
 // Symlink creates a symbolic link at linkPath pointing to target.
 func (c *Client) Symlink(target, linkPath safety.RemotePath) error {
-	if err := c.b.Symlink(target.String(), linkPath.String()); err != nil {
+	// OpenSSH reverses linkpath/targetpath relative to the SFTP draft spec.
+	// pkg/sftp follows the spec (Symlink(oldname, newname) creates newname→oldname),
+	// but OpenSSH expects the args swapped, so we pass (linkPath, target) here.
+	if err := c.b.Symlink(linkPath.String(), target.String()); err != nil {
 		return fmt.Errorf("sftp: Symlink %q → %q: %w", target, linkPath, err)
 	}
 	return nil

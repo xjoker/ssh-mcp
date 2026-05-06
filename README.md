@@ -151,6 +151,33 @@ auth = "agent"
 A two-server example with tags and keychain auth lives at
 `examples/config.toml`.
 
+### Jump-host (bastion) configuration
+
+Use `proxy_jump` to chain through a bastion host:
+
+```toml
+# Jump through a bastion host to reach internal-server
+[servers.bastion]
+host = "bastion.example.com"
+port = 22
+user = "ops"
+auth = "key"
+key_path = "~/.ssh/id_ed25519"
+
+[servers.internal]
+host = "10.0.1.50"
+port = 22
+user = "ops"
+auth = "key"
+key_path = "~/.ssh/id_ed25519"
+proxy_jump = "bastion"
+```
+
+`proxy_jump` chains are recursive — A → B → C works by setting
+`proxy_jump = "B"` on C and `proxy_jump = "A"` on B. Host keys for every
+hop in the chain must be present in `known_hosts`; run
+`mcp-ssh-bridge trust <name>` for each hop before first use.
+
 ## Security
 
 - **Never add `autoApprove`** for any mcp-ssh-bridge tool — the example

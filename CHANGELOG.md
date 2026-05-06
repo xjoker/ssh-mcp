@@ -12,6 +12,11 @@ Branch / version convention:
 
 ## [Unreleased]
 
+### Added
+- `session_start` now accepts `pty: true` with optional `cols`, `rows`, `command`, and `init_wait_ms` parameters to open a PTY-backed interactive session (e.g. btop, htop, ncdu). Returns `mode: "pty"` and `initial_output` with the shell/command banner.
+- `session_send` in PTY mode uses time-based output collection (`timeout_ms`) instead of the sentinel protocol. Supports `strip_ansi: true` to remove ANSI escape sequences.
+- PTY sessions support interactive programs: send Ctrl-C as `"\x03"` to terminate TUI programs.
+
 ### Changed
 - Installers default to **user-level** install (no sudo / admin):
   `~/.local/bin/mcp-ssh-bridge` on macOS/Linux,

@@ -69,6 +69,59 @@ func (t *sshTransport) OpenShell(
 	return stdinPipe, stdoutPipe, stderrPipe, closer, nil
 }
 
+// OpenShellPTY opens an interactive shell with a PTY, merging stderr into
+// stdout. cols/rows default to 220×50 when zero.
+func (t *sshTransport) OpenShellPTY(
+	ctx context.Context,
+	server string,
+	cols, rows uint32,
+) (stdin io.WriteCloser, stdout io.Reader, close func() error, err error) {
+	cl, err := t.pool.Get(ctx, server)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("sshTransport.OpenShellPTY: get client for %q: %w", server, err)
+	}
+
+	sess, err := cl.Underlying().NewSession()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("sshTransport.OpenShellPTY: new session: %w", err)
+	}
+
+	if cols == 0 {
+		cols = 220
+	}
+	if rows == 0 {
+		rows = 50
+	}
+	modes := gossh.TerminalModes{
+		gossh.ECHO:          0,
+		gossh.TTY_OP_ISPEED: 38400,
+		gossh.TTY_OP_OSPEED: 38400,
+	}
+	if ptErr := sess.RequestPty("xterm-256color", int(rows), int(cols), modes); ptErr != nil {
+		sess.Close()
+		return nil, nil, nil, fmt.Errorf("sshTransport.OpenShellPTY: RequestPty: %w", ptErr)
+	}
+
+	stdinPipe, err := sess.StdinPipe()
+	if err != nil {
+		sess.Close()
+		return nil, nil, nil, fmt.Errorf("sshTransport.OpenShellPTY: StdinPipe: %w", err)
+	}
+	stdoutPipe, err := sess.StdoutPipe()
+	if err != nil {
+		sess.Close()
+		return nil, nil, nil, fmt.Errorf("sshTransport.OpenShellPTY: StdoutPipe: %w", err)
+	}
+
+	if startErr := sess.Shell(); startErr != nil {
+		sess.Close()
+		return nil, nil, nil, fmt.Errorf("sshTransport.OpenShellPTY: Shell: %w", startErr)
+	}
+
+	closer := func() error { return sess.Close() }
+	return stdinPipe, stdoutPipe, closer, nil
+}
+
 // --------------------------------------------------------------------------
 // sshDialer — implements tunnel.Dialer
 // --------------------------------------------------------------------------

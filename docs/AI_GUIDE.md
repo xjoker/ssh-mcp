@@ -60,6 +60,69 @@ realpath and applies `allowed_paths` to the resolved form.
 
 ---
 
+## 2b. PTY sessions — when and how
+
+Use **PTY mode** (`pty: true` in `session_start`) only for programs that
+check `isatty(1)` and refuse to render without a real terminal: `btop`,
+`htop`, `ncdu`, `vim`, `less`, and similar TUI applications. For regular
+commands, build scripts, or REPLs that work fine over a plain pipe, stick
+with the default sentinel-based session — it is faster and output
+collection is deterministic.
+
+**When to use PTY vs sentinel:**
+
+| Situation | Mode |
+|-----------|------|
+| TUI program that checks isatty (btop, htop, ncdu) | PTY |
+| Multi-step shell workflow (cd, build, test) | Sentinel (default) |
+| sudo prompt, interactive REPL | Sentinel (default) |
+| Program that emits raw ANSI and you want clean text | PTY + `strip_ansi:true` |
+
+**Opening a PTY session:**
+
+```
+session_start {
+  server: "prod",
+  pty: true,
+  command: "btop",
+  cols: 220,
+  rows: 50,
+  init_wait_ms: 3000
+}
+```
+
+The response includes `mode: "pty"` and `initial_output` containing the
+program's startup banner. Store the `session_id` for subsequent calls.
+
+**Reading output in PTY mode:**
+
+```
+session_send {
+  session_id: "<id>",
+  command: "",
+  timeout_ms: 2000,
+  strip_ansi: true
+}
+```
+
+`timeout_ms` is how long the bridge waits to collect output — it is **not**
+how long the remote command runs. PTY sessions do not use the sentinel
+protocol; the bridge collects whatever arrives within the timeout window.
+
+**Terminating a TUI program:**
+
+Send `"\x03"` (Ctrl-C), not `"q"`. The `q` key may not be processed
+reliably in all PTY contexts before the program has fully initialised, and
+some programs ignore it when a modal is open. After sending `"\x03"`,
+always call `session_close` to release the PTY allocation.
+
+```
+session_send  {session_id: "<id>", command: "\x03", timeout_ms: 500}
+session_close {session_id: "<id>"}
+```
+
+---
+
 ## 3. Mandatory pre-flight
 
 Before any destructive call:
@@ -164,6 +227,17 @@ list_servers          # confirm
 ssh_quick_setup {host:"new.box", user:"alice", password:"..."}
                       # bridge issues elicitation; on accept use returned name
 ssh_exec {server:"<returned name>", command:"hostname"}
+```
+
+### Inspect a server with a TUI tool (PTY mode)
+```
+session_start {server:"prod", pty:true, command:"btop",
+               cols:220, rows:50, init_wait_ms:3000}
+              → session_send {session_id:"<id>", command:"",
+                              timeout_ms:2000, strip_ansi:true}
+              → session_send {session_id:"<id>", command:"\x03",
+                              timeout_ms:500}   # Ctrl-C to exit btop
+              → session_close {session_id:"<id>"}
 ```
 
 ---

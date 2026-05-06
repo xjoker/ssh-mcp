@@ -60,7 +60,12 @@ var sessionStartSchema = json.RawMessage(`{
         "accept_new_host":  { "type": "boolean", "default": false }
       },
       "required": ["host", "user"]
-    }
+    },
+    "pty":          { "type": "boolean", "description": "Allocate a PTY for interactive TUI programs (btop, htop, ncdu). Stderr is merged into stdout; sentinel protocol is replaced by time-based output collection.", "default": false },
+    "cols":         { "type": "integer", "minimum": 10, "maximum": 500, "default": 220, "description": "PTY terminal width (columns). Only used when pty=true." },
+    "rows":         { "type": "integer", "minimum": 5, "maximum": 200, "default": 50, "description": "PTY terminal height (rows). Only used when pty=true." },
+    "command":      { "type": "string", "description": "Optional command to run immediately after the shell opens (PTY mode). A newline is appended automatically." },
+    "init_wait_ms": { "type": "integer", "minimum": 100, "maximum": 10000, "default": 1000, "description": "Milliseconds to wait for initial shell/command output after opening (PTY mode)." }
   }
 }`)
 
@@ -74,14 +79,21 @@ func toolSessionStart() Tool {
 }
 
 type sessionStartInput struct {
-	Server string      `json:"server,omitempty"`
-	Inline *sftpInline `json:"inline,omitempty"`
+	Server     string      `json:"server,omitempty"`
+	Inline     *sftpInline `json:"inline,omitempty"`
+	PTY        bool        `json:"pty"`
+	PTYCols    int         `json:"cols"`
+	PTYRows    int         `json:"rows"`
+	Command    string      `json:"command"`
+	InitWaitMs int         `json:"init_wait_ms"`
 }
 
 type sessionStartOutput struct {
-	SessionID string `json:"session_id"`
-	Server    string `json:"server"`
-	StartedAt string `json:"started_at"`
+	SessionID     string `json:"session_id"`
+	Server        string `json:"server"`
+	StartedAt     string `json:"started_at"`
+	Mode          string `json:"mode"`
+	InitialOutput string `json:"initial_output,omitempty"`
 }
 
 func handleSessionStart(ctx context.Context, deps *Deps, args json.RawMessage) envelope.Response {
@@ -120,6 +132,31 @@ func handleSessionStart(ctx context.Context, deps *Deps, args json.RawMessage) e
 		}
 	}
 
+	if input.PTY {
+		cols := uint32(input.PTYCols)
+		rows := uint32(input.PTYRows)
+		id, initialResult, err := deps.SessionMgr.StartPTY(ctx, serverName, cols, rows, input.Command, input.InitWaitMs)
+		if err != nil {
+			if inlineRegistered != "" {
+				cleanupInlineRegistration(deps, inlineRegistered)
+			}
+			return mapSessionError(err)
+		}
+		if inlineRegistered != "" {
+			inlineSessionRegistrations.Store(id, inlineRegistered)
+		}
+		out := sessionStartOutput{
+			SessionID: id,
+			Server:    serverName,
+			StartedAt: time.Now().UTC().Format(time.RFC3339),
+			Mode:      "pty",
+		}
+		if initialResult != nil {
+			out.InitialOutput = initialResult.Stdout
+		}
+		return envelope.OK(out)
+	}
+
 	id, err := deps.SessionMgr.Start(ctx, serverName)
 	if err != nil {
 		// On Start failure, scrub the inline registration immediately so the
@@ -139,6 +176,7 @@ func handleSessionStart(ctx context.Context, deps *Deps, args json.RawMessage) e
 		SessionID: id,
 		Server:    serverName,
 		StartedAt: time.Now().UTC().Format(time.RFC3339),
+		Mode:      "sentinel",
 	})
 }
 
@@ -247,9 +285,10 @@ func registerInlineSession(deps *Deps, in *sftpInline) (string, envelope.Respons
 var sessionSendSchema = json.RawMessage(`{
   "type": "object",
   "properties": {
-    "session_id": { "type": "string" },
-    "command":    { "type": "string" },
-    "timeout_ms": { "type": "integer", "minimum": 1000, "maximum": 1800000, "default": 120000 }
+    "session_id":  { "type": "string" },
+    "command":     { "type": "string", "description": "For sentinel sessions: the shell command to run. For PTY sessions: sent to stdin followed by a newline (use \\x03 for Ctrl-C, etc.)." },
+    "timeout_ms":  { "type": "integer", "minimum": 100, "maximum": 1800000, "default": 120000, "description": "For sentinel sessions: max wait for command completion. For PTY sessions: duration to collect output after writing input." },
+    "strip_ansi":  { "type": "boolean", "default": false, "description": "Strip ANSI escape sequences from output (useful for PTY sessions running TUI programs)." }
   },
   "required": ["session_id", "command"]
 }`)
@@ -267,6 +306,7 @@ type sessionSendInput struct {
 	SessionID string `json:"session_id"`
 	Command   string `json:"command"`
 	TimeoutMs int    `json:"timeout_ms"`
+	StripANSI bool   `json:"strip_ansi"`
 }
 
 type sessionSendOutput struct {
@@ -289,10 +329,36 @@ func handleSessionSend(ctx context.Context, deps *Deps, args json.RawMessage) en
 		return envelope.Err(envelope.CodeInvalidArgument, "'command' is required", false)
 	}
 
+	timeoutMs := input.TimeoutMs
+	if deps.SessionMgr != nil && deps.SessionMgr.IsPTY(input.SessionID) {
+		// PTY sessions use time-based drain; allow shorter timeouts.
+		if timeoutMs <= 0 {
+			timeoutMs = 2000 // default 2 s for PTY
+		}
+		if timeoutMs > 1800000 {
+			timeoutMs = 1800000
+		}
+		timeout := time.Duration(timeoutMs) * time.Millisecond
+		result, err := deps.SessionMgr.SendRaw(ctx, input.SessionID, input.Command, timeout)
+		if err != nil {
+			return mapSessionError(err)
+		}
+		stdout := result.Stdout
+		if input.StripANSI {
+			stdout = stripANSICodes(stdout)
+		}
+		return envelope.OK(sessionSendOutput{
+			Stdout:     stdout,
+			ExitCode:   result.ExitCode,
+			DurationMs: result.Duration.Milliseconds(),
+			Truncated:  result.Truncated,
+		})
+	}
+
+	// Sentinel-based session.
 	if input.TimeoutMs > 0 && input.TimeoutMs < 1000 {
 		return envelope.Err(envelope.CodeInvalidArgument, "timeout_ms must be >= 1000", false)
 	}
-	timeoutMs := input.TimeoutMs
 	if timeoutMs <= 0 {
 		timeoutMs = deps.Cfg.Settings.DefaultTimeoutMs
 	}
@@ -313,8 +379,12 @@ func handleSessionSend(ctx context.Context, deps *Deps, args json.RawMessage) en
 		return mapSessionError(err)
 	}
 
+	stdout := result.Stdout
+	if input.StripANSI {
+		stdout = stripANSICodes(stdout)
+	}
 	return envelope.OK(sessionSendOutput{
-		Stdout:     result.Stdout,
+		Stdout:     stdout,
 		Stderr:     result.Stderr,
 		ExitCode:   result.ExitCode,
 		DurationMs: result.Duration.Milliseconds(),
