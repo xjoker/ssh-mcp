@@ -33,7 +33,8 @@ Install ssh-mcp on my machine by following these steps exactly:
 
 5. Ask me for my SSH server details (host, user, auth method), then run:
    ssh-mcp config add-server <name> --host <host> --user <user> --auth <agent|key|password>
-   For password auth also run: ssh-mcp auth set ssh-password:<name>
+   For password auth run (SSH_MCP_SECRET avoids interactive prompt):
+     SSH_MCP_SECRET=<password> ssh-mcp auth set ssh-password:<name>
 
 6. Run: ssh-mcp trust <name>
 
@@ -43,6 +44,8 @@ Install ssh-mcp on my machine by following these steps exactly:
 
 8. Confirm by running: ssh-mcp config validate
 ```
+
+> **Future updates:** Once ssh-mcp is registered and running, call the `self_update` MCP tool directly — no shell commands needed. Use `check_only: true` to check without installing.
 
 ### Codex
 

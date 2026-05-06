@@ -33,7 +33,8 @@
 
 5. 询问我的 SSH 服务器信息（主机、用户名、认证方式），然后运行：
    ssh-mcp config add-server <名称> --host <主机> --user <用户名> --auth <agent|key|password>
-   如果是密码认证，还需运行：ssh-mcp auth set ssh-password:<名称>
+   如果是密码认证，通过环境变量传入（避免交互式输入）：
+     SSH_MCP_SECRET=<密码> ssh-mcp auth set ssh-password:<名称>
 
 6. 运行：ssh-mcp trust <名称>
 
@@ -43,6 +44,8 @@
 
 8. 验证：ssh-mcp config validate
 ```
+
+> **后续更新：** ssh-mcp 注册运行后，直接调用 `self_update` MCP 工具即可更新，无需任何命令行操作。用 `check_only: true` 可仅检查版本而不下载。
 
 ### Codex
 
