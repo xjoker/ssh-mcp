@@ -156,8 +156,11 @@ func Download(ctx context.Context, rel *Release, destPath string) error {
 	}
 	// Ensure cleanup on any failure path before rename.
 	cleanupOnce := true
+	fileClosed := false
 	defer func() {
-		f.Close()
+		if !fileClosed {
+			f.Close()
+		}
 		if cleanupOnce {
 			os.Remove(tmpPath)
 		}
@@ -186,6 +189,7 @@ func Download(ctx context.Context, rel *Release, destPath string) error {
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("updater: close temp: %w", err)
 	}
+	fileClosed = true
 
 	// SHA-256 fail-closed: reject mismatched or missing checksum.
 	if rel.SHA256 == "" {
@@ -277,8 +281,8 @@ func parseVer(s string) *semver {
 
 // cmpVer returns >0 if a > b, 0 if equal, <0 if a < b.
 // Among equal numeric versions: release > dev. Among two dev builds with the
-// same numeric base, the pre-release suffix is compared lexicographically
-// (date-stamped suffixes like "20260506.1" < "20260506.2" sort correctly).
+// same numeric base, the pre-release suffix is compared numerically via
+// cmpPreRelease (date-stamped suffixes like "20260506.1" < "20260506.10").
 func cmpVer(a, b *semver) int {
 	if d := a.major - b.major; d != 0 {
 		return d
@@ -295,8 +299,31 @@ func cmpVer(a, b *semver) int {
 	case !a.dev && b.dev:
 		return 1
 	case a.dev && b.dev:
-		return strings.Compare(a.preRelease, b.preRelease)
+		return cmpPreRelease(a.preRelease, b.preRelease)
 	default:
 		return 0
 	}
+}
+
+// cmpPreRelease compares two pre-release suffixes of the form "YYYYMMDD.N"
+// numerically. Falls back to lexicographic order for unexpected formats so that
+// the comparison is always well-defined.
+func cmpPreRelease(a, b string) int {
+	parse := func(s string) (date, build int) {
+		parts := strings.SplitN(s, ".", 2)
+		date, _ = strconv.Atoi(parts[0])
+		if len(parts) == 2 {
+			build, _ = strconv.Atoi(parts[1])
+		}
+		return
+	}
+	aDate, aBuild := parse(a)
+	bDate, bBuild := parse(b)
+	if aDate == 0 && bDate == 0 {
+		return strings.Compare(a, b)
+	}
+	if d := aDate - bDate; d != 0 {
+		return d
+	}
+	return aBuild - bBuild
 }
