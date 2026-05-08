@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/auth"
+	"github.com/xjoker/ssh-mcp/internal/auth"
 )
 
 // --------------------------------------------------------------------------

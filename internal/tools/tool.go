@@ -10,12 +10,12 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/audit"
-	"github.com/xjoker/mcp-ssh-bridge/internal/config"
-	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
-	"github.com/xjoker/mcp-ssh-bridge/internal/session"
-	"github.com/xjoker/mcp-ssh-bridge/internal/ssh"
-	"github.com/xjoker/mcp-ssh-bridge/internal/tunnel"
+	"github.com/xjoker/ssh-mcp/internal/audit"
+	"github.com/xjoker/ssh-mcp/internal/config"
+	"github.com/xjoker/ssh-mcp/internal/envelope"
+	"github.com/xjoker/ssh-mcp/internal/session"
+	"github.com/xjoker/ssh-mcp/internal/ssh"
+	"github.com/xjoker/ssh-mcp/internal/tunnel"
 )
 
 // HandlerFunc is the signature implemented by every tool.
@@ -54,13 +54,13 @@ type Deps struct {
 	Audit        *audit.Logger
 	QuickSetup   QuickSetupRegistry
 
+	// Version is the running binary's version string (e.g. "0.0.1-dev"),
+	// used by the self_update tool for version comparison.
+	Version string
+
 	// AllowPlaintext mirrors Cfg.Settings.AllowConfigPlaintextPassword,
 	// passed to auth.Resolve when handling CredRefPlaintext.
 	AllowPlaintext bool
-
-	// Elicit issues an MCP elicitation/create request. Returns the user's
-	// response or an error. Used by ssh_quick_setup.
-	Elicit ElicitFunc
 
 	// Progress emits an MCP progress notification with the given message
 	// payload. Returns nil if no progress token is associated with the
@@ -111,9 +111,6 @@ type QuickSetupRegistry interface {
 	// only for the lifetime of the session, not the registry's TTL.
 	Remove(name string)
 }
-
-// ElicitFunc requests user confirmation via MCP elicitation/create.
-type ElicitFunc func(ctx context.Context, schema json.RawMessage, message string) (json.RawMessage, error)
 
 // ProgressFunc sends a progress notification. value is an arbitrary
 // JSON-encodable payload (e.g., {bytes_read, total} or stdout chunk).

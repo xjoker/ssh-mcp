@@ -28,7 +28,7 @@ host = "192.0.2.2"
 user = "bob"
 auth = "key"
 key_path = "/home/bob/.ssh/id_ed25519"
-password = "keychain:mcp-ssh-bridge:bob"
+password = "keychain:ssh-mcp:bob"
 `
 
 // writeConfig writes content to a temp config file and sets the env var.

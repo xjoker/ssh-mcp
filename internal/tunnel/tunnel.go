@@ -165,9 +165,12 @@ func (m *Manager) CreateLocalContext(
 		return "", fmt.Errorf("tunnel: CreateLocal: %w", err)
 	}
 
-	// S-9: default local bind to loopback only.
+	// S-9: default local bind to loopback only; reject explicit wildcard addresses.
 	if localBind == "" {
 		localBind = "127.0.0.1"
+	}
+	if localBind == "0.0.0.0" || localBind == "::" {
+		return "", fmt.Errorf("tunnel: CreateLocal: wildcard bind %q rejected (use 127.0.0.1 or a specific address)", localBind)
 	}
 
 	listenAddr := net.JoinHostPort(localBind, strconv.Itoa(localPort))
@@ -298,9 +301,12 @@ func (m *Manager) CreateRemoteContext(
 		return "", fmt.Errorf("tunnel: CreateRemote: %w", err)
 	}
 
-	// S-9: default remote bind to loopback only.
+	// S-9: default remote bind to loopback only; reject explicit wildcard addresses.
 	if remoteBind == "" {
 		remoteBind = "127.0.0.1"
+	}
+	if remoteBind == "0.0.0.0" || remoteBind == "::" {
+		return "", fmt.Errorf("tunnel: CreateRemote: wildcard bind %q rejected (use 127.0.0.1 or a specific address)", remoteBind)
 	}
 
 	ln, err := m.dialer.SSHListen(ctx, server, remoteBind, remotePort)

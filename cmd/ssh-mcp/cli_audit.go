@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/audit"
+	"github.com/xjoker/ssh-mcp/internal/audit"
 )
 
 func init() {
@@ -36,7 +36,7 @@ func auditCmd(args []string) int {
 }
 
 func printAuditUsage() {
-	fmt.Fprintln(os.Stderr, "usage: mcp-ssh-bridge audit <subcommand> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: ssh-mcp audit <subcommand> [flags]")
 	fmt.Fprintln(os.Stderr, "  subcommands: query")
 	fmt.Fprintln(os.Stderr, "  query flags: --server X  --tool Y  --since <1h|24h|7d|RFC3339>  --limit N")
 }

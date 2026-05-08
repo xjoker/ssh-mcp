@@ -1,12 +1,12 @@
-# mcp-ssh-bridge example configuration — two servers
+# ssh-mcp example configuration — two servers
 #
-# WARNING: Do not add autoApprove for any of mcp-ssh-bridge tools.
+# WARNING: Do not add autoApprove for any of ssh-mcp tools.
 # The tools provided (ssh_exec, sftp_op, ssh_group_exec, etc.) can have
 # unbounded effects on remote systems and must not be auto-approved.
 #
 # Copy this file to the platform config path and adjust values:
-#   macOS/Linux : ~/.config/mcp-ssh-bridge/config.toml
-#   Windows     : %APPDATA%\mcp-ssh-bridge\config.toml
+#   macOS/Linux : ~/.config/ssh-mcp/config.toml
+#   Windows     : %APPDATA%\ssh-mcp\config.toml
 
 [settings]
 # Uncomment to allow plaintext passwords in config (NOT recommended).
@@ -35,8 +35,8 @@ port        = 2222
 user        = "dbadmin"
 auth        = "password"
 # Store the password in the OS keychain:
-#   mcp-ssh-bridge auth set-keychain mcp-ssh-bridge ssh-password:dbserver
-password    = "keychain:mcp-ssh-bridge:ssh-password:dbserver"
+#   ssh-mcp auth set-keychain ssh-mcp ssh-password:dbserver
+password    = "keychain:ssh-mcp:ssh-password:dbserver"
 description = "Internal database server (keychain auth)"
 tags        = ["prod", "db"]
 allowed_paths = ["/var/lib/postgresql", "/tmp"]

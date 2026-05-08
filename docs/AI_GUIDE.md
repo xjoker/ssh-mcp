@@ -1,4 +1,4 @@
-# AI Assistant Guide for `mcp-ssh-bridge`
+# AI Assistant Guide for `ssh-mcp`
 
 > Written for the AI assistant (Claude, Codex, GPT, Gemini, …) that has been
 > given access to this MCP server. Read this once at session start; it
@@ -6,12 +6,19 @@
 >
 > Humans: paste this file (or its URL) into your AI's context the first
 > time you connect the bridge. After that the AI will know the rules.
+>
+> **Quick install reminder for humans:** the binary lives at
+> `~/.local/bin/ssh-mcp` (macOS/Linux) or
+> `%LOCALAPPDATA%\Programs\ssh-mcp\ssh-mcp.exe` (Windows).
+> Register it once with your client via `claude mcp add ... ssh-bridge`
+> or `codex mcp add ssh-bridge ...` — never hand-edit the client config
+> if a CLI exists.
 
 ---
 
 ## 1. Mental model
 
-`mcp-ssh-bridge` exposes a small fixed set of SSH/SFTP tools over MCP.
+`ssh-mcp` exposes a small fixed set of SSH/SFTP tools over MCP.
 Tools fall into two operational classes:
 
 | Class | Tools | Behavior contract |
@@ -53,6 +60,69 @@ realpath and applies `allowed_paths` to the resolved form.
 
 ---
 
+## 2b. PTY sessions — when and how
+
+Use **PTY mode** (`pty: true` in `session_start`) only for programs that
+check `isatty(1)` and refuse to render without a real terminal: `btop`,
+`htop`, `ncdu`, `vim`, `less`, and similar TUI applications. For regular
+commands, build scripts, or REPLs that work fine over a plain pipe, stick
+with the default sentinel-based session — it is faster and output
+collection is deterministic.
+
+**When to use PTY vs sentinel:**
+
+| Situation | Mode |
+|-----------|------|
+| TUI program that checks isatty (btop, htop, ncdu) | PTY |
+| Multi-step shell workflow (cd, build, test) | Sentinel (default) |
+| sudo prompt, interactive REPL | Sentinel (default) |
+| Program that emits raw ANSI and you want clean text | PTY + `strip_ansi:true` |
+
+**Opening a PTY session:**
+
+```
+session_start {
+  server: "prod",
+  pty: true,
+  command: "btop",
+  cols: 220,
+  rows: 50,
+  init_wait_ms: 3000
+}
+```
+
+The response includes `mode: "pty"` and `initial_output` containing the
+program's startup banner. Store the `session_id` for subsequent calls.
+
+**Reading output in PTY mode:**
+
+```
+session_send {
+  session_id: "<id>",
+  command: "",
+  timeout_ms: 2000,
+  strip_ansi: true
+}
+```
+
+`timeout_ms` is how long the bridge waits to collect output — it is **not**
+how long the remote command runs. PTY sessions do not use the sentinel
+protocol; the bridge collects whatever arrives within the timeout window.
+
+**Terminating a TUI program:**
+
+Send `"\x03"` (Ctrl-C), not `"q"`. The `q` key may not be processed
+reliably in all PTY contexts before the program has fully initialised, and
+some programs ignore it when a modal is open. After sending `"\x03"`,
+always call `session_close` to release the PTY allocation.
+
+```
+session_send  {session_id: "<id>", command: "\x03", timeout_ms: 500}
+session_close {session_id: "<id>"}
+```
+
+---
+
 ## 3. Mandatory pre-flight
 
 Before any destructive call:
@@ -86,14 +156,15 @@ this to:
 If the user asks about a host that isn't listed:
 
 1. Ask whether they want a permanent entry (instruct the human to run
-   `mcp-ssh-bridge config add-server <name> --host H --user U ...`), or
+   `ssh-mcp config add-server <name> --host H --user U ...`), or
 2. Propose `ssh_quick_setup` for an ad-hoc TTL-bounded entry.
 
 Never ask the user to paste a password into the chat. Passwords go to the
-OS keychain via `mcp-ssh-bridge auth set-keychain mcp-ssh-bridge
+OS keychain via `ssh-mcp auth set
 ssh-password:<name>`. Inline passwords are accepted by `session_start`
-and `ssh_quick_setup` only because the bridge holds them in scrubbed
-memory and zeroes them on session_close — even so, prefer agent/key.
+and `ssh_quick_setup` only because the bridge promotes them to TTL-bounded
+in-memory temp servers and zeroes them on expiry/shutdown — even so, prefer
+agent/key.
 
 ---
 
@@ -102,9 +173,9 @@ memory and zeroes them on session_close — even so, prefer agent/key.
 | `error.code` | Cause | Right next step |
 |----|----|----|
 | `INVALID_ARGUMENT` | Bad server name, wrong shape, missing field. | Re-read the schema; do **not** retry the same call verbatim. |
-| `HOST_KEY_UNKNOWN` | First contact, no `known_hosts` entry. | Tell the user to run `mcp-ssh-bridge trust <name>`; do not auto-accept. |
+| `HOST_KEY_UNKNOWN` | First contact, no `known_hosts` entry. | Tell the user to run `ssh-mcp trust <name>`; do not auto-accept. |
 | `HOST_KEY_MISMATCH` | Server's host key changed. | **Stop**. Surface this prominently — possible MITM. Do not retry. |
-| `AUTH_FAILED` | Wrong key / password / agent unavailable. | Suggest `auth set-keychain` (password) or `ssh-add` (agent). Do not loop. |
+| `AUTH_FAILED` | Wrong key / password / agent unavailable. | Suggest `auth set` (password) or `ssh-add` (agent). Do not loop. |
 | `PERMISSION_DENIED` | Path outside `allowed_paths`, or remote chmod refused. | Show the user the path and the configured prefix. Don't widen scope silently. |
 | `TIMEOUT` | Command hit `timeout_ms`. | Retry only with explicit user OK and a higher `timeout_ms`. Note the retriable flag. |
 | `SESSION_DEAD` | Persistent shell exited or got an error sentinel. | Discard the session_id; start a new session if the workflow needs to continue. |
@@ -158,13 +229,24 @@ ssh_quick_setup {host:"new.box", user:"alice", password:"..."}
 ssh_exec {server:"<returned name>", command:"hostname"}
 ```
 
+### Inspect a server with a TUI tool (PTY mode)
+```
+session_start {server:"prod", pty:true, command:"btop",
+               cols:220, rows:50, init_wait_ms:3000}
+              → session_send {session_id:"<id>", command:"",
+                              timeout_ms:2000, strip_ansi:true}
+              → session_send {session_id:"<id>", command:"\x03",
+                              timeout_ms:500}   # Ctrl-C to exit btop
+              → session_close {session_id:"<id>"}
+```
+
 ---
 
 ## 7. Things to never do
 
 - Suggest setting `autoApprove` for any of these tools.
 - Echo a password the user pasted back into a tool call. If they pasted
-  one in chat, advise rotating it and using `auth set-keychain`.
+  one in chat, advise rotating it and using `auth set`.
 - Build SSH commands like `ssh user@host "cmd"` and shove them through
   some unrelated tool — every SSH path goes through the bridge.
 - Run `rm -rf` style commands without an explicit, specific user request
@@ -188,7 +270,7 @@ proper context — stop and surface it. Acceptable phrasing:
 > I'm pausing here: server `prod-db` returned `HOST_KEY_MISMATCH`. This
 > usually means the host key changed (re-imaged box, MITM, or rotated
 > infra). Before any further command on this host, please confirm via
-> another channel and either re-run `mcp-ssh-bridge trust prod-db` or
+> another channel and either re-run `ssh-mcp trust prod-db` or
 > investigate.
 
 That paragraph is more useful than three more retries.

@@ -1,16 +1,21 @@
 {
   "_comment": [
-    "WARNING: Do not add autoApprove for any of mcp-ssh-bridge tools.",
-    "The tools provided (ssh_exec, sftp_op, ssh_group_exec, etc.) can have",
-    "unbounded effects on remote systems and must not be auto-approved.",
-    "Add this block to your claude_desktop_config.json file:",
+    "Claude Desktop has no MCP-management CLI yet, so this snippet must be",
+    "pasted manually into claude_desktop_config.json:",
     "  macOS  : ~/Library/Application Support/Claude/claude_desktop_config.json",
     "  Windows: %APPDATA%\\Claude\\claude_desktop_config.json",
-    "  Linux  : ~/.config/Claude/claude_desktop_config.json"
+    "  Linux  : ~/.config/Claude/claude_desktop_config.json",
+    "",
+    "Replace the command path with the actual install path printed by",
+    "'ssh-mcp install claude-desktop' (defaults to",
+    "~/.local/bin/ssh-mcp on macOS/Linux,",
+    "%LOCALAPPDATA%\\Programs\\ssh-mcp\\ssh-mcp.exe on Windows).",
+    "",
+    "WARNING: Do NOT add autoApprove for any of ssh-mcp tools."
   ],
   "mcpServers": {
     "ssh-bridge": {
-      "command": "/usr/local/bin/mcp-ssh-bridge",
+      "command": "/Users/<you>/.local/bin/ssh-mcp",
       "args": []
     }
   }

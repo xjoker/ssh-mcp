@@ -8,7 +8,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/config"
+	"github.com/xjoker/ssh-mcp/internal/config"
 )
 
 // serverNamePattern matches the SDD server-name rule: ^[a-z0-9][a-z0-9_-]*$,
@@ -18,7 +18,7 @@ var serverNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 func init() { registerSubcommand("config", configCmd) }
 
 // defaultConfigContent is written by `config init` when no config file exists.
-const defaultConfigContent = `# mcp-ssh-bridge configuration
+const defaultConfigContent = `# ssh-mcp configuration
 # See documentation for full option reference.
 
 [settings]
@@ -43,7 +43,7 @@ const defaultConfigContent = `# mcp-ssh-bridge configuration
 func configCmd(args []string) int {
 	fs := flag.NewFlagSet("config", flag.ContinueOnError)
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: mcp-ssh-bridge config <subcommand> [options]")
+		fmt.Fprintln(os.Stderr, "Usage: ssh-mcp config <subcommand> [options]")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Subcommands:")
 		fmt.Fprintln(os.Stderr, "  init        Write default config.toml (fails if file already exists)")
@@ -260,7 +260,7 @@ func configAddServerCmd(args []string) int {
 	if *auth == "password" && *passwordKeychain {
 		ref := fmt.Sprintf("keychain:%s:ssh-password:%s", keychainService(), *name)
 		sb.WriteString(fmt.Sprintf("password = %q\n", ref))
-		keychainHint = fmt.Sprintf("mcp-ssh-bridge auth set-keychain %s ssh-password:%s", keychainService(), *name)
+		keychainHint = fmt.Sprintf("ssh-mcp auth set ssh-password:%s", *name)
 	}
 	if *description != "" {
 		sb.WriteString(fmt.Sprintf("description = %q\n", *description))

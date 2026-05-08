@@ -12,9 +12,9 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/auth"
-	"github.com/xjoker/mcp-ssh-bridge/internal/config"
-	sshpkg "github.com/xjoker/mcp-ssh-bridge/internal/ssh"
+	"github.com/xjoker/ssh-mcp/internal/auth"
+	"github.com/xjoker/ssh-mcp/internal/config"
+	sshpkg "github.com/xjoker/ssh-mcp/internal/ssh"
 )
 
 // --------------------------------------------------------------------------
@@ -26,9 +26,10 @@ type sshTransport struct {
 	pool *sshpkg.Pool
 }
 
-// OpenShell opens a PTY-backed shell on the named server.
-// It allocates a PTY, starts a shell, and returns the three I/O streams plus
-// a close function. The caller owns all returned values.
+// OpenShell starts a shell on the named server and returns the three I/O
+// streams plus a close function. It intentionally avoids allocating a PTY so
+// stdout/stderr stay separate and interactive prompts/control sequences do not
+// pollute session_send output.
 func (t *sshTransport) OpenShell(
 	ctx context.Context,
 	server string,
@@ -41,17 +42,6 @@ func (t *sshTransport) OpenShell(
 	sess, err := cl.Underlying().NewSession()
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("sshTransport.OpenShell: new session: %w", err)
-	}
-
-	// Request a pseudo-terminal.
-	modes := gossh.TerminalModes{
-		gossh.ECHO:          0,
-		gossh.TTY_OP_ISPEED: 38400,
-		gossh.TTY_OP_OSPEED: 38400,
-	}
-	if ptErr := sess.RequestPty("xterm", 40, 80, modes); ptErr != nil {
-		sess.Close()
-		return nil, nil, nil, nil, fmt.Errorf("sshTransport.OpenShell: RequestPty: %w", ptErr)
 	}
 
 	stdinPipe, err := sess.StdinPipe()
@@ -77,6 +67,59 @@ func (t *sshTransport) OpenShell(
 
 	closer := func() error { return sess.Close() }
 	return stdinPipe, stdoutPipe, stderrPipe, closer, nil
+}
+
+// OpenShellPTY opens an interactive shell with a PTY, merging stderr into
+// stdout. cols/rows default to 220×50 when zero.
+func (t *sshTransport) OpenShellPTY(
+	ctx context.Context,
+	server string,
+	cols, rows uint32,
+) (stdin io.WriteCloser, stdout io.Reader, close func() error, err error) {
+	cl, err := t.pool.Get(ctx, server)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("sshTransport.OpenShellPTY: get client for %q: %w", server, err)
+	}
+
+	sess, err := cl.Underlying().NewSession()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("sshTransport.OpenShellPTY: new session: %w", err)
+	}
+
+	if cols == 0 {
+		cols = 220
+	}
+	if rows == 0 {
+		rows = 50
+	}
+	modes := gossh.TerminalModes{
+		gossh.ECHO:          0,
+		gossh.TTY_OP_ISPEED: 38400,
+		gossh.TTY_OP_OSPEED: 38400,
+	}
+	if ptErr := sess.RequestPty("xterm-256color", int(rows), int(cols), modes); ptErr != nil {
+		sess.Close()
+		return nil, nil, nil, fmt.Errorf("sshTransport.OpenShellPTY: RequestPty: %w", ptErr)
+	}
+
+	stdinPipe, err := sess.StdinPipe()
+	if err != nil {
+		sess.Close()
+		return nil, nil, nil, fmt.Errorf("sshTransport.OpenShellPTY: StdinPipe: %w", err)
+	}
+	stdoutPipe, err := sess.StdoutPipe()
+	if err != nil {
+		sess.Close()
+		return nil, nil, nil, fmt.Errorf("sshTransport.OpenShellPTY: StdoutPipe: %w", err)
+	}
+
+	if startErr := sess.Shell(); startErr != nil {
+		sess.Close()
+		return nil, nil, nil, fmt.Errorf("sshTransport.OpenShellPTY: Shell: %w", startErr)
+	}
+
+	closer := func() error { return sess.Close() }
+	return stdinPipe, stdoutPipe, closer, nil
 }
 
 // --------------------------------------------------------------------------

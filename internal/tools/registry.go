@@ -1,4 +1,4 @@
-// Package tools provides the MCP tool layer for mcp-ssh-bridge.
+// Package tools provides the MCP tool layer for ssh-mcp.
 // Each tool file registers itself via init(); call All() to retrieve
 // the full list for wiring into the MCP server.
 package tools

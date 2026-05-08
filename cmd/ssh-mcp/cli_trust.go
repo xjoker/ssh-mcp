@@ -10,8 +10,8 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/config"
-	"github.com/xjoker/mcp-ssh-bridge/internal/safety"
+	"github.com/xjoker/ssh-mcp/internal/config"
+	"github.com/xjoker/ssh-mcp/internal/safety"
 )
 
 func init() { registerSubcommand("trust", trustCmd) }
@@ -27,8 +27,8 @@ func trustCmd(args []string) int {
 	fs.IntVar(&portFlag, "port", 22, "SSH port (used with --host)")
 	fs.StringVar(&pathFlag, "path", "", "config file path")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: mcp-ssh-bridge trust <server-name>")
-		fmt.Fprintln(os.Stderr, "       mcp-ssh-bridge trust --host <host> [--port <port>]")
+		fmt.Fprintln(os.Stderr, "Usage: ssh-mcp trust <server-name>")
+		fmt.Fprintln(os.Stderr, "       ssh-mcp trust --host <host> [--port <port>]")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Fetches the host key and appends it to ~/.ssh/known_hosts.")
 		fmt.Fprintln(os.Stderr, "")

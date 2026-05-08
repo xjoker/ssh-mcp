@@ -8,10 +8,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
-	"github.com/xjoker/mcp-ssh-bridge/internal/safety"
-	internalsftp "github.com/xjoker/mcp-ssh-bridge/internal/sftp"
-	"github.com/xjoker/mcp-ssh-bridge/internal/ssh"
+	"github.com/xjoker/ssh-mcp/internal/envelope"
+	"github.com/xjoker/ssh-mcp/internal/safety"
+	internalsftp "github.com/xjoker/ssh-mcp/internal/sftp"
+	"github.com/xjoker/ssh-mcp/internal/ssh"
 )
 
 func init() {
@@ -33,12 +33,12 @@ type groupExecInput struct {
 }
 
 type groupExecServerResult struct {
-	Server     string         `json:"server"`
-	OK         bool           `json:"ok"`
-	Stdout     string         `json:"stdout,omitempty"`
-	Stderr     string         `json:"stderr,omitempty"`
-	ExitCode   int            `json:"exit_code,omitempty"`
-	DurationMs int64          `json:"duration_ms,omitempty"`
+	Server     string          `json:"server"`
+	OK         bool            `json:"ok"`
+	Stdout     string          `json:"stdout,omitempty"`
+	Stderr     string          `json:"stderr,omitempty"`
+	ExitCode   int             `json:"exit_code,omitempty"`
+	DurationMs int64           `json:"duration_ms,omitempty"`
 	Error      *envelope.Error `json:"error,omitempty"`
 }
 
@@ -69,11 +69,7 @@ var sshGroupExecSchema = json.RawMessage(`{
     "stop_on_error":    { "type": "boolean", "default": false },
     "max_concurrency":  { "type": "integer", "default": 8, "maximum": 16 }
   },
-  "required": ["command"],
-  "oneOf": [
-    { "required": ["servers"] },
-    { "required": ["tag"] }
-  ]
+  "required": ["command"]
 }`)
 
 func toolSSHGroupExec() Tool {
@@ -136,6 +132,9 @@ func handleSSHGroupExec(ctx context.Context, deps *Deps, args json.RawMessage) e
 	}
 
 	// Timeout
+	if input.TimeoutMs > 0 && input.TimeoutMs < 1000 {
+		return envelope.Err(envelope.CodeInvalidArgument, "timeout_ms must be >= 1000", false)
+	}
 	timeoutMs := input.TimeoutMs
 	if timeoutMs <= 0 {
 		timeoutMs = deps.Cfg.Settings.DefaultTimeoutMs

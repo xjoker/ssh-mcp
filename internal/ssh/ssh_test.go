@@ -13,7 +13,7 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/config"
+	"github.com/xjoker/ssh-mcp/internal/config"
 )
 
 // --------------------------------------------------------------------------
@@ -21,8 +21,8 @@ import (
 // --------------------------------------------------------------------------
 
 type fakeResolver struct {
-	mu       sync.Mutex
-	calls    int
+	mu        sync.Mutex
+	calls     int
 	returnErr error
 }
 
@@ -527,6 +527,14 @@ func TestPool_LookupTempServer(t *testing.T) {
 	p.AddTempServer("qs-old", srv, time.Now().Add(-time.Minute))
 	if _, ok := p.LookupTempServer("qs-old"); ok {
 		t.Error("expected expired temp entry to return false")
+	}
+
+	listed := p.ListTempServers()
+	if len(listed) != 1 {
+		t.Fatalf("ListTempServers returned %d live entries, want 1", len(listed))
+	}
+	if listed[0].Server.Name != "qs-1" || listed[0].ExpiresAt.IsZero() {
+		t.Fatalf("unexpected temp server snapshot: %+v", listed[0])
 	}
 }
 

@@ -13,7 +13,7 @@ import (
 // This is the same two-grep pipeline used in the script.
 func TestExamplesNoAutoApprove(t *testing.T) {
 	// Locate examples/ relative to the module root.
-	// From cmd/mcp-ssh-bridge/ we go up two levels.
+	// From cmd/ssh-mcp/ we go up two levels.
 	examplesDir := filepath.Join("..", "..", "examples")
 	if _, err := os.Stat(examplesDir); err != nil {
 		t.Fatalf("examples dir not found at %q: %v", examplesDir, err)

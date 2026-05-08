@@ -90,7 +90,6 @@ func applySettingsDefaults(s *Settings) {
 type rawSettings struct {
 	AllowConfigPlaintextPassword *bool    `toml:"allow_config_plaintext_password"`
 	AllowInlineCredentials       *bool    `toml:"allow_inline_credentials"`
-	AllowQuickSetup              *bool    `toml:"allow_quick_setup"`
 	DefaultTimeoutMs             *int     `toml:"default_timeout_ms"`
 	MaxTimeoutMs                 *int     `toml:"max_timeout_ms"`
 	OutputMaxBytes               *int     `toml:"output_max_bytes"`
@@ -145,7 +144,6 @@ func Load(path string) (*Config, error) {
 	settings := Settings{
 		AllowConfigPlaintextPassword: boolVal(rs.AllowConfigPlaintextPassword, false),
 		AllowInlineCredentials:       boolVal(rs.AllowInlineCredentials, true),
-		AllowQuickSetup:              boolVal(rs.AllowQuickSetup, true),
 		DefaultTimeoutMs:             intVal(rs.DefaultTimeoutMs, 120_000),
 		MaxTimeoutMs:                 intVal(rs.MaxTimeoutMs, 1_800_000),
 		OutputMaxBytes:               intVal(rs.OutputMaxBytes, 65_536),
@@ -390,7 +388,7 @@ func DefaultPath() string {
 	switch runtime.GOOS {
 	case "windows":
 		appdata := os.Getenv("APPDATA")
-		return appdata + `\mcp-ssh-bridge\config.toml`
+		return appdata + `\ssh-mcp\config.toml`
 	default:
 		// macOS and Linux: prefer XDG_CONFIG_HOME, fall back to ~/.config
 		xdg := os.Getenv("XDG_CONFIG_HOME")
@@ -398,7 +396,7 @@ func DefaultPath() string {
 			home, _ := os.UserHomeDir()
 			xdg = home + "/.config"
 		}
-		return xdg + "/mcp-ssh-bridge/config.toml"
+		return xdg + "/ssh-mcp/config.toml"
 	}
 }
 

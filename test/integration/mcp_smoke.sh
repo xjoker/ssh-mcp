@@ -5,10 +5,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
-BIN="$ROOT/bin/mcp-ssh-bridge"
+BIN="$ROOT/bin/ssh-mcp"
 CFG="$ROOT/test/integration/config.toml"
 
-[ -x "$BIN" ] || { echo "build first: go build -o bin/mcp-ssh-bridge ./cmd/mcp-ssh-bridge"; exit 1; }
+[ -x "$BIN" ] || { echo "build first: go build -o bin/ssh-mcp ./cmd/ssh-mcp"; exit 1; }
 
 # Build a sequence of MCP messages. Order:
 #   1. initialize

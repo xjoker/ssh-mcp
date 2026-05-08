@@ -34,7 +34,7 @@ func TestLookupMissing(t *testing.T) {
 }
 
 // TestVersionCmdOutput verifies that versionCmd prints a line containing
-// "mcp-ssh-bridge".
+// "ssh-mcp".
 func TestVersionCmdOutput(t *testing.T) {
 	// Capture stdout.
 	origStdout := os.Stdout
@@ -59,7 +59,7 @@ func TestVersionCmdOutput(t *testing.T) {
 	}
 
 	out := buf.String()
-	if !strings.Contains(out, "mcp-ssh-bridge") {
-		t.Fatalf("versionCmd output %q does not contain %q", out, "mcp-ssh-bridge")
+	if !strings.Contains(out, "ssh-mcp") {
+		t.Fatalf("versionCmd output %q does not contain %q", out, "ssh-mcp")
 	}
 }

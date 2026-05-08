@@ -10,9 +10,9 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
-	"github.com/xjoker/mcp-ssh-bridge/internal/safety"
-	internalsftp "github.com/xjoker/mcp-ssh-bridge/internal/sftp"
+	"github.com/xjoker/ssh-mcp/internal/envelope"
+	"github.com/xjoker/ssh-mcp/internal/safety"
+	internalsftp "github.com/xjoker/ssh-mcp/internal/sftp"
 )
 
 const sftpWriteMaxBytes = sftpReadMaxBytes
@@ -261,6 +261,17 @@ func sftpOpWrite(a sftpOpArgs, data []byte, rp safety.RemotePath, sc *internalsf
 		atomic = *a.Atomic
 	}
 
+	if a.DryRun {
+		return envelope.OK(map[string]any{
+			"bytes_written":     0,
+			"bytes_would_write": len(data),
+			"path":              rp.String(),
+			"mode":              fmt.Sprintf("%04o", uint32(mode)),
+			"atomic":            atomic,
+			"dry_run":           true,
+		})
+	}
+
 	// Progress callback.
 	var progressCb func(written, total int64)
 	threshold := int64(deps.Cfg.Settings.SftpProgressThresholdBytes)
@@ -293,6 +304,15 @@ func sftpOpMkdir(a sftpOpArgs, rp safety.RemotePath, sc *internalsftp.Client) en
 	mode, modeErr := parseOctalMode(a.Mode, 0755)
 	if modeErr != nil {
 		return envelope.Err(envelope.CodeInvalidArgument, "mode: "+modeErr.Error(), false)
+	}
+	if a.DryRun {
+		return envelope.OK(map[string]any{
+			"created":   false,
+			"path":      rp.String(),
+			"mode":      fmt.Sprintf("%04o", uint32(mode)),
+			"recursive": a.Recursive,
+			"dry_run":   true,
+		})
 	}
 	if err := sc.Mkdir(rp, mode, a.Recursive); err != nil {
 		return mapSFTPErr(err)
@@ -367,6 +387,13 @@ func enumerateForRemove(sc *internalsftp.Client, rp safety.RemotePath, recursive
 // --------------------------------------------------------------------------
 
 func sftpOpRename(a sftpOpArgs, from, to safety.RemotePath, sc *internalsftp.Client) envelope.Response {
+	if a.DryRun {
+		return envelope.OK(map[string]any{
+			"from":    from.String(),
+			"to":      to.String(),
+			"dry_run": true,
+		})
+	}
 	if err := sc.Rename(from, to); err != nil {
 		return mapSFTPErr(err)
 	}
@@ -388,6 +415,13 @@ func sftpOpChmod(a sftpOpArgs, rp safety.RemotePath, sc *internalsftp.Client) en
 	if modeErr != nil {
 		return envelope.Err(envelope.CodeInvalidArgument, "mode: "+modeErr.Error(), false)
 	}
+	if a.DryRun {
+		return envelope.OK(map[string]any{
+			"path":    rp.String(),
+			"mode":    fmt.Sprintf("%04o", uint32(mode)),
+			"dry_run": true,
+		})
+	}
 	if err := sc.Chmod(rp, mode); err != nil {
 		return mapSFTPErr(err)
 	}
@@ -401,6 +435,13 @@ func sftpOpChmod(a sftpOpArgs, rp safety.RemotePath, sc *internalsftp.Client) en
 // --------------------------------------------------------------------------
 
 func sftpOpSymlink(a sftpOpArgs, target, linkPath safety.RemotePath, sc *internalsftp.Client) envelope.Response {
+	if a.DryRun {
+		return envelope.OK(map[string]any{
+			"target":  target.String(),
+			"link":    linkPath.String(),
+			"dry_run": true,
+		})
+	}
 	if err := sc.Symlink(target, linkPath); err != nil {
 		return mapSFTPErr(err)
 	}

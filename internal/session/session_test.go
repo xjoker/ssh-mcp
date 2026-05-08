@@ -90,6 +90,12 @@ func (ft *fakeTransport) OpenShell(_ context.Context, _ string) (
 	return sh.stdinW, sh.stdoutR, sh.stderrR, sh.closeFunc, nil
 }
 
+func (ft *fakeTransport) OpenShellPTY(_ context.Context, _ string, _, _ uint32) (
+	io.WriteCloser, io.Reader, func() error, error,
+) {
+	return nil, nil, nil, fmt.Errorf("fakeTransport: OpenShellPTY not implemented")
+}
+
 // --------------------------------------------------------------------------
 // Helper: Start a session with a fake shell, handling init probe
 // --------------------------------------------------------------------------
@@ -372,6 +378,12 @@ func (ht *hangTransport) OpenShell(_ context.Context, _ string) (
 	io.WriteCloser, io.Reader, io.Reader, func() error, error,
 ) {
 	return ht.sh.stdinW, ht.sh.stdoutR, ht.sh.stderrR, ht.sh.closeFunc, nil
+}
+
+func (ht *hangTransport) OpenShellPTY(_ context.Context, _ string, _, _ uint32) (
+	io.WriteCloser, io.Reader, func() error, error,
+) {
+	return nil, nil, nil, fmt.Errorf("hangTransport: OpenShellPTY not implemented")
 }
 
 // hangShellResponder processes stdin for the hang shell: it handles the init
@@ -657,6 +669,12 @@ func (bt *bigOutputTransport) OpenShell(_ context.Context, _ string) (
 	return bt.sh.stdinW, bt.sh.stdoutR, bt.sh.stderrR, bt.sh.closeFunc, nil
 }
 
+func (bt *bigOutputTransport) OpenShellPTY(_ context.Context, _ string, _, _ uint32) (
+	io.WriteCloser, io.Reader, func() error, error,
+) {
+	return nil, nil, nil, fmt.Errorf("bigOutputTransport: OpenShellPTY not implemented")
+}
+
 // startBigOutputShell processes stdin: handles init probe normally, then
 // for any sentinel-wrapped command it writes extraBytes of 'x' followed by
 // the sentinel line so Send can complete.
@@ -930,6 +948,12 @@ func (lt *longLineTransport) OpenShell(_ context.Context, _ string) (
 	return lt.sh.stdinW, lt.sh.stdoutR, lt.sh.stderrR, lt.sh.closeFunc, nil
 }
 
+func (lt *longLineTransport) OpenShellPTY(_ context.Context, _ string, _, _ uint32) (
+	io.WriteCloser, io.Reader, func() error, error,
+) {
+	return nil, nil, nil, fmt.Errorf("longLineTransport: OpenShellPTY not implemented")
+}
+
 // startLongLineShell handles init probe normally. For any sentinel-wrapped
 // command it writes lineBytes of 'x' with NO intermediate newline, then
 // immediately writes the sentinel on its own line.
@@ -1016,6 +1040,194 @@ func TestStart_SessionLimit(t *testing.T) {
 	}
 	if _, err := m.Start(ctx, "server-2"); err != nil {
 		t.Errorf("Start after Close: %v", err)
+	}
+}
+
+// --------------------------------------------------------------------------
+// PTY transport and shell helpers
+// --------------------------------------------------------------------------
+
+// fakePTYShell simulates a PTY shell. Tests write to stdoutW to feed data to
+// ptyReadLoop; stdin writes from the Manager appear on stdinR.
+type fakePTYShell struct {
+	stdinR  *io.PipeReader
+	stdinW  *io.PipeWriter
+	stdoutR *io.PipeReader
+	stdoutW *io.PipeWriter
+	closeMu sync.Mutex
+	closed  bool
+}
+
+func newFakePTYShell() *fakePTYShell {
+	sr, sw := io.Pipe()
+	or, ow := io.Pipe()
+	return &fakePTYShell{
+		stdinR: sr, stdinW: sw,
+		stdoutR: or, stdoutW: ow,
+	}
+}
+
+func (f *fakePTYShell) closeFunc() error {
+	f.closeMu.Lock()
+	defer f.closeMu.Unlock()
+	if f.closed {
+		return nil
+	}
+	f.closed = true
+	_ = f.stdinR.Close()
+	_ = f.stdoutW.Close()
+	return nil
+}
+
+// singlePTYTransport is a Transport that serves exactly one PTY shell.
+// OpenShell returns an error; only OpenShellPTY is implemented.
+type singlePTYTransport struct {
+	sh *fakePTYShell
+}
+
+func (t *singlePTYTransport) OpenShell(_ context.Context, _ string) (
+	io.WriteCloser, io.Reader, io.Reader, func() error, error,
+) {
+	return nil, nil, nil, nil, fmt.Errorf("singlePTYTransport: OpenShell not implemented")
+}
+
+func (t *singlePTYTransport) OpenShellPTY(_ context.Context, _ string, _, _ uint32) (
+	io.WriteCloser, io.Reader, func() error, error,
+) {
+	return t.sh.stdinW, t.sh.stdoutR, t.sh.closeFunc, nil
+}
+
+// --------------------------------------------------------------------------
+// PTY session tests
+// --------------------------------------------------------------------------
+
+// TestStartPTY_CapturesInitialOutput verifies that StartPTY collects output
+// written to stdout during the initWaitMs window.
+func TestStartPTY_CapturesInitialOutput(t *testing.T) {
+	sh := newFakePTYShell()
+
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		_, _ = fmt.Fprint(sh.stdoutW, "shell banner\r\n")
+	}()
+
+	m := NewManager(&singlePTYTransport{sh: sh}, time.Hour)
+	defer m.CloseAll()
+
+	ctx := context.Background()
+	id, result, err := m.StartPTY(ctx, "test-server", 80, 24, "", 150)
+	if err != nil {
+		t.Fatalf("StartPTY error: %v", err)
+	}
+	if id == "" {
+		t.Fatal("StartPTY returned empty id")
+	}
+	if !strings.Contains(result.Stdout, "shell banner") {
+		t.Errorf("initial output = %q, want 'shell banner'", result.Stdout)
+	}
+}
+
+// TestSendRaw_WritesAndDrains verifies that SendRaw writes input to stdin
+// and collects output produced on stdout within the timeout window.
+func TestSendRaw_WritesAndDrains(t *testing.T) {
+	sh := newFakePTYShell()
+
+	// Echo stdin back as a response on stdout.
+	go func() {
+		buf := make([]byte, 256)
+		for {
+			n, err := sh.stdinR.Read(buf)
+			if n > 0 {
+				cmd := strings.TrimRight(string(buf[:n]), "\r\n")
+				_, _ = fmt.Fprintf(sh.stdoutW, "$ %s\r\nresult-of-%s\r\n", cmd, cmd)
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	m := NewManager(&singlePTYTransport{sh: sh}, time.Hour)
+	defer m.CloseAll()
+
+	ctx := context.Background()
+	id, _, err := m.StartPTY(ctx, "test-server", 80, 24, "", 10)
+	if err != nil {
+		t.Fatalf("StartPTY error: %v", err)
+	}
+
+	result, err := m.SendRaw(ctx, id, "ls", 300*time.Millisecond)
+	if err != nil {
+		t.Fatalf("SendRaw error: %v", err)
+	}
+	if !strings.Contains(result.Stdout, "result-of-ls") {
+		t.Errorf("SendRaw output = %q, want 'result-of-ls'", result.Stdout)
+	}
+}
+
+// TestIsPTY verifies that IsPTY distinguishes PTY sessions from sentinel ones.
+func TestIsPTY(t *testing.T) {
+	ctx := context.Background()
+
+	// PTY session.
+	sh := newFakePTYShell()
+	m := NewManager(&singlePTYTransport{sh: sh}, time.Hour)
+	defer m.CloseAll()
+
+	ptyID, _, err := m.StartPTY(ctx, "test-server", 80, 24, "", 10)
+	if err != nil {
+		t.Fatalf("StartPTY error: %v", err)
+	}
+	if !m.IsPTY(ptyID) {
+		t.Error("IsPTY should return true for a PTY session")
+	}
+	if m.IsPTY("nonexistent") {
+		t.Error("IsPTY should return false for an unknown id")
+	}
+
+	// Sentinel session in a separate Manager.
+	sentSh := newFakeShell()
+	(&shellResponder{sh: sentSh}).run()
+	sentFT := &fakeTransport{}
+	sentFT.addShell(sentSh)
+	sentM := NewManager(sentFT, time.Hour)
+	defer sentM.CloseAll()
+
+	sentID, err := sentM.Start(ctx, "test-server")
+	if err != nil {
+		t.Fatalf("Start (sentinel) error: %v", err)
+	}
+	if sentM.IsPTY(sentID) {
+		t.Error("IsPTY should return false for a sentinel session")
+	}
+}
+
+// TestStartPTY_Close verifies that a PTY session can be closed cleanly and
+// that Close is idempotent.
+func TestStartPTY_Close(t *testing.T) {
+	sh := newFakePTYShell()
+	m := NewManager(&singlePTYTransport{sh: sh}, time.Hour)
+	defer m.CloseAll()
+
+	ctx := context.Background()
+	id, _, err := m.StartPTY(ctx, "test-server", 0, 0, "", 10)
+	if err != nil {
+		t.Fatalf("StartPTY error: %v", err)
+	}
+
+	if err := m.Close(id); err != nil {
+		t.Fatalf("Close error: %v", err)
+	}
+
+	for _, info := range m.List() {
+		if info.ID == id {
+			t.Errorf("closed PTY session %q still appears in List", id)
+		}
+	}
+
+	// Idempotent: second close must not panic or error.
+	if err := m.Close(id); err != nil {
+		t.Fatalf("second Close error: %v", err)
 	}
 }
 

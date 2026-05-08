@@ -12,12 +12,12 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/audit"
-	"github.com/xjoker/mcp-ssh-bridge/internal/config"
-	"github.com/xjoker/mcp-ssh-bridge/internal/session"
-	sshpkg "github.com/xjoker/mcp-ssh-bridge/internal/ssh"
-	"github.com/xjoker/mcp-ssh-bridge/internal/tools"
-	"github.com/xjoker/mcp-ssh-bridge/internal/tunnel"
+	"github.com/xjoker/ssh-mcp/internal/audit"
+	"github.com/xjoker/ssh-mcp/internal/config"
+	"github.com/xjoker/ssh-mcp/internal/session"
+	sshpkg "github.com/xjoker/ssh-mcp/internal/ssh"
+	"github.com/xjoker/ssh-mcp/internal/tools"
+	"github.com/xjoker/ssh-mcp/internal/tunnel"
 )
 
 // stderrWriter is used by dispatch.go for runtime error logging.
@@ -41,7 +41,10 @@ type Server struct {
 
 // New creates a Server, initialising all subsystems.
 // auditDir overrides the default audit log directory (empty = use platform default).
-func New(cfg *config.Config, auditDir string) (*Server, error) {
+// updateNotice, if non-empty, is injected into the MCP server instructions so
+// connected clients (e.g. Claude Code) can display an update prompt.
+// ver is the binary version string (e.g. "0.0.1-dev"), injected via ldflags.
+func New(cfg *config.Config, auditDir, updateNotice, ver string) (*Server, error) {
 	// 1. Audit logger.
 	if auditDir == "" {
 		auditDir = defaultAuditDir()
@@ -99,17 +102,25 @@ func New(cfg *config.Config, auditDir string) (*Server, error) {
 		TunnelMgr:      tunnelMgr,
 		Audit:          auditLog,
 		QuickSetup:     qs,
+		Version:        ver,
 		AllowPlaintext: cfg.Settings.AllowConfigPlaintextPassword,
 		// Elicit and Progress are injected per-request by dispatch.go.
 	}
 
 	// 7. MCP SDK server.
+	var srvOpts *mcp.ServerOptions
+	if updateNotice != "" {
+		srvOpts = &mcp.ServerOptions{Instructions: updateNotice}
+	}
+	if ver == "" {
+		ver = "dev"
+	}
 	mcpSrv := mcp.NewServer(
 		&mcp.Implementation{
-			Name:    "mcp-ssh-bridge",
-			Version: "v1.0.0",
+			Name:    "ssh-mcp",
+			Version: ver,
 		},
-		nil,
+		srvOpts,
 	)
 
 	s := &Server{
@@ -243,17 +254,17 @@ func defaultAuditDir() string {
 		if appData == "" {
 			appData = os.Getenv("APPDATA")
 		}
-		return appData + `\mcp-ssh-bridge\audit`
+		return appData + `\ssh-mcp\audit`
 	default:
 		// macOS / Linux: use XDG_STATE_HOME or ~/.local/state
 		stateHome := os.Getenv("XDG_STATE_HOME")
 		if stateHome == "" {
 			home, err := os.UserHomeDir()
 			if err != nil {
-				return "/tmp/mcp-ssh-bridge/audit"
+				return "/tmp/ssh-mcp/audit"
 			}
 			stateHome = home + "/.local/state"
 		}
-		return stateHome + "/mcp-ssh-bridge"
+		return stateHome + "/ssh-mcp"
 	}
 }

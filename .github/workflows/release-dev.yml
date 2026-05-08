@@ -1,0 +1,92 @@
+name: Release (dev)
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+-dev*'   # Dev pre-release tags only
+
+permissions:
+  contents: write      # Required for creating GitHub Releases
+
+jobs:
+  release-dev:
+    name: Build and publish dev pre-release
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Extract version
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME}"          # e.g. v0.0.2-dev
+          VERSION="${TAG#v}"                # e.g. 0.0.2-dev
+          COMMIT="$(git rev-parse --short HEAD)"
+          echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "commit=$COMMIT"   >> "$GITHUB_OUTPUT"
+
+      - name: Build cross-platform binaries
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          COMMIT:  ${{ steps.version.outputs.commit }}
+        run: |
+          LDFLAGS="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}"
+          mkdir -p dist
+
+          build() {
+            local GOOS=$1 GOARCH=$2
+            local EXT=""
+            [ "$GOOS" = "windows" ] && EXT=".exe"
+            local OUT="dist/ssh-mcp_${GOOS}_${GOARCH}${EXT}"
+            echo "Building $OUT..."
+            GOOS=$GOOS GOARCH=$GOARCH go build \
+              -trimpath \
+              -ldflags="$LDFLAGS" \
+              -o "$OUT" \
+              ./cmd/ssh-mcp
+          }
+
+          build linux   amd64
+          build linux   arm64
+          build darwin  amd64
+          build darwin  arm64
+          build windows amd64
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum * > checksums.sha256
+          cat checksums.sha256
+
+      - name: Delete all releases for tag (published + orphaned drafts)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          REPO="${{ github.repository }}"
+          # Delete every release (including drafts) that points at this tag.
+          gh api "repos/$REPO/releases" --paginate \
+            --jq ".[] | select(.tag_name == \"$TAG\") | .id" | \
+            while read -r id; do
+              gh api -X DELETE "repos/$REPO/releases/$id" && echo "Deleted release $id"
+            done || true
+
+      - name: Create GitHub Pre-Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --title "ssh-mcp ${{ steps.version.outputs.tag }}" \
+            --prerelease \
+            --generate-notes \
+            dist/ssh-mcp_linux_amd64 \
+            dist/ssh-mcp_linux_arm64 \
+            dist/ssh-mcp_darwin_amd64 \
+            dist/ssh-mcp_darwin_arm64 \
+            dist/ssh-mcp_windows_amd64.exe \
+            dist/checksums.sha256

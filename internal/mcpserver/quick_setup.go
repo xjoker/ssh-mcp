@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/auth"
-	"github.com/xjoker/mcp-ssh-bridge/internal/tools"
+	"github.com/xjoker/ssh-mcp/internal/auth"
+	"github.com/xjoker/ssh-mcp/internal/tools"
 )
 
 // --------------------------------------------------------------------------
@@ -78,6 +78,17 @@ func newQuickSetupRegistry(staticNames map[string]struct{}, onEvict func(name st
 
 // Register stores a new entry keyed by a sanitised/disambiguated name.
 // SDD §6.13. Returns the canonical name and the Unix expiry timestamp.
+//
+// If a non-expired entry with the same host, port, and user already exists,
+// that entry is reused (its secret refreshed and TTL extended) so the AI does
+// not trigger a new confirmation dialog for every tool call on the same server.
+//
+// Concurrency: r.mu is held for the whole call, including the dedup scan.
+// Concurrent Register() invocations for the same (host, port, user) are
+// therefore strictly serialised — the second call observes the first call's
+// entry and reuses it. Do NOT relax this to RWMutex without re-checking the
+// dedup invariant; readers under RLock would be able to allocate duplicate
+// names racing against each other.
 func (r *quickSetupRegistry) Register(spec tools.QuickSetupSpec) (string, int64, error) {
 	if spec.AuthKind != "password" && spec.AuthKind != "key" {
 		return "", 0, fmt.Errorf("quickSetupRegistry: invalid auth kind %q", spec.AuthKind)
@@ -90,10 +101,41 @@ func (r *quickSetupRegistry) Register(spec tools.QuickSetupSpec) (string, int64,
 	if spec.TTLMinutes < 1 || spec.TTLMinutes > 240 {
 		return "", 0, fmt.Errorf("quickSetupRegistry: ttl_minutes %d out of allowed range 1..240", spec.TTLMinutes)
 	}
-	base := sanitiseName(spec.NameHint, spec.Host)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	now := time.Now()
+	expiresAt := now.Add(time.Duration(spec.TTLMinutes) * time.Minute)
+
+	// Reuse an existing non-expired entry that matches host+port+user so that
+	// repeated calls from the AI do not create new names (and fresh confirmation
+	// dialogs) for the same destination.
+	for name, e := range r.m {
+		if now.After(e.expiresAt) {
+			continue // expired — skip; reaper will clean it up
+		}
+		if e.host == spec.Host && e.port == spec.Port && e.user == spec.User {
+			// Refresh secret and TTL in-place.
+			if e.secret != nil {
+				e.secret.Close()
+			}
+			e.secret = auth.NewSecret(spec.Secret)
+			if e.passphrase != nil {
+				e.passphrase.Close()
+				e.passphrase = nil
+			}
+			if len(spec.Passphrase) > 0 {
+				e.passphrase = auth.NewSecret(spec.Passphrase)
+			}
+			e.authKind = spec.AuthKind
+			e.acceptNewHost = spec.AcceptNewHost
+			e.expiresAt = expiresAt
+			return name, expiresAt.Unix(), nil
+		}
+	}
+
+	base := sanitiseName(spec.NameHint, spec.Host)
 
 	// R2-C02: Disambiguate against BOTH existing temp entries and the
 	// static server set. Walk the suffix counter until we land on a name
@@ -113,8 +155,6 @@ func (r *quickSetupRegistry) Register(spec tools.QuickSetupSpec) (string, int64,
 		}
 		break
 	}
-
-	expiresAt := time.Now().Add(time.Duration(spec.TTLMinutes) * time.Minute)
 
 	entry := &quickSetupEntry{
 		host:          spec.Host,

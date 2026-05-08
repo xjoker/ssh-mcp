@@ -5,9 +5,9 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
-	internalsftp "github.com/xjoker/mcp-ssh-bridge/internal/sftp"
-	"github.com/xjoker/mcp-ssh-bridge/internal/safety"
+	"github.com/xjoker/ssh-mcp/internal/envelope"
+	internalsftp "github.com/xjoker/ssh-mcp/internal/sftp"
+	"github.com/xjoker/ssh-mcp/internal/safety"
 )
 
 func init() {

@@ -16,7 +16,7 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/config"
+	"github.com/xjoker/ssh-mcp/internal/config"
 )
 
 // --------------------------------------------------------------------------

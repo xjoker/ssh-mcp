@@ -16,10 +16,10 @@ import (
 	"github.com/BurntSushi/toml"
 	gossh "golang.org/x/crypto/ssh"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/auth"
-	"github.com/xjoker/mcp-ssh-bridge/internal/config"
-	"github.com/xjoker/mcp-ssh-bridge/internal/safety"
-	sshpkg "github.com/xjoker/mcp-ssh-bridge/internal/ssh"
+	"github.com/xjoker/ssh-mcp/internal/auth"
+	"github.com/xjoker/ssh-mcp/internal/config"
+	"github.com/xjoker/ssh-mcp/internal/safety"
+	sshpkg "github.com/xjoker/ssh-mcp/internal/ssh"
 )
 
 // cliServerNameRe is a local copy of config.serverNameRe for use in CLI write
@@ -44,7 +44,7 @@ func init() { registerSubcommand("server", serverCmd) }
 func serverCmd(args []string) int {
 	fs := flag.NewFlagSet("server", flag.ContinueOnError)
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: mcp-ssh-bridge server <subcommand> [options]")
+		fmt.Fprintln(os.Stderr, "Usage: ssh-mcp server <subcommand> [options]")
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "Subcommands:")
 		fmt.Fprintln(os.Stderr, "  add <name>    Add a new server (interactive or via flags)")
@@ -105,7 +105,7 @@ func serverAddCmd(args []string) int {
 	fs.StringVar(&description, "description", "", "server description")
 	fs.StringVar(&pathFlag, "path", "", "config file path")
 	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: mcp-ssh-bridge server add <name> [flags]")
+		fmt.Fprintln(os.Stderr, "Usage: ssh-mcp server add <name> [flags]")
 		fs.PrintDefaults()
 	}
 
@@ -272,7 +272,7 @@ func serverAppendToConfig(cfgPath string, name string, srv config.ServerConfig) 
 				return fmt.Errorf("cannot create config directory: %w", mkErr)
 			}
 		}
-		header := "# mcp-ssh-bridge configuration\n\n[settings]\n"
+		header := "# ssh-mcp configuration\n\n[settings]\n"
 		if writeErr := os.WriteFile(cfgPath, []byte(header), 0600); writeErr != nil {
 			return fmt.Errorf("cannot create config file: %w", writeErr)
 		}

@@ -10,8 +10,8 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/config"
-	"github.com/xjoker/mcp-ssh-bridge/internal/safety"
+	"github.com/xjoker/ssh-mcp/internal/config"
+	"github.com/xjoker/ssh-mcp/internal/safety"
 )
 
 // pooledEntry holds one cached Client along with connection metadata.
@@ -27,6 +27,13 @@ type pooledEntry struct {
 type tempEntry struct {
 	srv       config.ServerConfig
 	expiresAt time.Time
+}
+
+// TempServerInfo is the safe, credential-free snapshot of a runtime
+// temp-server registration.
+type TempServerInfo struct {
+	Server    config.ServerConfig
+	ExpiresAt time.Time
 }
 
 // handshakeTimeout is the maximum time allowed for the SSH handshake phase
@@ -135,6 +142,26 @@ func (p *Pool) LookupTempServer(name string) (config.ServerConfig, bool) {
 		return config.ServerConfig{}, false
 	}
 	return te.srv, true
+}
+
+// ListTempServers returns all live temp-server registrations. Expired entries
+// are omitted; the reaper/lookup paths will evict them separately.
+func (p *Pool) ListTempServers() []TempServerInfo {
+	p.tempMu.RLock()
+	defer p.tempMu.RUnlock()
+
+	out := make([]TempServerInfo, 0, len(p.tempServers))
+	now := time.Now()
+	for _, te := range p.tempServers {
+		if !te.expiresAt.IsZero() && now.After(te.expiresAt) {
+			continue
+		}
+		out = append(out, TempServerInfo{
+			Server:    te.srv,
+			ExpiresAt: te.expiresAt,
+		})
+	}
+	return out
 }
 
 // AddTempServer registers an ad-hoc server configuration under the given name.

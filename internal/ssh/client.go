@@ -12,7 +12,7 @@ import (
 	sftppkg "github.com/pkg/sftp"
 	gossh "golang.org/x/crypto/ssh"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/safety"
+	"github.com/xjoker/ssh-mcp/internal/safety"
 )
 
 // Client wraps a *gossh.Client with metadata and convenience methods.
@@ -248,6 +248,27 @@ func (c *Client) ExecBuffered(ctx context.Context, cmd safety.RemoteCommand, opt
 	}
 	defer sess.Close()
 
+	// Request PTY before wiring pipes so the terminal type is negotiated
+	// before the server allocates the channel data streams.
+	if opts.PTY {
+		cols := opts.PTYCols
+		if cols == 0 {
+			cols = 220
+		}
+		rows := opts.PTYRows
+		if rows == 0 {
+			rows = 50
+		}
+		modes := gossh.TerminalModes{
+			gossh.ECHO:          0,     // no local echo — we read server output directly
+			gossh.TTY_OP_ISPEED: 38400,
+			gossh.TTY_OP_OSPEED: 38400,
+		}
+		if err := sess.RequestPty("xterm-256color", int(rows), int(cols), modes); err != nil {
+			return nil, fmt.Errorf("ssh: ExecBuffered: RequestPty: %w", err)
+		}
+	}
+
 	stdoutPipe, err := sess.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("ssh: ExecBuffered: StdoutPipe: %w", err)
@@ -315,14 +336,13 @@ func (c *Client) ExecBuffered(ctx context.Context, cmd safety.RemoteCommand, opt
 	case waitErr = <-waitDone:
 		// normal completion
 	case <-ctx.Done():
-		// Context cancelled: send SIGTERM, wait briefly, then SIGKILL.
+		// Context cancelled: close the SSH channel promptly so callers get a
+		// TIMEOUT response without waiting for the remote command to finish.
 		_ = sess.Signal(gossh.SIGTERM)
+		_ = sess.Close()
 		select {
 		case <-waitDone:
-		case <-time.After(2 * time.Second):
-			_ = sess.Signal(gossh.SIGKILL)
-			_ = sess.Close()
-			<-waitDone
+		default:
 		}
 		waitErr = ctx.Err()
 	}
@@ -475,12 +495,10 @@ func (c *Client) ExecStreaming(ctx context.Context, cmd safety.RemoteCommand, op
 	case waitErr = <-waitDone:
 	case <-ctx.Done():
 		_ = sess.Signal(gossh.SIGTERM)
+		_ = sess.Close()
 		select {
 		case <-waitDone:
-		case <-time.After(2 * time.Second):
-			_ = sess.Signal(gossh.SIGKILL)
-			_ = sess.Close()
-			<-waitDone
+		default:
 		}
 		waitErr = ctx.Err()
 	}

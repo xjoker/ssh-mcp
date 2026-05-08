@@ -1,4 +1,4 @@
-# mcp-ssh-bridge — Software Design Document
+# ssh-mcp — Software Design Document
 
 **Version:** 1.0 (MVP design lock)
 **Status:** Approved for implementation
@@ -36,7 +36,7 @@
 
 ### 1.1 Goals
 
-`mcp-ssh-bridge` is a Model Context Protocol (MCP) server that exposes SSH and
+`ssh-mcp` is a Model Context Protocol (MCP) server that exposes SSH and
 SFTP capabilities to LLM clients (Claude Desktop, Claude Code, OpenAI Codex,
 Cursor, etc.) through a small, security-first tool surface.
 
@@ -132,7 +132,7 @@ project. Every other section depends on it.
 └──────────────┬─────────────────┘  the conversation
                │ stdio JSON-RPC
 ┌──────────────▼─────────────────┐
-│   mcp-ssh-bridge process       │  TRUSTED — is the policy enforcer
+│   ssh-mcp process       │  TRUSTED — is the policy enforcer
 │   (THIS PROJECT)               │
 └──────────────┬─────────────────┘
                │ SSH/SFTP
@@ -200,13 +200,13 @@ But the bridge must not weaken those.
 
 ### 4.1 Process Model
 
-`mcp-ssh-bridge` is a single Go binary running as a child process of the LLM
+`ssh-mcp` is a single Go binary running as a child process of the LLM
 client (Claude Desktop, Claude Code, etc.) over stdio.
 
 ```
                      stdio (JSON-RPC 2.0)
    ┌─────────────┐ ◄──────────────────────► ┌─────────────────────┐
-   │ LLM client  │                          │ mcp-ssh-bridge      │
+   │ LLM client  │                          │ ssh-mcp      │
    └─────────────┘                          │  ┌──────────────┐   │
                                             │  │ MCP layer    │   │
                                             │  │ (go-sdk)     │   │
@@ -236,7 +236,7 @@ A second invocation mode exists for CLI subcommands (`trust`, `auth set`,
 
 ```
                    ┌──────────────────────────────┐
-   entry           │ cmd/mcp-ssh-bridge           │
+   entry           │ cmd/ssh-mcp           │
                    │  main.go (MCP) │ cli.go (CLI)│
                    └───────────┬──────────────────┘
                                │
@@ -412,9 +412,9 @@ type Config struct {
 func Load(path string) (*Config, error)
 
 // DefaultPath returns the OS-appropriate config path:
-//   macOS:   $XDG_CONFIG_HOME/mcp-ssh-bridge/config.toml or ~/.config/...
-//   Linux:   $XDG_CONFIG_HOME/mcp-ssh-bridge/config.toml or ~/.config/...
-//   Windows: %APPDATA%\mcp-ssh-bridge\config.toml
+//   macOS:   $XDG_CONFIG_HOME/ssh-mcp/config.toml or ~/.config/...
+//   Linux:   $XDG_CONFIG_HOME/ssh-mcp/config.toml or ~/.config/...
+//   Windows: %APPDATA%\ssh-mcp\config.toml
 func DefaultPath() string
 
 // PrintPlaintextWarning emits the stderr warning when plaintext passwords
@@ -458,7 +458,7 @@ func (s *Secret) Close()           // overwrites with zeros and releases
 //   - ErrPlaintextDisabled (when opt-in is false)
 func Resolve(ctx context.Context, ref config.CredRef, allowPlaintext bool) (*Secret, error)
 
-// SetKeychain stores a secret. Used by 'mcp-ssh-bridge auth set'.
+// SetKeychain stores a secret. Used by 'ssh-mcp auth set'.
 func SetKeychain(service, account string, secret []byte) error
 func DeleteKeychain(service, account string) error
 func ListKeychain(service string) ([]string, error)
@@ -852,7 +852,7 @@ type Filter struct {
 }
 ```
 
-**File layout:** `~/.local/state/mcp-ssh-bridge/audit-2026-05-03.jsonl`,
+**File layout:** `~/.local/state/ssh-mcp/audit-2026-05-03.jsonl`,
 mode `0600`, parent dir `0700`. One file per UTC date. On startup, files
 older than `retention_days` are deleted (synchronous, before MCP ready).
 
@@ -967,8 +967,8 @@ size), `error_code`.
 5. Truncate when total output exceeds `output_max_bytes`. Set `truncated:
    true` and append `...[truncated; N bytes total]` to the returned
    stdout/stderr.
-6. Cancel via `ctx.Done()` on timeout: send SSH signal `TERM` to the remote
-   process, wait 2s, then send `KILL`, then close the channel.
+6. Cancel via `ctx.Done()` on timeout: send SSH signal `TERM`, close the SSH
+   channel promptly, and return `TIMEOUT`.
 7. Inline mode: connection is created via `Pool.GetAdHoc()`, used, then
    closed in defer. The `Secret` for inline.password is closed immediately
    after `*ssh.Client` connect.
@@ -1017,7 +1017,7 @@ completion using a sentinel-based protocol (not regex prompt detection).
 }
 ```
 
-**Output:** `{ "stdout", "stderr", "exit_code", "duration_ms" }`
+**Output:** `{ "stdout", "stderr", "exit_code", "duration_ms", "truncated" }`
 
 **Errors:** `SESSION_DEAD`, `TIMEOUT`, `INVALID_ARGUMENT`.
 
@@ -1126,7 +1126,7 @@ filesystem. Sub-action routed via `action` field.
     "mode":    { "type": "string", "description": "(write/chmod/mkdir) Octal string e.g. '0644'" },
     "recursive": { "type": "boolean", "default": false, "description": "(mkdir/remove)" },
     "to":      { "type": "string", "description": "(rename/symlink) Destination path" },
-    "dry_run": { "type": "boolean", "default": false, "description": "(remove only) Report what would be removed without removing" }
+    "dry_run": { "type": "boolean", "default": false, "description": "Report intended action without mutating remote state" }
   },
   "required": ["action", "path"]
 }
@@ -1136,20 +1136,20 @@ filesystem. Sub-action routed via `action` field.
 
 | Action | Output |
 |---|---|
-| `write` | `{ "bytes_written": N, "path": "..." }` |
-| `mkdir` | `{ "created": true }` |
+| `write` | `{ "bytes_written": N, "path": "..." }`; dry-run returns `{ "bytes_written": 0, "bytes_would_write": N, "dry_run": true }` |
+| `mkdir` | `{ "created": true }`; dry-run returns `{ "created": false, "dry_run": true }` |
 | `remove` | `{ "removed": [paths...], "dry_run": false }` |
-| `rename` | `{ "from": "...", "to": "..." }` |
-| `chmod` | `{ "mode": "0644" }` |
-| `symlink` | `{ "target": "...", "link": "..." }` |
+| `rename` | `{ "from": "...", "to": "..." }`; supports dry-run |
+| `chmod` | `{ "mode": "0644" }`; supports dry-run |
+| `symlink` | `{ "target": "...", "link": "..." }`; supports dry-run |
 | `realpath` | `{ "resolved": "/abs/path" }` |
 
 **Safety:**
-- For `remove`, `dry_run: true` is the **default behavior printed in
-  examples**, but the schema default is `false` to match the action
-  semantics. The tool's description string explicitly suggests using
-  `dry_run: true` first. (We can't override schema defaults to
-  `dry_run: true` without breaking workflows.)
+- `dry_run: true` is honored by every mutating sub-action. For `write`,
+  `mkdir`, `rename`, `chmod`, and `symlink`, the tool returns the planned
+  operation without opening or mutating the remote SFTP target. For `remove`,
+  the tool may still enumerate the target tree to report the paths that would
+  be removed, but does not delete anything.
 - For `write` with `atomic: true`, we write to `<dir>/.<basename>.msb-tmp`
   then `Rename`. If `Rename` fails, the temp file is removed.
 - For `chmod`, mode strings are parsed as octal. Reject if the resulting
@@ -1237,7 +1237,8 @@ expose to the LAN the operator must explicitly pass `local_bind:
 
 ### 6.11 `list_servers`
 
-**Description:** Return all configured servers (without secrets).
+**Description:** Return all configured servers and live temporary servers
+(without secrets).
 
 **Input:**
 ```json
@@ -1262,7 +1263,18 @@ expose to the LAN the operator must explicitly pass `local_bind:
       "default_dir": "/var/www",
       "description": "Production web server",
       "tags": ["prod", "web"],
-      "proxy_jump": "bastion"
+      "proxy_jump": "bastion",
+      "source": "config"
+    },
+    {
+      "name": "qs-prod-test-1",
+      "host": "1.2.3.4",
+      "port": 22,
+      "user": "root",
+      "auth": "quick_setup",
+      "source": "quick_setup",
+      "ephemeral": true,
+      "expires_at": "2026-05-03T15:30:00Z"
     }
   ]
 }
@@ -1270,6 +1282,8 @@ expose to the LAN the operator must explicitly pass `local_bind:
 
 Credential fields are never included in output. The `auth` field reports
 the method (agent / key / password) but not the secret.
+When filtering by `tag`, only configured servers are returned because
+temporary registrations do not carry tags.
 
 ### 6.12 `audit_query`
 
@@ -1314,8 +1328,9 @@ mirror for indexed queries.
 
 **Description:** Register an ad-hoc server for the duration of this MCP
 session, prompting the user to confirm via the client's elicitation UI.
-After confirmation, subsequent `ssh_exec` and other tools can reference
-this server by name without re-passing credentials.
+After confirmation, subsequent `ssh_exec`, `ssh_group_exec`, `session_start`,
+`sftp_*`, and `tunnel` tools can reference this server by name without
+re-passing credentials.
 
 **Input:**
 ```json
@@ -1367,10 +1382,16 @@ this server by name without re-passing credentials.
 3. Wait for user response. If declined or timed out (60s), return
    `USER_DECLINED`.
 4. Sanitize `name_hint` (default `qs-<host>-<n>`) and store in an
-   in-memory registry with TTL.
+   in-memory registry with TTL. The returned name remains addressable until
+   TTL expiry, explicit registry removal, or MCP server shutdown.
 5. Credentials are stored in a `*Secret` with the same lifetime as the
    registry entry. On expiry, `Secret.Close()` is called and the entry
    is removed.
+
+`session_start.inline` follows the same promotion model: inline credentials
+are converted into an in-memory temporary server, and `session_close` closes
+only the shell session. It does not delete the temporary server; callers can
+reuse the returned server name until the normal temp-server lifetime ends.
 
 **Audit:** logs `tool: "ssh_quick_setup"`, host, user, `auth_mode:
 "quick_setup"`, but **not** the password or key body.
@@ -1389,9 +1410,9 @@ TOML format. Default path:
 
 | OS | Path |
 |---|---|
-| macOS | `~/.config/mcp-ssh-bridge/config.toml` |
-| Linux | `$XDG_CONFIG_HOME/mcp-ssh-bridge/config.toml` (default `~/.config/...`) |
-| Windows | `%APPDATA%\mcp-ssh-bridge\config.toml` |
+| macOS | `~/.config/ssh-mcp/config.toml` |
+| Linux | `$XDG_CONFIG_HOME/ssh-mcp/config.toml` (default `~/.config/...`) |
+| Windows | `%APPDATA%\ssh-mcp\config.toml` |
 
 Override via `MCP_SSH_BRIDGE_CONFIG=/path/to/config.toml` env var or
 `--config` CLI flag.
@@ -1451,7 +1472,7 @@ host           = "10.0.1.10"
 user           = "postgres"
 auth           = "key"
 key_path       = "~/.ssh/id_db"
-key_passphrase = "keychain:mcp-ssh-bridge:prod-db"
+key_passphrase = "keychain:ssh-mcp:prod-db"
 
 [servers.prod-cache]
 host     = "10.0.1.20"
@@ -1504,7 +1525,7 @@ A `CredRef` is a string with one of these prefixes:
 
 | Form | Resolution |
 |---|---|
-| `keychain:<service>:<account>` | OS keychain query. The `<service>` should be `mcp-ssh-bridge` for secrets managed by our CLI; arbitrary values permitted to allow sharing with other tools. |
+| `keychain:<service>:<account>` | OS keychain query. The `<service>` should be `ssh-mcp` for secrets managed by our CLI; arbitrary values permitted to allow sharing with other tools. |
 | `env:<NAME>` | `os.Getenv(NAME)`. Empty value at resolve time → `ErrEmptyEnv`. |
 | `plaintext:<value>` | Inline plaintext (rejected without opt-in). |
 | `<bareword>` | Implicit `plaintext:`; same opt-in rule. |
@@ -1514,14 +1535,14 @@ A `CredRef` is a string with one of these prefixes:
 **First-time setup (recommended):**
 ```bash
 # 1. Install
-$ go install github.com/<owner>/mcp-ssh-bridge/cmd/mcp-ssh-bridge@latest
+$ go install github.com/<owner>/ssh-mcp/cmd/ssh-mcp@latest
 
 # 2. Init config
-$ mcp-ssh-bridge config init
-Wrote config to ~/.config/mcp-ssh-bridge/config.toml
+$ ssh-mcp config init
+Wrote config to ~/.config/ssh-mcp/config.toml
 
 # 3. Add a server (interactive)
-$ mcp-ssh-bridge server add prod-web
+$ ssh-mcp server add prod-web
 Host: prod-web.example.com
 User: deploy
 Auth method [agent/key/password]: agent
@@ -1533,47 +1554,47 @@ Trust the host's SSH key? (y/n): y
 Added to ~/.ssh/known_hosts.
 
 # 4. Test
-$ mcp-ssh-bridge server test prod-web
+$ ssh-mcp server test prod-web
 ✓ Connected
 ✓ Auth: ssh-agent (key SHA256:xyz...)
 ✓ Host key verified
 
 # 5. Wire to Claude Desktop
-$ mcp-ssh-bridge install claude-desktop
+$ ssh-mcp install claude-desktop
 Wrote MCP server entry to ~/Library/Application Support/Claude/claude_desktop_config.json
 Restart Claude Desktop to apply.
 ```
 
 **Adding a server with passphrase via keychain:**
 ```bash
-$ mcp-ssh-bridge auth set prod-db
+$ ssh-mcp auth set prod-db
 Enter secret: ****
-Stored as keychain:mcp-ssh-bridge:prod-db
+Stored as keychain:ssh-mcp:prod-db
 
-$ mcp-ssh-bridge server add prod-db
+$ ssh-mcp server add prod-db
 Host: 10.0.1.10
 User: postgres
 Auth method: key
 Key path: ~/.ssh/id_db
-Key passphrase reference [keychain:mcp-ssh-bridge:prod-db]:  # default suggested
+Key passphrase reference [keychain:ssh-mcp:prod-db]:  # default suggested
 [...]
 ```
 
 **Migrating from a legacy `.env` setup:**
 ```bash
-$ mcp-ssh-bridge migrate-from-legacy ~/.config/legacy-ssh-tool/.env
+$ ssh-mcp migrate-from-legacy ~/.config/legacy-ssh-tool/.env
 Found 5 servers, 3 with plaintext passwords.
 
 Migration plan:
   prod-web  : key auth, no migration needed
-  prod-db   : plaintext password → keychain:mcp-ssh-bridge:prod-db
-  staging   : plaintext password → keychain:mcp-ssh-bridge:staging
+  prod-db   : plaintext password → keychain:ssh-mcp:prod-db
+  staging   : plaintext password → keychain:ssh-mcp:staging
   test-vm   : plaintext password → KEEP (will require allow_config_plaintext_password=true)
   bastion   : agent auth, no migration needed
 
 Proceed? (y/n): y
 ✓ Stored 2 secrets in keychain
-✓ Wrote ~/.config/mcp-ssh-bridge/config.toml
+✓ Wrote ~/.config/ssh-mcp/config.toml
 ℹ test-vm uses plaintext; set allow_config_plaintext_password=true to enable, or run 'auth set test-vm' to migrate.
 ```
 
@@ -1696,13 +1717,13 @@ Inline credentials passed in `ssh_exec.inline.password` etc.:
 ### 9.1 File Layout
 
 ```
-~/.local/state/mcp-ssh-bridge/
+~/.local/state/ssh-mcp/
 ├── audit-2026-05-01.jsonl     mode 0600
 ├── audit-2026-05-02.jsonl     mode 0600
 └── audit-2026-05-03.jsonl     mode 0600  (current)
 ```
 
-Parent directory mode `0700`. On Windows: `%LOCALAPPDATA%\mcp-ssh-bridge\state\`.
+Parent directory mode `0700`. On Windows: `%LOCALAPPDATA%\ssh-mcp\state\`.
 
 ### 9.2 Entry Schema (JSONL)
 
@@ -1808,10 +1829,10 @@ date, rotate.
      c. For each line:
           i.   json.Unmarshal into Entry.
           ii.  Apply filter predicates (server, tool, exit_code, errors_only).
-          iii. If matches, append to results.
-          iv.  If len(results) >= filter.Limit, break.
-     d. If broke out, set truncated=true.
-3. Return results, sort by timestamp descending.
+          iii. If matches, append to file results.
+     d. Append the file results to global results.
+     e. Stop before older dates once global results already cover filter.Limit.
+3. Sort global results by timestamp descending and apply filter.Limit.
 ```
 
 Performance is acceptable for MVP volumes. v0.2 adds SQLite with
@@ -1853,14 +1874,14 @@ The complete set of `Response.error.code` values:
   the remote stderr when relevant.
 - `hint` is optional; populated for codes where actionable guidance
   helps the LLM:
-  - `HOST_KEY_UNKNOWN` → "Run `mcp-ssh-bridge trust <server>` from a
+  - `HOST_KEY_UNKNOWN` → "Run `ssh-mcp trust <server>` from a
     terminal, or set `accept_new_host: true` in the inline params."
   - `INLINE_CREDS_DISABLED` → "The operator has disabled inline
     credentials. Use a configured server or have the operator enable
     `allow_inline_credentials`."
   - `PLAINTEXT_PASSWORD_DISABLED` → "The server is configured with a
     plaintext password but `allow_config_plaintext_password` is false.
-    Migrate to keychain via `mcp-ssh-bridge auth set <server>`."
+    Migrate to keychain via `ssh-mcp auth set <server>`."
 - `retriable` reflects whether *the same call with the same args* might
   succeed if retried. `TIMEOUT` is true; `INVALID_ARGUMENT` is false.
 
@@ -1888,36 +1909,36 @@ configuration. CLI is invoked when `argv[1]` matches a known subcommand;
 otherwise stdio MCP server starts.
 
 ```
-mcp-ssh-bridge                          Run as MCP server (stdio)
-mcp-ssh-bridge --config <path>          Same with custom config
-mcp-ssh-bridge config init              Write default config.toml
-mcp-ssh-bridge config validate          Validate current config, print errors
+ssh-mcp                          Run as MCP server (stdio)
+ssh-mcp --config <path>          Same with custom config
+ssh-mcp config init              Write default config.toml
+ssh-mcp config validate          Validate current config, print errors
 
-mcp-ssh-bridge server add <name>        Interactive add
-mcp-ssh-bridge server list              List configured servers
-mcp-ssh-bridge server remove <name>     Remove from config
-mcp-ssh-bridge server test <name>       Connect, exec `echo ok`, report
-mcp-ssh-bridge server show <name>       Print server config (no secrets)
+ssh-mcp server add <name>        Interactive add
+ssh-mcp server list              List configured servers
+ssh-mcp server remove <name>     Remove from config
+ssh-mcp server test <name>       Connect, exec `echo ok`, report
+ssh-mcp server show <name>       Print server config (no secrets)
 
-mcp-ssh-bridge trust <name>             Fetch and store host key in known_hosts
-mcp-ssh-bridge trust --host <h> --port <p>  Same, ad-hoc
+ssh-mcp trust <name>             Fetch and store host key in known_hosts
+ssh-mcp trust --host <h> --port <p>  Same, ad-hoc
 
-mcp-ssh-bridge auth set <name>          Prompt for secret, store in keychain
-mcp-ssh-bridge auth get <name>          Print metadata about stored secret (not the value)
-mcp-ssh-bridge auth remove <name>       Delete from keychain
-mcp-ssh-bridge auth list                List keychain entries for service mcp-ssh-bridge
+ssh-mcp auth set <name>          Prompt for secret, store in keychain
+ssh-mcp auth get <name>          Print metadata about stored secret (not the value)
+ssh-mcp auth remove <name>       Delete from keychain
+ssh-mcp auth list                List keychain entries for service ssh-mcp
 
-mcp-ssh-bridge migrate-from-legacy <env-file>     Import a legacy SSH-tool .env
-mcp-ssh-bridge migrate-passwords        Walk config, move plaintext to keychain
+ssh-mcp migrate-from-legacy <env-file>     Import a legacy SSH-tool .env
+ssh-mcp migrate-passwords        Walk config, move plaintext to keychain
 
-mcp-ssh-bridge install claude-desktop   Write MCP entry to Claude Desktop config
-mcp-ssh-bridge install claude-code      Write MCP entry for Claude Code
-mcp-ssh-bridge install codex            Write MCP entry for Codex (TOML)
+ssh-mcp install claude-desktop   Write MCP entry to Claude Desktop config
+ssh-mcp install claude-code      Write MCP entry for Claude Code
+ssh-mcp install codex            Write MCP entry for Codex (TOML)
 
-mcp-ssh-bridge audit query [--server X] [--tool Y] [--since 1h]
+ssh-mcp audit query [--server X] [--tool Y] [--since 1h]
                                         Query audit log from CLI
 
-mcp-ssh-bridge version                  Print version + Go version + commit
+ssh-mcp version                  Print version + Go version + commit
 ```
 
 CLI subcommands use `os.Stdin` / `os.Stdout` directly (not stdio JSON-RPC).
@@ -2051,13 +2072,13 @@ These constraints **cannot be removed without a major-version bump**.
 ### 14.1 Repository Structure
 
 ```
-mcp-ssh-bridge/
+ssh-mcp/
 ├── .github/
 │   └── workflows/
 │       ├── ci.yml                # tests, lint, security checks
 │       └── release.yml           # goreleaser binaries
 ├── cmd/
-│   └── mcp-ssh-bridge/
+│   └── ssh-mcp/
 │       ├── main.go               # entrypoint, dispatch CLI vs MCP
 │       ├── cli.go                # CLI subcommand routing
 │       ├── cli_server.go         # `server add/list/remove/test/show`
@@ -2141,7 +2162,7 @@ Violations break CI. This avoids the original project's 4,700-line
 
 ```bash
 # Development
-go build -o bin/mcp-ssh-bridge ./cmd/mcp-ssh-bridge
+go build -o bin/ssh-mcp ./cmd/ssh-mcp
 
 # Release (multi-platform)
 # Done by goreleaser; produces tarballs for:
@@ -2155,7 +2176,7 @@ Build flags:
 ```bash
 go build -trimpath \
          -ldflags "-s -w -X main.version=$VERSION -X main.commit=$COMMIT" \
-         -o mcp-ssh-bridge ./cmd/mcp-ssh-bridge
+         -o ssh-mcp ./cmd/ssh-mcp
 ```
 
 `-trimpath` removes local file paths from the binary (important since
@@ -2278,9 +2299,9 @@ against the Go vuln database.
 |---|---|
 | `go install` | source build from tag |
 | GitHub Releases | pre-built binaries, signed with cosign |
-| Homebrew tap | `brew install <tap>/mcp-ssh-bridge` |
+| Homebrew tap | `brew install <tap>/ssh-mcp` |
 | (later) AUR | community-maintained |
-| (later) `npm install -g mcp-ssh-bridge` | wrapper that downloads correct binary |
+| (later) `npm install -g ssh-mcp` | wrapper that downloads correct binary |
 
 We do **not** publish to npm as a primary channel because that's the
 distribution model of the project we're improving on.
@@ -2300,7 +2321,7 @@ distribution model of the project we're improving on.
 `go.mod` (target versions, frozen at MVP start):
 
 ```
-module github.com/<owner>/mcp-ssh-bridge
+module github.com/<owner>/ssh-mcp
 
 go 1.22
 
@@ -2342,7 +2363,7 @@ any plaintext passwords into the OS keychain.
 ### B.1 Inventory
 
 ```bash
-$ mcp-ssh-bridge migrate-from-legacy ~/path/to/legacy.env --dry-run
+$ ssh-mcp migrate-from-legacy ~/path/to/legacy.env --dry-run
 ```
 
 This prints a report:
@@ -2365,7 +2386,7 @@ Things to be aware of after migration:
 
 2. **First connection requires `trust`.** The pattern
    `ssh-keyscan host >> known_hosts` no longer happens silently.
-   Run `mcp-ssh-bridge trust <name>` when adding a server.
+   Run `ssh-mcp trust <name>` when adding a server.
 
 3. **Sudo:** configure `NOPASSWD` for the relevant commands on the
    remote system, or use a `session_*` flow where you can interactively
@@ -2382,4 +2403,3 @@ Things to be aware of after migration:
 This document is the source of truth for the v1.0 MVP. Any deviation
 during implementation must be reflected back here via a PR that updates
 the SDD before the implementation lands.
-

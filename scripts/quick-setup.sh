@@ -3,7 +3,7 @@
 # a working MCP entry in three or four prompts.
 #
 # It is non-destructive: every step asks before writing, and ssh_quick_setup
-# entries are routed through `mcp-ssh-bridge config add-server` so the
+# entries are routed through `ssh-mcp config add-server` so the
 # resulting file passes config validation before anything is renamed into place.
 #
 # Usage:
@@ -11,10 +11,10 @@
 
 set -euo pipefail
 
-BIN="${MCP_SSH_BRIDGE_BIN:-mcp-ssh-bridge}"
+BIN="${MCP_SSH_BRIDGE_BIN:-ssh-mcp}"
 command -v "$BIN" >/dev/null 2>&1 || {
-  if [ -x "./bin/mcp-ssh-bridge" ]; then
-    BIN="$(pwd)/bin/mcp-ssh-bridge"
+  if [ -x "./bin/ssh-mcp" ]; then
+    BIN="$(pwd)/bin/ssh-mcp"
   else
     echo "quick-setup: '$BIN' not on PATH. Run scripts/install.sh first." >&2
     exit 1
@@ -35,7 +35,7 @@ ask() {
   printf -v "$var" '%s' "$input"
 }
 
-echo "━━ mcp-ssh-bridge quick-setup ━━"
+echo "━━ ssh-mcp quick-setup ━━"
 echo
 
 # 1. Init config if missing.
@@ -89,22 +89,38 @@ echo "→ writing entry"
 echo
 ask "Trust the host key now? (y/N)" "n" TRUST
 if [ "$TRUST" = "y" ] || [ "$TRUST" = "Y" ]; then
-  "$BIN" trust "$NAME" || echo "  (trust failed — you can retry later with 'mcp-ssh-bridge trust $NAME')"
+  "$BIN" trust "$NAME" || echo "  (trust failed — you can retry later with 'ssh-mcp trust $NAME')"
 fi
 
-# 4. Pick MCP client to install for.
+# 4. Register with an MCP client (use the client's own CLI when available).
 echo
 echo "Which MCP client?"
-echo "  1) claude-desktop"
-echo "  2) claude-code"
-echo "  3) codex"
+echo "  1) claude-code (uses 'claude mcp add')"
+echo "  2) codex       (uses 'codex mcp add')"
+echo "  3) claude-desktop (paste JSON snippet)"
 echo "  4) skip"
 ask "Choose" "1" CHOICE
 case "$CHOICE" in
-  1) "$BIN" install claude-desktop ;;
-  2) "$BIN" install claude-code ;;
-  3) "$BIN" install codex ;;
-  *) echo "  (skipped MCP install — run 'mcp-ssh-bridge install <target>' later)" ;;
+  1)
+    if command -v claude >/dev/null 2>&1; then
+      claude mcp add --transport stdio --scope user ssh-bridge -- "$BIN" \
+        || echo "  (claude mcp add failed — run 'ssh-mcp install claude-code' for the manual command)"
+    else
+      echo "  (claude CLI not on PATH — printing the command instead:)"
+      "$BIN" install claude-code
+    fi
+    ;;
+  2)
+    if command -v codex >/dev/null 2>&1; then
+      codex mcp add ssh-bridge -- "$BIN" \
+        || echo "  (codex mcp add failed — run 'ssh-mcp install codex' for the manual command)"
+    else
+      echo "  (codex CLI not on PATH — printing the command instead:)"
+      "$BIN" install codex
+    fi
+    ;;
+  3) "$BIN" install claude-desktop ;;
+  *) echo "  (skipped — register later with 'claude mcp add ...' or 'codex mcp add ...')" ;;
 esac
 
 echo
@@ -112,7 +128,7 @@ echo "✓ done."
 if [ "$AUTH" = "password" ]; then
   echo
   echo "Reminder: store the password in keychain BEFORE first connection:"
-  echo "  $BIN auth set-keychain mcp-ssh-bridge ssh-password:$NAME"
+  echo "  $BIN auth set-keychain ssh-mcp ssh-password:$NAME"
 fi
 echo
 echo "Validate any time with:"

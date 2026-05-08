@@ -1,117 +1,278 @@
-# mcp-ssh-bridge
+# ssh-mcp
 
-An MCP (Model Context Protocol) server that exposes SSH operations as tools for
-AI assistants — Claude Desktop, Claude Code, Codex.
+SSH operations as MCP tools for AI assistants — run commands, manage files, open tunnels, maintain persistent sessions.
 
-> **Using this with an AI assistant?** After the install steps below,
-> point your assistant at [`docs/AI_GUIDE.md`](docs/AI_GUIDE.md) — it
-> codifies tool-selection heuristics, error-handling expectations, and
-> the no-autoApprove discipline so the model behaves predictably.
+**[中文文档 →](README_zh.md)**
 
-## TL;DR — three commands and you're online
+---
 
-```sh
-# 1. Install (auto-detects sudo / falls back to ~/.local/bin)
-curl -fsSL https://raw.githubusercontent.com/xjoker/mcp-ssh-bridge/main/scripts/install.sh | bash
+## Let Your AI Assistant Install This
 
-# 2. Interactive wizard: config → server → trust → MCP client entry
-bash <(curl -fsSL https://raw.githubusercontent.com/xjoker/mcp-ssh-bridge/main/scripts/quick-setup.sh)
+> Already running Claude Code or Codex? Paste the **Phase 1** prompt to install and register ssh-mcp. After restarting your AI client, use the **Phase 2** prompt to add servers — no more shell commands needed.
 
-# 3. Restart your MCP client. Done.
+### Phase 1 — Install & Register (Claude Code)
+
+```
+Install ssh-mcp on my machine using only shell commands (MCP is not yet available):
+
+1. Call the GitHub releases API to find the latest release tag:
+   GET https://api.github.com/repos/xjoker/ssh-mcp/releases
+   Use releases[0].tag_name as the version.
+
+2. Detect my OS and architecture, then download the matching binary:
+   URL: https://github.com/xjoker/ssh-mcp/releases/download/{tag}/ssh-mcp_{os}_{arch}
+   os values : linux | darwin | windows
+   arch values: amd64 | arm64  (windows supports amd64 only)
+   Append .exe on Windows.
+
+3. Install the binary:
+   macOS/Linux → ~/.local/bin/ssh-mcp  (chmod +x, create dir if needed)
+   Windows     → %LOCALAPPDATA%\Programs\ssh-mcp\ssh-mcp.exe
+
+4. Run: ssh-mcp config init
+
+5. Register with Claude Code:
+   claude mcp add --transport stdio --scope user ssh-bridge -- ~/.local/bin/ssh-mcp
+   (Windows: use the full .exe path from step 3)
+
+6. Confirm with: ssh-mcp version
+
+Then tell me: "Done — please restart Claude Code to activate the MCP server."
 ```
 
-Prefer the manual path? Same flow, four explicit steps:
+> After restarting Claude Code, the `ssh-mcp` MCP tools are available. Use **Phase 2** to add servers.
 
-```sh
-mcp-ssh-bridge config init
-mcp-ssh-bridge config add-server prod --host example.com --user alice --auth agent
-mcp-ssh-bridge trust prod                    # accepts the host key into known_hosts
-mcp-ssh-bridge install claude-desktop        # or claude-code / codex
+### Phase 2 — Add a Server (via MCP tool)
+
+After restart, paste this:
+
+```
+Before we start: add the following to ~/.claude/settings.json so ssh-mcp tools
+run without confirmation prompts on every call:
+
+  { "permissions": { "allow": ["mcp__ssh-bridge__*"] } }
+
+Then use the ssh_quick_setup MCP tool to connect me to my SSH server.
+Ask me for: host, port, username, and auth method (agent / key / password).
 ```
 
-That's a working agent + key auth setup. For password auth swap step 2 for:
+> `ssh_quick_setup` registers an ad-hoc server in memory (TTL up to 4 hours). For servers you use regularly, add them permanently to `config.toml` instead — the AI can then call tools with `server: "<name>"` directly without any confirmation prompt.
+>
+> **Updates:** Call the `self_update` MCP tool — no shell commands needed. Use `check_only: true` to inspect first.
+
+### Codex
+
+Phase 1 — replace step 5 with:
+```
+codex mcp add ssh-bridge -- ~/.local/bin/ssh-mcp
+```
+Phase 2 — same as above.
+
+---
+
+## Manual Install
+
+**macOS / Linux:**
 
 ```sh
-mcp-ssh-bridge config add-server prod --host example.com --user alice --auth password
-mcp-ssh-bridge auth set-keychain mcp-ssh-bridge ssh-password:prod
+curl -fsSL https://raw.githubusercontent.com/xjoker/ssh-mcp/main/scripts/install.sh | bash
 ```
 
-The keychain command prompts for the password without echoing it; nothing
-sensitive ever lands in `config.toml`.
+**Windows (PowerShell):**
 
-## Features
+```powershell
+iwr -useb https://raw.githubusercontent.com/xjoker/ssh-mcp/main/scripts/install.ps1 | iex
+```
 
-- `ssh_exec`, `ssh_group_exec` — run commands on one or many remote servers
-- `sftp_op` — file transfer / directory operations
-- Local & remote port-forward tunnels
-- Persistent shell sessions with sentinel-based completion detection
-- `ssh_quick_setup` — register an ad-hoc server during a chat (TTL-bounded)
-- Append-only JSONL audit log; passwords stored in OS keychain
-  (macOS Keychain, libsecret, Windows Credential Manager)
+No Go, no build tools, no admin rights. The binary is downloaded directly from [GitHub Releases](https://github.com/xjoker/ssh-mcp/releases).
 
-## Install
+| Platform | Default install path |
+|----------|----------------------|
+| macOS / Linux | `~/.local/bin/ssh-mcp` |
+| Windows | `%LOCALAPPDATA%\Programs\ssh-mcp\ssh-mcp.exe` |
 
-### One-liner (recommended)
+Override with `PREFIX=...` (bash) or `$env:PREFIX=...` (PowerShell).
+
+**From source:**
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/xjoker/mcp-ssh-bridge/main/scripts/install.sh | bash
+git clone https://github.com/xjoker/ssh-mcp.git
+cd ssh-mcp
+make build   # binary at bin/ssh-mcp
 ```
 
-The script clones, builds with `go`, installs the binary to `/usr/local/bin`
-(sudo) or `~/.local/bin` (falls back automatically), and prints the next steps.
+---
 
-### `go install`
+## Post-install Setup
 
 ```sh
-go install github.com/xjoker/mcp-ssh-bridge/cmd/mcp-ssh-bridge@latest
+ssh-mcp config init
+ssh-mcp config add-server prod --host example.com --user alice --auth agent
+ssh-mcp trust prod
+
+# Register with your AI client:
+claude mcp add --transport stdio --scope user ssh-bridge -- ~/.local/bin/ssh-mcp
+codex  mcp add ssh-bridge -- ~/.local/bin/ssh-mcp
 ```
 
-### From source
+For password auth:
 
 ```sh
-git clone https://github.com/xjoker/mcp-ssh-bridge.git
-cd mcp-ssh-bridge
-make build       # binary at bin/mcp-ssh-bridge
+ssh-mcp config add-server prod --host example.com --user alice --auth password
+ssh-mcp auth set ssh-password:prod
+# prompts for password; nothing sensitive lands in config.toml
 ```
 
-## CLI cheat sheet
+### Pre-authorise tools (avoid per-call permission prompts)
 
-```sh
-# Configuration
-mcp-ssh-bridge config init                                 # write a starter config.toml
-mcp-ssh-bridge config validate                             # confirm the file parses + validates
-mcp-ssh-bridge config add-server <name> --host H --user U --auth agent
+By default Claude Code asks for confirmation on every MCP tool call. To pre-authorise all ssh-mcp tools, add the following to `~/.claude/settings.json` (user-wide) or `.claude/settings.json` (project-only):
 
-# Trust + auth
-mcp-ssh-bridge trust <name>                                # accept first-seen host key
-mcp-ssh-bridge auth set-keychain mcp-ssh-bridge ssh-password:<name>
-
-# Install MCP client config
-mcp-ssh-bridge install claude-desktop
-mcp-ssh-bridge install claude-code
-mcp-ssh-bridge install codex
-
-# Migration / audit
-mcp-ssh-bridge migrate-from-legacy /path/to/.env
-mcp-ssh-bridge migrate-passwords
-mcp-ssh-bridge audit query --tool ssh_exec --since 24h
+```json
+{
+  "permissions": {
+    "allow": ["mcp__ssh-bridge__*"]
+  }
+}
 ```
 
-`mcp-ssh-bridge config add-server --help` for the full flag list (proxy_jump,
-default_dir, allowed_paths, tags, …).
+Or authorise individual tools for tighter control:
 
-## Config file layout
+```json
+{
+  "permissions": {
+    "allow": [
+      "mcp__ssh-bridge__ssh_exec",
+      "mcp__ssh-bridge__sftp_list",
+      "mcp__ssh-bridge__sftp_read",
+      "mcp__ssh-bridge__list_servers",
+      "mcp__ssh-bridge__ssh_quick_setup",
+      "mcp__ssh-bridge__ssh_persistent_setup",
+      "mcp__ssh-bridge__session_start",
+      "mcp__ssh-bridge__session_send",
+      "mcp__ssh-bridge__session_close",
+      "mcp__ssh-bridge__audit_query",
+      "mcp__ssh-bridge__self_update"
+    ]
+  }
+}
+```
 
-Default location:
+> `permissions.allow` pre-approves specific tools — distinct from `autoApprove` in the MCP config, which bypasses all confirmation globally and is intentionally omitted from ssh-mcp examples.
 
-| OS         | Path                                              |
-|------------|---------------------------------------------------|
-| macOS/Linux | `$XDG_CONFIG_HOME/mcp-ssh-bridge/config.toml` (default `~/.config/...`) |
-| Windows    | `%APPDATA%\mcp-ssh-bridge\config.toml`            |
+#### Why does Claude Code prompt every time I call `ssh_quick_setup`?
+
+The confirmation dialog you see (host-key trust / "register temp server …") comes from **Claude Code's own tool-permission UI**, not from ssh-mcp. The bridge does not issue MCP elicitations of its own — there is no per-call confirmation in the server code. Two consequences:
+
+1. Adding the tool to `permissions.allow` (above) silences the prompt across every call.
+2. If you frequently use the same host, prefer `ssh_persistent_setup` once over `ssh_quick_setup` repeatedly. Permanent entries are addressed by `name` in subsequent `ssh_exec` / `sftp_*` calls and don't go through the setup tool again.
+
+Repeated `ssh_quick_setup` calls for the same `host+port+user` already dedup internally — they reuse the existing in-memory registration and do not allocate a new name — but they still go through Claude Code's per-tool-call permission check.
+
+---
+
+## What ssh-mcp Can Do
+
+### Command Execution
+
+| Tool | Description |
+|------|-------------|
+| `ssh_exec` | Run a command on a single server. Supports PTY mode for TUI programs (htop, btop, ncdu) with ANSI stripping. |
+| `ssh_group_exec` | Run the same command on multiple servers in parallel — select by name list or tag. |
+
+### File Operations (SFTP)
+
+| Tool | Description |
+|------|-------------|
+| `sftp_op` | Upload, download, mkdir, delete, move, copy, symlink, stat, realpath. |
+| `sftp_list` | List a remote directory with metadata. |
+| `sftp_read` | Read a remote file with byte-offset support (tail / seek). |
+| `sftp_stat` | Stat a single remote path. |
+
+### Persistent Shell Sessions
+
+| Tool | Description |
+|------|-------------|
+| `session_start` | Open a persistent shell — **sentinel mode** (waits for command exit) or **PTY mode** (time-based drain for interactive programs). |
+| `session_send` | Send input to an active session and collect output. |
+| `session_close` | Close a session and free its resources. |
+
+Sessions are stateful: run `cd`, set environment variables, activate virtualenvs — the state carries across `session_send` calls.
+
+### Tunnels
+
+| Tool | Description |
+|------|-------------|
+| `tunnel` | Open a local or remote port-forward. Local: `localhost:{port} → server:{remotePort}`. Remote: `server:{port} → localhost:{localPort}`. |
+
+### Server Management
+
+| Tool | Description |
+|------|-------------|
+| `list_servers` | List configured servers with optional tag filter. |
+| `ssh_quick_setup` | Register an ad-hoc server using inline credentials — stored in memory with a TTL (max 4 hours), never written to disk. Repeated calls for the same `host+port+user` reuse the existing registration. |
+| `ssh_persistent_setup` | Append a `[servers.<name>]` block to `config.toml` so the entry survives restart and has no TTL. Plaintext passwords require `settings.allow_config_plaintext_password = true`. |
+
+### Audit
+
+| Tool | Description |
+|------|-------------|
+| `audit_query` | Search the append-only JSONL audit log by server, tool, time range, exit code, or error status. |
+
+### Self-Update
+
+| Tool | Description |
+|------|-------------|
+| `self_update` | Check for a newer release and install it atomically. Use `check_only: true` to inspect availability without downloading. After update, restart the MCP server to apply the new binary. |
+
+---
+
+## Highlights
+
+**Multi-hop SSH chains**
+Route through bastion hosts transparently via `proxy_jump`. Chains of arbitrary depth work — A → B → C requires only `proxy_jump` entries in `config.toml`.
+
+**PTY support**
+Full pseudo-terminal allocation for `ssh_exec` and `session_start`. Run `htop`, `btop`, `ncdu`, `vim` and other TUI programs; use `strip_ansi` to get clean text back.
+
+**OS keychain integration**
+Passwords are stored in macOS Keychain, Linux libsecret, or Windows Credential Manager — never in `config.toml`. `ssh-mcp auth set` handles enrollment.
+
+**Tag-based group operations**
+Tag servers (`tags = ["prod", "eu"]`) and target entire fleets with a single `ssh_group_exec` call.
+
+**TTL-bounded inline credentials**
+`ssh_quick_setup` accepts a password or private key inline for ad-hoc sessions. Credentials live in memory and are zeroed on TTL expiry or shutdown.
+
+**Append-only audit trail**
+Every tool call is pre-recorded in a JSONL audit log before execution. `audit_query` provides structured search; credentials appear only as `{"redacted":true}`.
+
+**Self-update**
+`ssh-mcp update` fetches the latest release binary, verifies its SHA-256, and atomically replaces the running binary. The bridge also surfaces an update notice on startup when a newer version is available.
+
+---
+
+## Security
+
+- **No `autoApprove`** — example client configs intentionally omit it. SSH operations have unbounded remote effects and must stay on the human-confirmation path.
+- **Host key verification** — `HOST_KEY_MISMATCH` is a hard stop; the bridge never auto-accepts changed keys.
+- **`allowed_paths` enforcement** — SFTP paths are canonicalised through SFTP `realpath` before policy is applied, closing symlink TOCTOU.
+- **Plaintext password guard** — rejected unless `allow_config_plaintext_password = true`; keychain is the default.
+- See [`SECURITY.md`](SECURITY.md) for the full threat model and disclosure policy.
+
+---
+
+## Configuration
+
+Default locations (no admin / sudo required):
+
+| OS | Config | Audit log |
+|----|--------|-----------|
+| macOS / Linux | `~/.config/ssh-mcp/config.toml` | `~/.local/state/ssh-mcp/` |
+| Windows | `%APPDATA%\ssh-mcp\config.toml` | `%LOCALAPPDATA%\ssh-mcp\audit\` |
 
 Override with `MCP_SSH_BRIDGE_CONFIG=/path/to/config.toml`.
 
-Minimal example (`examples/config-min.toml`):
+Minimal config:
 
 ```toml
 [servers.prod]
@@ -120,69 +281,66 @@ user = "alice"
 auth = "agent"
 ```
 
-A two-server example with tags and keychain auth lives at
-`examples/config.toml`.
+Jump-host chain:
 
-## Security
+```toml
+[servers.bastion]
+host = "bastion.example.com"
+user = "ops"
+auth = "key"
+key_path = "~/.ssh/id_ed25519"
 
-- **Never add `autoApprove`** for any mcp-ssh-bridge tool — the example
-  client snippets intentionally omit it. SSH operations have unbounded
-  remote effects and must stay on the human-confirmation path.
-- Plaintext passwords in config are rejected unless
-  `allow_config_plaintext_password = true`. Use the keychain instead.
-- Inline credentials passed via `session_start.inline` or `ssh_quick_setup`
-  live only as long as the session/TTL window and are zeroed on exit.
-- `allowed_paths` per server caps SFTP / cwd reach; symlink TOCTOU is closed
-  by canonicalising through SFTP `realpath` before policy enforcement.
+[servers.internal]
+host = "10.0.1.50"
+user = "ops"
+auth = "key"
+key_path = "~/.ssh/id_ed25519"
+proxy_jump = "bastion"
+```
+
+Full example: [`examples/config.toml`](examples/config.toml)
+
+---
+
+## CLI Reference
+
+```sh
+ssh-mcp config init
+ssh-mcp config validate
+ssh-mcp config add-server <name> --host H --user U --auth agent|key|password
+ssh-mcp trust <name>
+ssh-mcp auth set ssh-password:<name>
+ssh-mcp server list
+ssh-mcp server test <name>
+ssh-mcp audit query --tool ssh_exec --since 24h
+ssh-mcp update
+ssh-mcp install claude-code     # print claude mcp add command
+ssh-mcp install codex           # print codex mcp add command
+ssh-mcp install claude-desktop  # print JSON snippet
+```
+
+---
 
 ## Troubleshooting
 
-| Symptom | Likely cause / fix |
-|---------|--------------------|
-| `config: read ...: no such file or directory` on startup | Run `mcp-ssh-bridge config init` first. |
-| `HOST_KEY_UNKNOWN` on first connection | `mcp-ssh-bridge trust <name>` to add the key to `known_hosts`. |
-| `unable to authenticate` for `auth=password` | Run `mcp-ssh-bridge auth set-keychain mcp-ssh-bridge ssh-password:<name>` and confirm with `auth get-keychain`. |
-| `config: validation errors:` on `add-server` | The CLI atomically aborts the write. Read the printed reason and re-issue with corrected flags. |
-| Audit query hangs or returns stale | The CLI now uses the read-only opener (`audit.NewReader`). If you used a build before this change, upgrade. |
-| `SESSION_LIMIT` from `session_start` | Hit the concurrency cap (default 16). Close idle sessions or raise `settings.max_sessions` in config. |
+| Symptom | Fix |
+|---------|-----|
+| `HOST_KEY_UNKNOWN` | `ssh-mcp trust <name>` |
+| `unable to authenticate` (password) | `ssh-mcp auth set ssh-password:<name>` |
+| `SESSION_LIMIT` | Close idle sessions or raise `settings.max_sessions` in config |
+| Bridge not appearing in AI client | Restart the AI client after `mcp add` |
+| `config: no such file` | `ssh-mcp config init` |
 
-When in doubt, `mcp-ssh-bridge config validate` first — it catches almost
-every "why won't it start" question.
-
-## Migrating from a legacy `.env` setup
-
-If you have an older SSH-tooling configuration in a flat `.env` file
-(`SSH_HOST=`, `SSH_USER=`, `SSH_PASSWORD=`, …), import it once:
-
-```sh
-mcp-ssh-bridge migrate-from-legacy /path/to/legacy.env
-mcp-ssh-bridge migrate-passwords     # turn any leftover plaintext into keychain refs
-```
+---
 
 ## Documentation
 
-- **[`docs/AI_GUIDE.md`](docs/AI_GUIDE.md)** — paste this into your AI
-  assistant's context once after connecting the bridge. It teaches the
-  model how to pick the right tool, when to ask for confirmation, how to
-  react to each error code, and what never to do (autoApprove, echoing
-  passwords, etc.).
-- `examples/quick-start.md` — concrete walkthrough from zero to first call
-- `examples/` — config + MCP client snippets
-- `SDD.md` — full system design document
-- `SECURITY.md` — threat model & disclosure policy
+- [`docs/AI_GUIDE.md`](docs/AI_GUIDE.md) — paste into your AI assistant after connecting; teaches tool selection, error handling, and the no-autoApprove discipline
+- [`examples/`](examples/) — config and client snippets
+- [`SECURITY.md`](SECURITY.md) — threat model and disclosure policy
+- [`SDD.md`](SDD.md) — system design document
 
-### Onboarding an AI assistant
-
-After installing the MCP server in your client, give the assistant a
-single setup message like:
-
-> "Read `docs/AI_GUIDE.md` from the mcp-ssh-bridge repo and follow it for
-> the rest of this session. Then run `list_servers` to see what's
-> available."
-
-That single line gets the assistant onto the right rails: tool selection
-heuristics, error handling, no-autoApprove discipline, and the
-keychain-only secret rule.
+---
 
 ## License
 

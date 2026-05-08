@@ -14,10 +14,10 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/audit"
-	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
-	"github.com/xjoker/mcp-ssh-bridge/internal/safety"
-	"github.com/xjoker/mcp-ssh-bridge/internal/tools"
+	"github.com/xjoker/ssh-mcp/internal/audit"
+	"github.com/xjoker/ssh-mcp/internal/envelope"
+	"github.com/xjoker/ssh-mcp/internal/safety"
+	"github.com/xjoker/ssh-mcp/internal/tools"
 )
 
 // destructiveTools lists tool names whose invocations have side effects on
@@ -31,8 +31,9 @@ var destructiveTools = map[string]struct{}{
 	"session_send":    {},
 	"session_start":   {},
 	"session_close":   {},
-	"tunnel":          {},
-	"ssh_quick_setup": {},
+	"tunnel":               {},
+	"ssh_quick_setup":      {},
+	"ssh_persistent_setup": {},
 }
 
 func isDestructive(name string) bool {
@@ -106,7 +107,7 @@ func middlewareChain(
 	resp := envelope.Response{}
 	shouldPostAudit := false
 	rawArgs := req.Params.Arguments
-	argsRedacted := string(safety.RedactSecret(rawArgs))
+	argsRedacted := redactAuditArgs(toolName, rawArgs)
 	serverName := extractServerName(rawArgs)
 	correlationID := newCorrelationID()
 	sessionID := requestSessionID(req, deps.SessionID)
@@ -140,11 +141,9 @@ func middlewareChain(
 		}
 	}()
 
-	// 2. Build per-request Deps: wire progress and elicit adapters from the
-	//    MCP session available in req.Session.
+	// 2. Build per-request Deps: wire progress adapter from the MCP session.
 	reqDeps := *deps // shallow copy so we can add per-request fields
 	reqDeps.Progress = buildProgressFunc(ctx, req)
-	reqDeps.Elicit = buildElicitFunc(req)
 	reqDeps.SessionID = sessionID
 
 	// 3. Pre-record (fail-closed) — destructive tools only.
@@ -231,6 +230,31 @@ func buildAuditEntry(start time.Time, toolName, sessionID, serverName, argsRedac
 	return auditEntry
 }
 
+func redactAuditArgs(toolName string, raw json.RawMessage) string {
+	raw = redactToolSpecificArgs(toolName, raw)
+	return string(safety.RedactSecret(raw))
+}
+
+func redactToolSpecificArgs(toolName string, raw json.RawMessage) json.RawMessage {
+	if toolName != "sftp_op" || len(raw) == 0 {
+		return raw
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return raw
+	}
+	if _, ok := m["content"]; !ok {
+		return raw
+	}
+	m["content"] = json.RawMessage(`"***REDACTED***"`)
+	m["content_redacted"] = json.RawMessage(`true`)
+	out, err := json.Marshal(m)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
 // buildProgressFunc builds a ProgressFunc from the MCP session's NotifyProgress.
 func buildProgressFunc(ctx context.Context, req *mcp.CallToolRequest) tools.ProgressFunc {
 	if req.Session == nil {
@@ -246,32 +270,6 @@ func buildProgressFunc(ctx context.Context, req *mcp.CallToolRequest) tools.Prog
 			ProgressToken: token,
 			Message:       fmt.Sprintf("%v", value),
 		})
-	}
-}
-
-// buildElicitFunc builds an ElicitFunc from the MCP session.
-func buildElicitFunc(req *mcp.CallToolRequest) tools.ElicitFunc {
-	if req.Session == nil {
-		return nil
-	}
-	return func(ctx context.Context, schema json.RawMessage, message string) (json.RawMessage, error) {
-		result, err := req.Session.Elicit(ctx, &mcp.ElicitParams{
-			Message:         message,
-			RequestedSchema: schema,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("elicit: %w", err)
-		}
-		// Check if user declined.
-		if result.Action != "accept" {
-			return json.RawMessage(`{"confirm":false}`), nil
-		}
-		// Marshal the content map back to JSON for the tool handler.
-		raw, err := json.Marshal(result.Content)
-		if err != nil {
-			return nil, fmt.Errorf("elicit: marshal response: %w", err)
-		}
-		return raw, nil
 	}
 }
 

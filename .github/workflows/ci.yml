@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 jobs:
   test:
@@ -33,4 +33,4 @@ jobs:
         run: bash scripts/check-no-insecure.sh
 
       - name: build
-        run: go build -o bin/mcp-ssh-bridge ./cmd/mcp-ssh-bridge
+        run: go build -o bin/ssh-mcp ./cmd/ssh-mcp

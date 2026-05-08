@@ -276,6 +276,9 @@ func TestQuery_Limit(t *testing.T) {
 	if len(results) != 3 {
 		t.Errorf("got %d results, want 3", len(results))
 	}
+	if len(results) == 3 && !results[0].Timestamp.Equal(base.Add(4*time.Millisecond)) {
+		t.Errorf("newest result = %s, want %s", results[0].Timestamp, base.Add(4*time.Millisecond))
+	}
 }
 
 // TestQuery_MalformedJSONLSkipsLine verifies that malformed JSONL lines are

@@ -26,15 +26,26 @@ import (
 // internal/ssh.Client.
 type Transport interface {
 	// OpenShell opens an interactive shell channel on the named server.
-	// It must allocate a PTY and start a shell, then return the three streams
-	// and a close function. The caller owns all returned values and must call
-	// close() when done.
+	// It must start a shell and return the three streams and a close function.
+	// The caller owns all returned values and must call close() when done.
+	// Implementations should avoid allocating a PTY unless they explicitly
+	// want prompts/control sequences and merged stderr.
 	OpenShell(ctx context.Context, server string) (
 		stdin io.WriteCloser,
 		stdout io.Reader,
 		stderr io.Reader,
 		close func() error,
 		err error,
+	)
+
+	// OpenShellPTY opens an interactive shell with a PTY allocated.
+	// stderr is merged into stdout (standard PTY behaviour).
+	// cols and rows set the terminal dimensions (0 defaults to 220×50).
+	OpenShellPTY(ctx context.Context, server string, cols, rows uint32) (
+		stdin  io.WriteCloser,
+		stdout io.Reader,
+		close  func() error,
+		err    error,
 	)
 }
 
@@ -85,9 +96,9 @@ type session struct {
 
 	sentinel string // "msb-sentinel-<hex>"
 
-	stdin    io.WriteCloser
-	stdout   *bufio.Reader
-	stderr   *bufio.Reader
+	stdin      io.WriteCloser
+	stdout     *bufio.Reader
+	stderr     *bufio.Reader
 	closeShell func() error
 
 	// stderrBuf accumulates stderr lines read by the background stderr pump.
@@ -97,6 +108,11 @@ type session struct {
 	stderrBuf   strings.Builder
 	stderrBytes int64
 	stderrDone  chan struct{}
+
+	// PTY mode — only set when opened via StartPTY.
+	isPTY     bool
+	ptyStop   chan struct{} // closed by Close() to signal ptyReadLoop exit
+	ptyChunks chan []byte  // raw output chunks from ptyReadLoop; closed on loop exit
 }
 
 // appendStderr is called by the background stderr goroutine for each
@@ -120,6 +136,34 @@ func (s *session) consumeStderr() string {
 	s.stderrBuf.Reset()
 	s.stderrBytes = 0
 	return v
+}
+
+// ptyReadLoop reads raw bytes from the PTY stdout and forwards chunks to
+// ptyChunks. Runs as a background goroutine; exits when ptyStop is closed
+// or the underlying reader returns an error.
+func (s *session) ptyReadLoop() {
+	defer close(s.ptyChunks)
+	buf := make([]byte, 4096)
+	for {
+		select {
+		case <-s.ptyStop:
+			return
+		default:
+		}
+		n, err := s.stdout.Read(buf)
+		if n > 0 {
+			chunk := make([]byte, n)
+			copy(chunk, buf[:n])
+			select {
+			case s.ptyChunks <- chunk:
+			case <-s.ptyStop:
+				return
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
 }
 
 // --------------------------------------------------------------------------
@@ -422,6 +466,14 @@ func (m *Manager) Close(id string) error {
 	}
 	s.state = stateClosed
 
+	if s.isPTY && s.ptyStop != nil {
+		select {
+		case <-s.ptyStop:
+		default:
+			close(s.ptyStop)
+		}
+	}
+
 	if s.closeShell != nil {
 		_ = s.closeShell()
 	}
@@ -471,6 +523,158 @@ func (m *Manager) CloseAll() {
 	for _, id := range ids {
 		_ = m.Close(id)
 	}
+}
+
+// --------------------------------------------------------------------------
+// PTY session methods
+// --------------------------------------------------------------------------
+
+// drainPTY collects raw PTY output for the given duration and returns a
+// SendResult with everything accumulated in Stdout. Output is capped at
+// sessionOutputMaxBytes to match sentinel-session behaviour (S-DoS defence).
+func (m *Manager) drainPTY(ctx context.Context, s *session, timeout time.Duration) *SendResult {
+	var buf strings.Builder
+	var truncated bool
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		select {
+		case chunk, ok := <-s.ptyChunks:
+			if !ok {
+				return &SendResult{Stdout: buf.String(), Truncated: truncated}
+			}
+			if int64(buf.Len())+int64(len(chunk)) > sessionOutputMaxBytes {
+				truncated = true
+				// Drain remaining chunks without buffering to keep ptyReadLoop moving.
+				continue
+			}
+			buf.Write(chunk)
+		case <-timer.C:
+			return &SendResult{Stdout: buf.String(), Truncated: truncated}
+		case <-ctx.Done():
+			return &SendResult{Stdout: buf.String(), Truncated: truncated}
+		}
+	}
+}
+
+// StartPTY opens a new PTY session on server and optionally runs an initial
+// command. initWaitMs controls how long to wait for initial shell/command
+// output (defaults to 500 ms when ≤ 0). Returns the session ID and initial output.
+func (m *Manager) StartPTY(ctx context.Context, server string, cols, rows uint32, command string, initWaitMs int) (string, *SendResult, error) {
+	if m.maxSessions > 0 {
+		m.mu.RLock()
+		live := len(m.sessions)
+		m.mu.RUnlock()
+		if live >= m.maxSessions {
+			return "", nil, fmt.Errorf("session: StartPTY: SESSION_LIMIT: %d concurrent sessions reached", m.maxSessions)
+		}
+	}
+
+	stdin, stdoutRaw, closeShell, err := m.transport.OpenShellPTY(ctx, server, cols, rows)
+	if err != nil {
+		return "", nil, fmt.Errorf("session: StartPTY: OpenShellPTY: %w", err)
+	}
+
+	id := newUUID()
+	now := time.Now()
+	ptyStop := make(chan struct{})
+	stderrDone := make(chan struct{})
+	close(stderrDone) // no stderr pump for PTY sessions
+
+	s := &session{
+		id:           id,
+		server:       server,
+		startedAt:    now,
+		lastActivity: now,
+		state:        stateReady,
+		stdin:        stdin,
+		stdout:       bufio.NewReader(stdoutRaw),
+		closeShell:   closeShell,
+		stderrDone:   stderrDone,
+		isPTY:        true,
+		ptyStop:      ptyStop,
+		ptyChunks:    make(chan []byte, 256),
+	}
+
+	go s.ptyReadLoop()
+
+	if command != "" {
+		if _, werr := fmt.Fprintf(stdin, "%s\n", command); werr != nil {
+			close(ptyStop)
+			_ = closeShell()
+			return "", nil, fmt.Errorf("session: StartPTY: write command: %w", werr)
+		}
+	}
+
+	m.mu.Lock()
+	if m.maxSessions > 0 && len(m.sessions) >= m.maxSessions {
+		m.mu.Unlock()
+		close(ptyStop)
+		_ = closeShell()
+		return "", nil, fmt.Errorf("session: StartPTY: SESSION_LIMIT: %d concurrent sessions reached", m.maxSessions)
+	}
+	m.sessions[id] = s
+	m.mu.Unlock()
+
+	initWait := time.Duration(initWaitMs) * time.Millisecond
+	if initWait <= 0 {
+		initWait = 500 * time.Millisecond
+	}
+	initialResult := m.drainPTY(ctx, s, initWait)
+
+	return id, initialResult, nil
+}
+
+// SendRaw writes input followed by a newline to the PTY session's stdin and
+// drains output for the given timeout. Use for PTY sessions opened via StartPTY.
+func (m *Manager) SendRaw(ctx context.Context, id, input string, timeout time.Duration) (*SendResult, error) {
+	m.mu.RLock()
+	s, ok := m.sessions[id]
+	m.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("session: SendRaw: session %q not found", id)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	switch s.state {
+	case stateClosed:
+		return nil, fmt.Errorf("session: SendRaw: SESSION_DEAD (session closed)")
+	case stateError:
+		return nil, fmt.Errorf("session: SendRaw: SESSION_DEAD (session in error state)")
+	}
+
+	// Empty input means "drain without sending" (pure read for PTY).
+	if input != "" {
+		if _, werr := fmt.Fprintf(s.stdin, "%s\n", input); werr != nil {
+			s.state = stateError
+			return nil, fmt.Errorf("session: SendRaw: write: %w", werr)
+		}
+	}
+
+	s.state = stateBusy
+	start := time.Now()
+	result := m.drainPTY(ctx, s, timeout)
+	result.Duration = time.Since(start)
+	s.state = stateReady
+	s.lastActivity = time.Now()
+	s.commandCount++
+
+	return result, nil
+}
+
+// IsPTY reports whether the session identified by id was opened with a PTY.
+func (m *Manager) IsPTY(id string) bool {
+	m.mu.RLock()
+	s, ok := m.sessions[id]
+	m.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.isPTY
 }
 
 // --------------------------------------------------------------------------

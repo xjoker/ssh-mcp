@@ -10,10 +10,10 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/audit"
-	"github.com/xjoker/mcp-ssh-bridge/internal/config"
-	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
-	"github.com/xjoker/mcp-ssh-bridge/internal/tools"
+	"github.com/xjoker/ssh-mcp/internal/audit"
+	"github.com/xjoker/ssh-mcp/internal/config"
+	"github.com/xjoker/ssh-mcp/internal/envelope"
+	"github.com/xjoker/ssh-mcp/internal/tools"
 )
 
 // SDD §5.1: every tool returns the unified envelope shape. The dispatcher
@@ -174,6 +174,47 @@ func TestMiddlewareChain_AuditMetaEnrichment(t *testing.T) {
 	// ExitCode=0 on success; dispatcher keeps 0.
 	if completed.ExitCode != 0 {
 		t.Errorf("ExitCode: got %d, want 0", completed.ExitCode)
+	}
+}
+
+func TestMiddlewareChain_RedactsSFTPOpContent(t *testing.T) {
+	auditDir := t.TempDir()
+	auditLog, err := audit.New(auditDir, 90)
+	if err != nil {
+		t.Fatalf("audit.New: %v", err)
+	}
+	defer auditLog.Close()
+
+	deps := &tools.Deps{
+		Cfg:   &config.Config{Settings: config.Settings{}, Servers: map[string]config.ServerConfig{}},
+		Audit: auditLog,
+	}
+	fakeHandler := func(_ context.Context, _ *tools.Deps, _ json.RawMessage) envelope.Response {
+		return envelope.OK("ok")
+	}
+	req := &mcp.CallToolRequest{
+		Params: &mcp.CallToolParamsRaw{
+			Arguments: json.RawMessage(`{"server":"s1","action":"write","path":"/tmp/x","content":"DO-NOT-LOG"}`),
+		},
+	}
+	if _, err := middlewareChain(context.Background(), req, "sftp_op", fakeHandler, deps); err != nil {
+		t.Fatalf("middlewareChain: %v", err)
+	}
+
+	entries, qErr := auditLog.Query(audit.Filter{Tool: "sftp_op", Limit: 10})
+	if qErr != nil {
+		t.Fatalf("Query: %v", qErr)
+	}
+	if len(entries) == 0 {
+		t.Fatal("no audit entries")
+	}
+	for _, e := range entries {
+		if strings.Contains(e.ArgsRedacted, "DO-NOT-LOG") {
+			t.Fatalf("audit args leaked sftp content: %+v", entries)
+		}
+		if !strings.Contains(e.ArgsRedacted, "REDACTED") {
+			t.Fatalf("audit args should show redaction marker, got %q", e.ArgsRedacted)
+		}
 	}
 }
 

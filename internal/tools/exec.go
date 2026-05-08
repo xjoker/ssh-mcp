@@ -3,7 +3,9 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -11,10 +13,10 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
-	"github.com/xjoker/mcp-ssh-bridge/internal/safety"
-	internalsftp "github.com/xjoker/mcp-ssh-bridge/internal/sftp"
-	"github.com/xjoker/mcp-ssh-bridge/internal/ssh"
+	"github.com/xjoker/ssh-mcp/internal/envelope"
+	"github.com/xjoker/ssh-mcp/internal/safety"
+	internalsftp "github.com/xjoker/ssh-mcp/internal/sftp"
+	"github.com/xjoker/ssh-mcp/internal/ssh"
 )
 
 func init() {
@@ -34,6 +36,18 @@ type execInput struct {
 	Cwd       string      `json:"cwd,omitempty"`
 	Stream    bool        `json:"stream"`
 	TimeoutMs int         `json:"timeout_ms"`
+	// PTY parameters
+	PTY       bool `json:"pty"`
+	PTYCols   int  `json:"cols"`
+	PTYRows   int  `json:"rows"`
+	StripANSI bool `json:"strip_ansi"`
+}
+
+// ansiEscape matches ANSI/VT100 escape sequences (CSI, OSC, etc.).
+var ansiEscape = regexp.MustCompile(`\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))`)
+
+func stripANSICodes(s string) string {
+	return ansiEscape.ReplaceAllString(s, "")
 }
 
 type execOutput struct {
@@ -72,12 +86,13 @@ var sshExecSchema = json.RawMessage(`{
     "command":    { "type": "string", "description": "Shell command to execute on the remote host." },
     "cwd":        { "type": "string", "description": "Working directory. Resolved via SFTP realpath; supports ~ expansion." },
     "stream":     { "type": "boolean", "default": false },
-    "timeout_ms": { "type": "integer", "minimum": 1000, "maximum": 1800000, "default": 120000 }
+    "timeout_ms": { "type": "integer", "minimum": 1000, "maximum": 1800000, "default": 120000 },
+    "pty":        { "type": "boolean", "default": false, "description": "Allocate a pseudo-terminal. Required for TUI programs (btop, htop, ncdu). Merges stderr into stdout." },
+    "cols":       { "type": "integer", "minimum": 10, "maximum": 500, "default": 220, "description": "Terminal width for PTY (columns). Only used when pty=true." },
+    "rows":       { "type": "integer", "minimum": 5, "maximum": 200, "default": 50, "description": "Terminal height for PTY (rows). Only used when pty=true." },
+    "strip_ansi": { "type": "boolean", "default": false, "description": "Strip ANSI escape sequences from output. Useful with pty=true to get plain text." }
   },
-  "oneOf": [
-    { "required": ["server", "command"] },
-    { "required": ["inline", "command"] }
-  ]
+  "required": ["command"]
 }`)
 
 func toolSSHExec() Tool {
@@ -117,6 +132,9 @@ func handleSSHExec(ctx context.Context, deps *Deps, args json.RawMessage) envelo
 	}
 
 	// Timeout
+	if input.TimeoutMs > 0 && input.TimeoutMs < 1000 {
+		return envelope.Err(envelope.CodeInvalidArgument, "timeout_ms must be >= 1000", false)
+	}
 	timeoutMs := input.TimeoutMs
 	if timeoutMs <= 0 {
 		timeoutMs = deps.Cfg.Settings.DefaultTimeoutMs
@@ -245,12 +263,23 @@ func handleSSHExec(ctx context.Context, deps *Deps, args json.RawMessage) envelo
 		return handleSSHExecStreaming(ctx, deps, client, remoteCmd, timeout, hostLabel, userLabel, outputMax)
 	}
 
-	result, err := client.ExecBuffered(ctx, remoteCmd, ssh.ExecOpts{
+	ptyOpts := ssh.ExecOpts{
 		OutputMaxBytes: outputMax,
 		Timeout:        timeout,
-	})
+	}
+	if input.PTY {
+		ptyOpts.PTY = true
+		if input.PTYCols > 0 {
+			ptyOpts.PTYCols = uint32(input.PTYCols)
+		}
+		if input.PTYRows > 0 {
+			ptyOpts.PTYRows = uint32(input.PTYRows)
+		}
+	}
+
+	result, err := client.ExecBuffered(ctx, remoteCmd, ptyOpts)
 	if err != nil {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			return envelope.Err(envelope.CodeTimeout,
 				"command timed out: "+err.Error(), true)
 		}
@@ -258,6 +287,9 @@ func handleSSHExec(ctx context.Context, deps *Deps, args json.RawMessage) envelo
 	}
 
 	stdoutStr := string(result.Stdout)
+	if input.StripANSI {
+		stdoutStr = stripANSICodes(stdoutStr)
+	}
 	if result.Truncated {
 		total := len(result.Stdout) + len(result.Stderr)
 		stdoutStr += fmt.Sprintf("...[truncated; %d bytes total]", total)
@@ -415,7 +447,7 @@ func buildStreamingEnvelope(
 	truncated bool,
 	host, user string,
 ) envelope.Response {
-	if streamErr != nil && ctx.Err() != nil {
+	if streamErr != nil && (ctx.Err() != nil || errors.Is(streamErr, context.DeadlineExceeded) || errors.Is(streamErr, context.Canceled)) {
 		return envelope.Err(envelope.CodeTimeout,
 			"streaming command timed out: "+streamErr.Error(), true)
 	}

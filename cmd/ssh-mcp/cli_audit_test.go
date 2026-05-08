@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/audit"
+	"github.com/xjoker/ssh-mcp/internal/audit"
 )
 
 // TestParseSinceRelative checks relative time parsing.

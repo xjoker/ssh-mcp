@@ -4,13 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/config"
-	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
-	"github.com/xjoker/mcp-ssh-bridge/internal/session"
-	"github.com/xjoker/mcp-ssh-bridge/internal/ssh"
+	"github.com/xjoker/ssh-mcp/internal/config"
+	"github.com/xjoker/ssh-mcp/internal/envelope"
+	"github.com/xjoker/ssh-mcp/internal/session"
+	"github.com/xjoker/ssh-mcp/internal/ssh"
 )
 
 // --------------------------------------------------------------------------
@@ -25,6 +26,13 @@ func (f *fakeTransport) OpenShell(_ context.Context, _ string) (
 ) {
 	pr, pw := io.Pipe()
 	return pw, pr, pr, func() error { return pw.Close() }, nil
+}
+
+func (f *fakeTransport) OpenShellPTY(_ context.Context, _ string, _, _ uint32) (
+	io.WriteCloser, io.Reader, func() error, error,
+) {
+	pr, pw := io.Pipe()
+	return pw, pr, func() error { return pw.Close() }, nil
 }
 
 // newFakeSessionManager returns a real *session.Manager backed by fakeTransport.
@@ -131,6 +139,16 @@ func TestSessionSend_RejectsTooSmallTimeout(t *testing.T) {
 	}
 	if resp.Error == nil || resp.Error.Code != envelope.CodeInvalidArgument {
 		t.Fatalf("expected INVALID_ARGUMENT, got %+v", resp.Error)
+	}
+}
+
+func TestSessionSendOutput_IncludesTruncated(t *testing.T) {
+	raw, err := json.Marshal(sessionSendOutput{Truncated: true})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(raw), `"truncated":true`) {
+		t.Fatalf("expected truncated flag in JSON, got %s", raw)
 	}
 }
 
@@ -313,10 +331,10 @@ func TestSessionStart_InlineAcceptNewHostPlumbed(t *testing.T) {
 	}
 }
 
-// TestSessionClose_ReleasesInlineRegistration verifies that closing an inline
-// session scrubs the QuickSetup entry + Pool temp-server, so the credential
-// does not linger past the session lifetime.
-func TestSessionClose_ReleasesInlineRegistration(t *testing.T) {
+// TestSessionClose_KeepsInlineRegistration verifies that closing an inline
+// shell session does not remove the temp-server registration. The server name
+// remains reusable by ssh_exec/sftp/tunnel until TTL expiry or server shutdown.
+func TestSessionClose_KeepsInlineRegistration(t *testing.T) {
 	qs := &fakeQuickSetup{}
 	// Pre-populate the inline registration map as if session_start had succeeded.
 	const sessID = "sess-test-1"
@@ -333,11 +351,11 @@ func TestSessionClose_ReleasesInlineRegistration(t *testing.T) {
 	if !resp.OK {
 		t.Fatalf("session_close: %+v", resp.Error)
 	}
-	if len(qs.removed) != 1 || qs.removed[0] != regName {
-		t.Errorf("expected QuickSetup.Remove(%q); got removed=%v", regName, qs.removed)
+	if len(qs.removed) != 0 {
+		t.Errorf("session_close must not remove temp server %q; got removed=%v", regName, qs.removed)
 	}
 	if _, lingering := inlineSessionRegistrations.Load(sessID); lingering {
-		t.Error("inline registration should be removed from tracking map after close")
+		t.Error("session-to-registration tracking should be removed after close")
 	}
 }
 
@@ -352,5 +370,100 @@ func TestSessionStart_InlineMissingCreds(t *testing.T) {
 	}
 	if resp.Error.Code != envelope.CodeInvalidArgument {
 		t.Errorf("got %s want INVALID_ARGUMENT", resp.Error.Code)
+	}
+}
+
+// --------------------------------------------------------------------------
+// PTY tool handler tests
+// --------------------------------------------------------------------------
+
+// newPTYDeps creates *Deps wired for PTY session tests.
+// The SessionMgr uses the package-local fakeTransport whose OpenShellPTY
+// returns a loopback pipe pair (stdin writes are readable on stdout).
+func newPTYDeps(t *testing.T) *Deps {
+	t.Helper()
+	cfg := &config.Config{
+		Settings: config.Settings{DefaultTimeoutMs: 120000},
+		Servers: map[string]config.ServerConfig{
+			"myserver": {Name: "myserver", Host: "localhost", Port: 22, User: "root", Auth: "key"},
+		},
+	}
+	mgr := session.NewManager(&fakeTransport{}, 30*time.Minute)
+	t.Cleanup(mgr.CloseAll)
+	return &Deps{Cfg: cfg, SessionMgr: mgr}
+}
+
+// TestSessionStart_PTY_Mode verifies that session_start with pty:true
+// returns mode="pty" and a non-empty session_id.
+func TestSessionStart_PTY_Mode(t *testing.T) {
+	deps := newPTYDeps(t)
+	args := mustJSON(map[string]any{
+		"server":       "myserver",
+		"pty":          true,
+		"init_wait_ms": 100,
+	})
+	tCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	resp := handleSessionStart(tCtx, deps, args)
+	if !resp.OK {
+		t.Fatalf("expected OK, got %+v", resp.Error)
+	}
+	raw, _ := json.Marshal(resp.Data)
+	var out sessionStartOutput
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+	if out.Mode != "pty" {
+		t.Errorf("mode = %q, want 'pty'", out.Mode)
+	}
+	if out.SessionID == "" {
+		t.Error("expected non-empty session_id")
+	}
+}
+
+// TestSessionSend_PTY_RoutesToSendRaw verifies that session_send against a
+// PTY session uses the time-based SendRaw path and returns OK.
+func TestSessionSend_PTY_RoutesToSendRaw(t *testing.T) {
+	deps := newPTYDeps(t)
+
+	// Open a PTY session.
+	startArgs := mustJSON(map[string]any{
+		"server":       "myserver",
+		"pty":          true,
+		"init_wait_ms": 100,
+	})
+	tCtx, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
+	defer cancel()
+	startResp := handleSessionStart(tCtx, deps, startArgs)
+	if !startResp.OK {
+		t.Fatalf("session_start: %+v", startResp.Error)
+	}
+	raw, _ := json.Marshal(startResp.Data)
+	var out sessionStartOutput
+	_ = json.Unmarshal(raw, &out)
+
+	// Send a command — PTY path uses SendRaw (time-based), no sentinel.
+	sendCtx, sc := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer sc()
+	sendResp := handleSessionSend(sendCtx, deps, mustJSON(map[string]any{
+		"session_id": out.SessionID,
+		"command":    "echo hi",
+		"timeout_ms": 100,
+	}))
+	if !sendResp.OK {
+		t.Fatalf("session_send (PTY): %+v", sendResp.Error)
+	}
+}
+
+// TestSessionSend_PTY_StripANSI verifies strip_ansi removes ANSI escape
+// sequences from PTY output.
+func TestSessionSend_PTY_StripANSI(t *testing.T) {
+	ansi := "\x1b[1;32mhello\x1b[0m world"
+	clean := stripANSICodes(ansi)
+	if strings.Contains(clean, "\x1b") {
+		t.Errorf("stripANSICodes left ANSI codes: %q", clean)
+	}
+	if !strings.Contains(clean, "hello") || !strings.Contains(clean, "world") {
+		t.Errorf("stripANSICodes removed non-ANSI content: %q", clean)
 	}
 }

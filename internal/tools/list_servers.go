@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
+	"github.com/xjoker/ssh-mcp/internal/envelope"
 )
 
 func init() {
@@ -31,6 +31,9 @@ type serverInfo struct {
 	Description string   `json:"description,omitempty"`
 	Tags        []string `json:"tags,omitempty"`
 	ProxyJump   string   `json:"proxy_jump,omitempty"`
+	Source      string   `json:"source,omitempty"`
+	Ephemeral   bool     `json:"ephemeral,omitempty"`
+	ExpiresAt   string   `json:"expires_at,omitempty"`
 }
 
 type listServersOutput struct {
@@ -107,7 +110,38 @@ func handleListServers(_ context.Context, deps *Deps, args json.RawMessage) enve
 			Description: srv.Description,
 			Tags:        srv.Tags,
 			ProxyJump:   srv.ProxyJump,
+			Source:      "config",
 		})
+	}
+
+	if input.Tag == "" && deps.Pool != nil {
+		for _, tmp := range deps.Pool.ListTempServers() {
+			srv := tmp.Server
+			port := srv.Port
+			if port == 0 {
+				port = 22
+			}
+
+			source := "quick_setup"
+			if len(srv.Name) >= len("qs-inline-session") && srv.Name[:len("qs-inline-session")] == "qs-inline-session" {
+				source = "inline"
+			}
+			expiresAt := ""
+			if !tmp.ExpiresAt.IsZero() {
+				expiresAt = tmp.ExpiresAt.UTC().Format("2006-01-02T15:04:05Z07:00")
+			}
+
+			servers = append(servers, serverInfo{
+				Name:      srv.Name,
+				Host:      srv.Host,
+				Port:      port,
+				User:      srv.User,
+				Auth:      srv.Auth,
+				Source:    source,
+				Ephemeral: true,
+				ExpiresAt: expiresAt,
+			})
+		}
 	}
 
 	// Stable output order: sort by name so callers get deterministic results.

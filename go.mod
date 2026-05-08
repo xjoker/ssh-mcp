@@ -1,4 +1,4 @@
-module github.com/xjoker/mcp-ssh-bridge
+module github.com/xjoker/ssh-mcp
 
 go 1.25.0
 

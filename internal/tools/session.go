@@ -7,15 +7,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/config"
-	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
+	"github.com/xjoker/ssh-mcp/internal/config"
+	"github.com/xjoker/ssh-mcp/internal/envelope"
 )
 
-// inlineSessionRegistrations maps session_id → registered temp-server name
-// for sessions opened via the inline path. session_close consults this map
-// to release the QuickSetup secret + Pool entry alongside the shell, so
-// inline credentials live only as long as the session itself rather than
-// the registry's TTL window.
+// inlineSessionRegistrations records session_id → registered temp-server name
+// for sessions opened via the inline path. The entry is retained until the
+// temp-server TTL/session shutdown path removes it; session_close only closes
+// the shell and deliberately does not remove the server registration.
 var inlineSessionRegistrations sync.Map // map[string]string
 
 // configServerConfigFromInline builds a minimal ServerConfig used when an
@@ -50,7 +49,7 @@ var sessionStartSchema = json.RawMessage(`{
     "server": { "type": "string", "description": "Configured server name" },
     "inline": {
       "type": "object",
-      "description": "Ad-hoc connection params (alternative to server). Credentials live only for the lifetime of this session and are cleared on session_close.",
+      "description": "Ad-hoc connection params (alternative to server). Credentials are promoted to an in-memory temp server for this MCP session.",
       "properties": {
         "host":             { "type": "string" },
         "port":             { "type": "integer", "minimum": 1, "maximum": 65535, "default": 22 },
@@ -61,12 +60,13 @@ var sessionStartSchema = json.RawMessage(`{
         "accept_new_host":  { "type": "boolean", "default": false }
       },
       "required": ["host", "user"]
-    }
-  },
-  "oneOf": [
-    { "required": ["server"] },
-    { "required": ["inline"] }
-  ]
+    },
+    "pty":          { "type": "boolean", "description": "Allocate a PTY for interactive TUI programs (btop, htop, ncdu). Stderr is merged into stdout; sentinel protocol is replaced by time-based output collection.", "default": false },
+    "cols":         { "type": "integer", "minimum": 10, "maximum": 500, "default": 220, "description": "PTY terminal width (columns). Only used when pty=true." },
+    "rows":         { "type": "integer", "minimum": 5, "maximum": 200, "default": 50, "description": "PTY terminal height (rows). Only used when pty=true." },
+    "command":      { "type": "string", "description": "Optional command to run immediately after the shell opens (PTY mode). A newline is appended automatically." },
+    "init_wait_ms": { "type": "integer", "minimum": 100, "maximum": 10000, "default": 1000, "description": "Milliseconds to wait for initial shell/command output after opening (PTY mode)." }
+  }
 }`)
 
 func toolSessionStart() Tool {
@@ -79,14 +79,21 @@ func toolSessionStart() Tool {
 }
 
 type sessionStartInput struct {
-	Server string      `json:"server,omitempty"`
-	Inline *sftpInline `json:"inline,omitempty"`
+	Server     string      `json:"server,omitempty"`
+	Inline     *sftpInline `json:"inline,omitempty"`
+	PTY        bool        `json:"pty"`
+	PTYCols    int         `json:"cols"`
+	PTYRows    int         `json:"rows"`
+	Command    string      `json:"command"`
+	InitWaitMs int         `json:"init_wait_ms"`
 }
 
 type sessionStartOutput struct {
-	SessionID string `json:"session_id"`
-	Server    string `json:"server"`
-	StartedAt string `json:"started_at"`
+	SessionID     string `json:"session_id"`
+	Server        string `json:"server"`
+	StartedAt     string `json:"started_at"`
+	Mode          string `json:"mode"`
+	InitialOutput string `json:"initial_output,omitempty"`
 }
 
 func handleSessionStart(ctx context.Context, deps *Deps, args json.RawMessage) envelope.Response {
@@ -125,6 +132,31 @@ func handleSessionStart(ctx context.Context, deps *Deps, args json.RawMessage) e
 		}
 	}
 
+	if input.PTY {
+		cols := uint32(input.PTYCols)
+		rows := uint32(input.PTYRows)
+		id, initialResult, err := deps.SessionMgr.StartPTY(ctx, serverName, cols, rows, input.Command, input.InitWaitMs)
+		if err != nil {
+			if inlineRegistered != "" {
+				cleanupInlineRegistration(deps, inlineRegistered)
+			}
+			return mapSessionError(err)
+		}
+		if inlineRegistered != "" {
+			inlineSessionRegistrations.Store(id, inlineRegistered)
+		}
+		out := sessionStartOutput{
+			SessionID: id,
+			Server:    serverName,
+			StartedAt: time.Now().UTC().Format(time.RFC3339),
+			Mode:      "pty",
+		}
+		if initialResult != nil {
+			out.InitialOutput = initialResult.Stdout
+		}
+		return envelope.OK(out)
+	}
+
 	id, err := deps.SessionMgr.Start(ctx, serverName)
 	if err != nil {
 		// On Start failure, scrub the inline registration immediately so the
@@ -144,6 +176,7 @@ func handleSessionStart(ctx context.Context, deps *Deps, args json.RawMessage) e
 		SessionID: id,
 		Server:    serverName,
 		StartedAt: time.Now().UTC().Format(time.RFC3339),
+		Mode:      "sentinel",
 	})
 }
 
@@ -252,9 +285,10 @@ func registerInlineSession(deps *Deps, in *sftpInline) (string, envelope.Respons
 var sessionSendSchema = json.RawMessage(`{
   "type": "object",
   "properties": {
-    "session_id": { "type": "string" },
-    "command":    { "type": "string" },
-    "timeout_ms": { "type": "integer", "minimum": 1000, "maximum": 1800000, "default": 120000 }
+    "session_id":  { "type": "string" },
+    "command":     { "type": "string", "description": "For sentinel sessions: the shell command to run. For PTY sessions: sent to stdin followed by a newline (use \\x03 for Ctrl-C, etc.)." },
+    "timeout_ms":  { "type": "integer", "minimum": 100, "maximum": 1800000, "default": 120000, "description": "For sentinel sessions: max wait for command completion. For PTY sessions: duration to collect output after writing input." },
+    "strip_ansi":  { "type": "boolean", "default": false, "description": "Strip ANSI escape sequences from output (useful for PTY sessions running TUI programs)." }
   },
   "required": ["session_id", "command"]
 }`)
@@ -272,6 +306,7 @@ type sessionSendInput struct {
 	SessionID string `json:"session_id"`
 	Command   string `json:"command"`
 	TimeoutMs int    `json:"timeout_ms"`
+	StripANSI bool   `json:"strip_ansi"`
 }
 
 type sessionSendOutput struct {
@@ -279,6 +314,7 @@ type sessionSendOutput struct {
 	Stderr     string `json:"stderr"`
 	ExitCode   int    `json:"exit_code"`
 	DurationMs int64  `json:"duration_ms"`
+	Truncated  bool   `json:"truncated"`
 }
 
 func handleSessionSend(ctx context.Context, deps *Deps, args json.RawMessage) envelope.Response {
@@ -289,14 +325,44 @@ func handleSessionSend(ctx context.Context, deps *Deps, args json.RawMessage) en
 	if input.SessionID == "" {
 		return envelope.Err(envelope.CodeInvalidArgument, "'session_id' is required", false)
 	}
-	if input.Command == "" {
-		return envelope.Err(envelope.CodeInvalidArgument, "'command' is required", false)
+
+	timeoutMs := input.TimeoutMs
+	if deps.SessionMgr != nil && deps.SessionMgr.IsPTY(input.SessionID) {
+		// PTY: empty command is allowed — means "drain output without sending input".
+		if input.Command == "" && timeoutMs <= 0 {
+			timeoutMs = 2000
+		}
+		// PTY sessions use time-based drain; allow shorter timeouts.
+		if timeoutMs <= 0 {
+			timeoutMs = 2000 // default 2 s for PTY
+		}
+		if timeoutMs > 1800000 {
+			timeoutMs = 1800000
+		}
+		timeout := time.Duration(timeoutMs) * time.Millisecond
+		result, err := deps.SessionMgr.SendRaw(ctx, input.SessionID, input.Command, timeout)
+		if err != nil {
+			return mapSessionError(err)
+		}
+		stdout := result.Stdout
+		if input.StripANSI {
+			stdout = stripANSICodes(stdout)
+		}
+		return envelope.OK(sessionSendOutput{
+			Stdout:     stdout,
+			ExitCode:   result.ExitCode,
+			DurationMs: result.Duration.Milliseconds(),
+			Truncated:  result.Truncated,
+		})
 	}
 
+	// Sentinel-based session.
+	if input.Command == "" {
+		return envelope.Err(envelope.CodeInvalidArgument, "'command' is required for non-PTY sessions", false)
+	}
 	if input.TimeoutMs > 0 && input.TimeoutMs < 1000 {
 		return envelope.Err(envelope.CodeInvalidArgument, "timeout_ms must be >= 1000", false)
 	}
-	timeoutMs := input.TimeoutMs
 	if timeoutMs <= 0 {
 		timeoutMs = deps.Cfg.Settings.DefaultTimeoutMs
 	}
@@ -317,11 +383,18 @@ func handleSessionSend(ctx context.Context, deps *Deps, args json.RawMessage) en
 		return mapSessionError(err)
 	}
 
+	stdout := result.Stdout
+	stderr := result.Stderr
+	if input.StripANSI {
+		stdout = stripANSICodes(stdout)
+		stderr = stripANSICodes(stderr)
+	}
 	return envelope.OK(sessionSendOutput{
-		Stdout:     result.Stdout,
-		Stderr:     result.Stderr,
+		Stdout:     stdout,
+		Stderr:     stderr,
 		ExitCode:   result.ExitCode,
 		DurationMs: result.Duration.Milliseconds(),
+		Truncated:  result.Truncated,
 	})
 }
 
@@ -362,14 +435,10 @@ func handleSessionClose(_ context.Context, deps *Deps, args json.RawMessage) env
 	// Close is idempotent per SDD §6.4 — NOT_FOUND also returns OK.
 	_ = deps.SessionMgr.Close(input.SessionID)
 
-	// Release any inline credential bound to this session so the secret no
-	// longer lives in the QuickSetup registry / Pool. Idempotent — non-inline
-	// sessions are not tracked here so the LoadAndDelete is a no-op.
-	if v, ok := inlineSessionRegistrations.LoadAndDelete(input.SessionID); ok {
-		if name, ok := v.(string); ok {
-			cleanupInlineRegistration(deps, name)
-		}
-	}
+	// Intentionally keep any inline temp-server registration alive. The
+	// registered server remains addressable by ssh_exec/sftp/tunnel until TTL
+	// expiry or MCP server shutdown, matching ssh_quick_setup semantics.
+	inlineSessionRegistrations.Delete(input.SessionID)
 
 	return envelope.OK(map[string]bool{"closed": true})
 }
@@ -398,7 +467,7 @@ func mapSessionError(err error) envelope.Response {
 		return envelope.Err(envelope.CodeHostKeyMismatch, msg, false)
 	case strings.Contains(msg, "HOST_KEY_UNKNOWN"):
 		return envelope.ErrWithHint(envelope.CodeHostKeyUnknown, msg,
-			"Run 'mcp-ssh-bridge trust <host>' to add the host to known_hosts", false)
+			"Run 'ssh-mcp trust <host>' to add the host to known_hosts", false)
 	case strings.Contains(msg, "unable to authenticate") ||
 		strings.Contains(msg, "Authentication failed") ||
 		strings.Contains(msg, "auth failed"):

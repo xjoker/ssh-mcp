@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/config"
+	"github.com/xjoker/ssh-mcp/internal/config"
 )
 
 // --------------------------------------------------------------------------
@@ -260,7 +260,7 @@ func TestKeychainSetGetDelete(t *testing.T) {
 		t.Skip("keychain tests require a live OS keychain — skipping in CI/short mode")
 	}
 
-	const service = "mcp-ssh-bridge-test"
+	const service = "ssh-mcp-test"
 	const account = "test-account-unit"
 	const secret = "test-secret-value"
 
@@ -297,7 +297,7 @@ func TestKeychainSetErrorUnwrappable(t *testing.T) {
 	// On CI without a keychain, SetKeychain will return an error.
 	// We just confirm the error, if any, is non-nil and has a message.
 	// If keychain IS available, the Set may succeed — that's fine.
-	err := SetKeychain("mcp-ssh-bridge-test-probe", "probe", []byte("probe"))
+	err := SetKeychain("ssh-mcp-test-probe", "probe", []byte("probe"))
 	if err != nil {
 		// Must be an error with a non-empty message.
 		if err.Error() == "" {
@@ -307,7 +307,7 @@ func TestKeychainSetErrorUnwrappable(t *testing.T) {
 	}
 	// On success, clean up.
 	if err == nil {
-		_ = DeleteKeychain("mcp-ssh-bridge-test-probe", "probe")
+		_ = DeleteKeychain("ssh-mcp-test-probe", "probe")
 	}
 }
 

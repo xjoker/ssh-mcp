@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/xjoker/mcp-ssh-bridge/internal/envelope"
+	"github.com/xjoker/ssh-mcp/internal/envelope"
 )
 
 // mustJSON marshals v to JSON or panics. Used for concise test args.
@@ -97,6 +97,22 @@ func TestSSHExec_InlineCredsDisabled(t *testing.T) {
 	}
 	if resp.Error == nil || resp.Error.Code != envelope.CodeInlineCredsDisabled {
 		t.Fatalf("expected INLINE_CREDS_DISABLED, got %+v", resp.Error)
+	}
+}
+
+func TestSSHExec_RejectsTooSmallTimeout(t *testing.T) {
+	deps := minDeps(true)
+	args := mustJSON(map[string]any{
+		"server":     "prod",
+		"command":    "ls",
+		"timeout_ms": 1,
+	})
+	resp := handleSSHExec(context.Background(), deps, args)
+	if resp.OK {
+		t.Fatal("expected not-OK for too-small timeout")
+	}
+	if resp.Error == nil || resp.Error.Code != envelope.CodeInvalidArgument {
+		t.Fatalf("expected INVALID_ARGUMENT, got %+v", resp.Error)
 	}
 }
 

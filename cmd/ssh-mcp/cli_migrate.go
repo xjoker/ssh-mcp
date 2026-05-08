@@ -16,8 +16,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
-	"github.com/xjoker/mcp-ssh-bridge/internal/auth"
-	"github.com/xjoker/mcp-ssh-bridge/internal/config"
+	"github.com/xjoker/ssh-mcp/internal/auth"
+	"github.com/xjoker/ssh-mcp/internal/config"
 )
 
 func init() {
@@ -32,11 +32,11 @@ func init() {
 // migrateLegacyCmd reads a legacy SSH-tool .env file (one with SSH_HOST=,
 // SSH_USER=, SSH_PORT=, SSH_AUTH=, SSH_PASSWORD=, SSH_KEY_PATH= keys, with
 // optional numeric suffixes for multi-server files) and imports each server
-// entry into the mcp-ssh-bridge config.toml, storing passwords in the OS
+// entry into the ssh-mcp config.toml, storing passwords in the OS
 // keychain.
 func migrateLegacyCmd(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: mcp-ssh-bridge migrate-from-legacy <env-file>")
+		fmt.Fprintln(os.Stderr, "usage: ssh-mcp migrate-from-legacy <env-file>")
 		return 1
 	}
 	envFile := args[0]
@@ -277,8 +277,8 @@ func importLegacyEntry(w *os.File, e legacyEntry) error {
 	return err
 }
 
-// keychainService returns the keychain service name for mcp-ssh-bridge.
-func keychainService() string { return "mcp-ssh-bridge" }
+// keychainService returns the keychain service name for ssh-mcp.
+func keychainService() string { return "ssh-mcp" }
 
 // keychainAccount returns the keychain account string for a server name.
 func keychainAccount(serverName string) string {
@@ -454,16 +454,16 @@ func defaultAuditDirCLI() string {
 		if appData == "" {
 			appData = os.Getenv("APPDATA")
 		}
-		return appData + `\mcp-ssh-bridge\audit`
+		return appData + `\ssh-mcp\audit`
 	default:
 		stateHome := os.Getenv("XDG_STATE_HOME")
 		if stateHome == "" {
 			home, err := os.UserHomeDir()
 			if err != nil {
-				return "/tmp/mcp-ssh-bridge/audit"
+				return "/tmp/ssh-mcp/audit"
 			}
 			stateHome = home + "/.local/state"
 		}
-		return stateHome + "/mcp-ssh-bridge"
+		return stateHome + "/ssh-mcp"
 	}
 }
