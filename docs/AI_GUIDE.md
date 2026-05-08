@@ -24,7 +24,8 @@ Tools fall into two operational classes:
 | Class | Tools | Behavior contract |
 |-------|-------|-------------------|
 | **Read-only** | `list_servers`, `sftp_list`, `sftp_read`, `sftp_stat`, `audit_query` | Free to call without preface. Cheap, idempotent, no audit pre-record. |
-| **Destructive** (have remote effects) | `ssh_exec`, `ssh_group_exec`, `sftp_op`, `tunnel`, `session_*`, `ssh_quick_setup` | **Always state the intended effect in plain language and wait for the user's MCP-level confirmation** (the host UI handles this — do not auto-approve). Each call is fail-closed audit-pre-recorded, so a mid-flight crash leaves a trail. |
+| **Destructive** (have remote effects) | `ssh_exec`, `ssh_group_exec`, `sftp_op`, `tunnel`, `session_*`, `ssh_quick_setup`, `ssh_persistent_setup` | **Always state the intended effect in plain language and wait for the user's MCP-level confirmation** (the host UI handles this — do not auto-approve). Each call is fail-closed audit-pre-recorded, so a mid-flight crash leaves a trail. |
+| **Self-management** | `self_update` | Replaces the running binary atomically. After a successful update, inform the user that the MCP server process must be restarted. Use `check_only: true` first to inspect availability. |
 
 You will *not* see an `autoApprove` flag for these tools. The user's setup
 intentionally omits it. Treat every destructive call as a confirmation
@@ -155,9 +156,13 @@ this to:
 
 If the user asks about a host that isn't listed:
 
-1. Ask whether they want a permanent entry (instruct the human to run
-   `ssh-mcp config add-server <name> --host H --user U ...`), or
-2. Propose `ssh_quick_setup` for an ad-hoc TTL-bounded entry.
+1. For **permanent** registration (survives restart): call `ssh_persistent_setup` —
+   it writes a `[servers.<name>]` block to `config.toml` and makes the entry live
+   in the current session without a restart. Plaintext password storage requires
+   `settings.allow_config_plaintext_password = true` in config.
+2. For **ad-hoc / temporary** use (TTL up to 4 h): propose `ssh_quick_setup`.
+3. As a last resort, instruct the human to run
+   `ssh-mcp config add-server <name> --host H --user U ...` in a shell.
 
 Never ask the user to paste a password into the chat. Passwords go to the
 OS keychain via `ssh-mcp auth set
@@ -221,9 +226,18 @@ tunnel {action:"create", kind:"local", server:"db",
 tunnel {action:"close", tunnel_id:"<from create>"}
 ```
 
-### Recover from "server not found"
+### Register a server permanently (survives restart)
 ```
-list_servers          # confirm
+ssh_persistent_setup {name:"prod-db", host:"db.example.com", port:22,
+                       user:"deploy", auth:"key",
+                       key_path:"~/.ssh/id_ed25519"}
+# entry is live immediately — no restart required
+ssh_exec {server:"prod-db", command:"hostname"}
+```
+
+### Ad-hoc connection (TTL-bounded, in-memory only)
+```
+list_servers          # confirm server is absent
 ssh_quick_setup {host:"new.box", user:"alice", password:"..."}
                       # bridge issues elicitation; on accept use returned name
 ssh_exec {server:"<returned name>", command:"hostname"}
@@ -281,9 +295,11 @@ That paragraph is more useful than three more retries.
 
 ```
 SAFE-FIRST   list_servers, sftp_list, sftp_stat, sftp_read, audit_query
-DESTRUCTIVE  ssh_exec, ssh_group_exec, sftp_op, tunnel, session_*, ssh_quick_setup
+DESTRUCTIVE  ssh_exec, ssh_group_exec, sftp_op, tunnel, session_*, ssh_quick_setup, ssh_persistent_setup
+SELF-MGMT    self_update {check_only:true} to inspect; omit flag to install; restart required after
 PREFLIGHT    state intent → wait for confirm → summarize result
 DISCOVER     list_servers before guessing names
+REGISTER     ssh_persistent_setup for permanent entries; ssh_quick_setup for TTL-bounded ad-hoc
 SECRETS      keychain only; never echo passwords
 RETRY        only when error.retriable == true
 ```

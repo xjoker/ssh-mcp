@@ -38,9 +38,11 @@ esac
 TAG="${VERSION:-}"
 if [ -z "$TAG" ]; then
   log "fetching latest release..."
-  API="https://api.github.com/repos/$REPO/releases"
+  # /releases/latest returns only stable (non-prerelease) releases so users
+  # are never accidentally handed a -dev build by the installer.
+  API="https://api.github.com/repos/$REPO/releases/latest"
   if command -v python3 >/dev/null 2>&1; then
-    TAG="$(curl -fsSL "$API" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d[0]['tag_name'] if d else '')" 2>/dev/null || true)"
+    TAG="$(curl -fsSL "$API" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('tag_name',''))" 2>/dev/null || true)"
   else
     TAG="$(curl -fsSL "$API" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/' || true)"
   fi
