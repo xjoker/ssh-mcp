@@ -12,6 +12,8 @@ Branch / version convention:
 
 ## [Unreleased]
 
+## [0.0.2] — 2026-05-08
+
 ### Added
 - New `ssh_persistent_setup` tool: appends a `[servers.<name>]` block to
   `config.toml` so the entry survives restart and has no TTL. Plaintext
@@ -67,6 +69,12 @@ Branch / version convention:
 - `cli_install.go` no longer prints the obsolete
   `~/.config/claude-code/mcp.json` path; Claude Code reads
   `~/.claude.json` and we no longer assert any specific path.
+- `updater.Download`: prevent double-close of the temp file handle; the
+  explicit `f.Close()` now sets a `fileClosed` flag so the deferred
+  cleanup does not attempt a second close.
+- `updater.cmpVer`: replace lexicographic pre-release comparison with
+  numeric parsing of `YYYYMMDD.N` suffixes so build 10 correctly sorts
+  after build 9 on the same date.
 
 ## [0.0.1-dev] — 2026-05-04
 
