@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"net"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -411,6 +412,15 @@ func TestRedactSecret_JSONStringValueAlsoSwept(t *testing.T) {
 // location.
 
 func TestHostKeyCallback_AcceptNewFailsClosedOnReadOnlyHome(t *testing.T) {
+	// On Windows os.Chmod cannot drop write permission on a directory in a
+	// way that makes MkdirAll fail (NTFS ACLs are not modelled by Go's
+	// chmod for mode 0500), so the fail-closed assertion has no leverage.
+	// The behaviour we're asserting is platform-independent in production —
+	// it's just the test rig that needs unix mode bits to construct the
+	// "unwritable directory" scenario.
+	if runtime.GOOS == "windows" {
+		t.Skip("test relies on POSIX chmod to make a directory unwritable; behaviour is platform-independent in production code")
+	}
 	// Create a directory and remove all permissions so MkdirAll inside it fails.
 	roDir := t.TempDir()
 	if err := os.Chmod(roDir, 0o500); err != nil {
@@ -437,6 +447,13 @@ func TestHostKeyCallback_AcceptNewFailsClosedOnReadOnlyHome(t *testing.T) {
 }
 
 func TestHostKeyCallback_AcceptNewSucceedsAndPersists(t *testing.T) {
+	// os.UserHomeDir on Windows reads USERPROFILE first; setting HOME does
+	// not redirect the known_hosts path. Skip on Windows — the persist
+	// behaviour itself works in production, this rig just can't relocate
+	// the home directory portably.
+	if runtime.GOOS == "windows" {
+		t.Skip("HOME override has no effect on Windows os.UserHomeDir; production behaviour is unchanged")
+	}
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
 	cb := HostKeyCallback(true)

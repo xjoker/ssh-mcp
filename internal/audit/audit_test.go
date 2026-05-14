@@ -3,10 +3,23 @@ package audit
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
+
+// skipOnWindowsPOSIXMode skips a test on Windows because the test asserts
+// POSIX file/dir mode bits (0600 / 0700) which the NTFS filesystem does
+// not honour. The audit log's confidentiality on Windows is the parent
+// directory ACL (e.g. %LOCALAPPDATA% under the user's profile), not
+// chmod. See SECURITY.md for the Windows protection model.
+func skipOnWindowsPOSIXMode(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file modes don't apply on Windows; protection relies on the parent ACL — see SECURITY.md")
+	}
+}
 
 // helper: create a Logger in a temp dir with 90-day retention.
 func newTestLogger(t *testing.T) (*Logger, string) {
@@ -34,6 +47,7 @@ func makeEntry(ts time.Time, tool, server string) Entry {
 // TestNew_DirPermissions verifies that the state directory is created with
 // mode 0700 (S-8).
 func TestNew_DirPermissions(t *testing.T) {
+	skipOnWindowsPOSIXMode(t)
 	dir := filepath.Join(t.TempDir(), "state")
 	l, err := New(dir, 30)
 	if err != nil {
@@ -54,6 +68,7 @@ func TestNew_DirPermissions(t *testing.T) {
 // TestRecord_FilePermissions verifies that the audit file is created with
 // mode 0600 (S-8).
 func TestRecord_FilePermissions(t *testing.T) {
+	skipOnWindowsPOSIXMode(t)
 	l, dir := newTestLogger(t)
 
 	e := makeEntry(time.Now().UTC(), "ssh_exec", "prod")
@@ -403,6 +418,7 @@ func TestS6_SecretsRedactedInLog(t *testing.T) {
 // TestS8_FileAndDirPermissions explicitly checks 0600 file and 0700 dir
 // after Record. SDD S-8.
 func TestS8_FileAndDirPermissions(t *testing.T) {
+	skipOnWindowsPOSIXMode(t)
 	dir := filepath.Join(t.TempDir(), "audit-state")
 	l, err := New(dir, 90)
 	if err != nil {
