@@ -9,10 +9,12 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/xjoker/ssh-mcp/internal/config"
 	"github.com/xjoker/ssh-mcp/internal/envelope"
 	"github.com/xjoker/ssh-mcp/internal/safety"
+	"github.com/xjoker/ssh-mcp/internal/ssh"
 	"github.com/xjoker/ssh-mcp/internal/tunnel"
 )
 
@@ -859,5 +861,79 @@ func TestSplitPath(t *testing.T) {
 		if p != c.parent || b != c.base {
 			t.Errorf("splitPath(%q) = (%q,%q); want (%q,%q)", c.in, p, b, c.parent, c.base)
 		}
+	}
+}
+
+// v0.0.5 hardening tests
+// --------------------------------------------------------------------------
+
+// TestEnforceAllowedPath_FromPoolTempServer verifies that allowed_paths
+// configured on a server that is NOT in cfg.Servers but IS in the SSH pool's
+// temp-server map (e.g. injected by list_servers refresh or registered by
+// ssh_persistent_setup) is honoured by the policy check. Prior to v0.0.5,
+// allowedPathsForServer only consulted cfg.Servers, so dynamically registered
+// servers silently bypassed allowed_paths.
+func TestEnforceAllowedPath_FromPoolTempServer(t *testing.T) {
+	deps := minDeps(true) // empty cfg.Servers
+	deps.Pool = ssh.NewPool(deps.Cfg, nil)
+
+	// Inject a temp-server with restrictive allowed_paths — mimics what
+	// list_servers refresh + ssh_persistent_setup do.
+	deps.Pool.AddTempServer("refreshed", config.ServerConfig{
+		Name:         "refreshed",
+		Host:         "10.0.0.1",
+		User:         "u",
+		Auth:         "agent",
+		AllowedPaths: []string{"/srv/app"},
+	}, time.Time{})
+
+	// Inside allowed prefix → allowed.
+	rp, _ := safety.ValidateRemotePath("/srv/app/data.json")
+	if _, ok := enforceAllowedPath(deps, "refreshed", rp); !ok {
+		t.Errorf("expected /srv/app/... to be allowed under refreshed.allowed_paths")
+	}
+
+	// Outside allowed prefix → denied (this was the bypass before v0.0.5).
+	rp2, _ := safety.ValidateRemotePath("/etc/passwd")
+	if errResp, ok := enforceAllowedPath(deps, "refreshed", rp2); ok {
+		t.Errorf("expected /etc/passwd to be denied for pool-only server")
+	} else if errResp.Error == nil || errResp.Error.Code != envelope.CodePermissionDenied {
+		t.Errorf("got %+v want PERMISSION_DENIED", errResp.Error)
+	}
+}
+
+// TestEnforceAllowedPath_CfgWinsOverPool verifies that when a server exists
+// in both cfg.Servers and the pool temp map, cfg.Servers takes precedence.
+// (Persistent-setup path: writes to disk → loaded into Cfg, also injected
+// into pool. Both have the same AllowedPaths so behaviour is equivalent;
+// this test pins the lookup order.)
+func TestEnforceAllowedPath_CfgWinsOverPool(t *testing.T) {
+	deps := minDeps(true)
+	deps.Pool = ssh.NewPool(deps.Cfg, nil)
+	deps.Cfg.Servers = map[string]config.ServerConfig{
+		"both": {
+			Name:         "both",
+			Host:         "1.2.3.4",
+			User:         "u",
+			Auth:         "agent",
+			AllowedPaths: []string{"/cfg/only"},
+		},
+	}
+	// Pool has a DIFFERENT path; this should be ignored because cfg wins.
+	deps.Pool.AddTempServer("both", config.ServerConfig{
+		Name:         "both",
+		Host:         "1.2.3.4",
+		User:         "u",
+		Auth:         "agent",
+		AllowedPaths: []string{"/pool/only"},
+	}, time.Time{})
+
+	rpCfg, _ := safety.ValidateRemotePath("/cfg/only/x")
+	if _, ok := enforceAllowedPath(deps, "both", rpCfg); !ok {
+		t.Errorf("cfg-defined /cfg/only path should be allowed")
+	}
+	rpPool, _ := safety.ValidateRemotePath("/pool/only/x")
+	if _, ok := enforceAllowedPath(deps, "both", rpPool); ok {
+		t.Errorf("pool-only /pool/only path should NOT be allowed when cfg defines a different policy")
 	}
 }

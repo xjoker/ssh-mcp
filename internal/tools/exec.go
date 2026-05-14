@@ -78,8 +78,7 @@ var sshExecSchema = json.RawMessage(`{
         "user":            { "type": "string" },
         "password":        { "type": "string" },
         "private_key_pem": { "type": "string" },
-        "passphrase":      { "type": "string" },
-        "accept_new_host": { "type": "boolean", "default": false }
+        "passphrase":      { "type": "string" }
       },
       "required": ["host", "user"]
     },
@@ -182,12 +181,15 @@ func handleSSHExec(ctx context.Context, deps *Deps, args json.RawMessage) envelo
 			return envelope.Err(envelope.CodeAuthFailed, err.Error(), false)
 		}
 
+		// AcceptNewHost is hard-coded to false: AI tools must not initiate
+		// first-contact trust. Use `ssh-mcp trust ...` from the CLI to
+		// inspect and pin the host fingerprint before any AI-driven call.
 		c, dialErr := deps.Pool.GetAdHoc(ctx, ssh.AdHocParams{
 			Host:          in.Host,
 			Port:          port,
 			User:          in.User,
 			Auth:          am,
-			AcceptNewHost: in.AcceptNewHost,
+			AcceptNewHost: false,
 		})
 		cleanup() // zero the secret immediately after dial
 		if dialErr != nil {

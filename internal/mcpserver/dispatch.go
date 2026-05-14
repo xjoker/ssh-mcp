@@ -25,15 +25,20 @@ import (
 // audit record before the handler runs; if that record cannot be written,
 // the handler is refused and the caller receives AUDIT_FAILED.
 var destructiveTools = map[string]struct{}{
-	"ssh_exec":        {},
-	"ssh_group_exec":  {},
-	"sftp_op":         {},
-	"session_send":    {},
-	"session_start":   {},
-	"session_close":   {},
+	"ssh_exec":             {},
+	"ssh_group_exec":       {},
+	"sftp_op":              {},
+	"session_send":         {},
+	"session_start":        {},
+	"session_close":        {},
 	"tunnel":               {},
 	"ssh_quick_setup":      {},
 	"ssh_persistent_setup": {},
+	// self_update replaces the local binary — i.e. it can swap out the
+	// security boundary itself. It MUST go through fail-closed audit
+	// pre-record so an unwritable audit log can refuse the update, and so
+	// the action is visible in audit history before it takes effect.
+	"self_update": {},
 }
 
 func isDestructive(name string) bool {

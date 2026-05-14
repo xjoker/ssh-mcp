@@ -174,7 +174,7 @@ We explicitly do **not** defend against:
 |---|---|---|
 | Execute commands on the operator's production server through prompt injection | A1 | Strict tool surface; no autoApprove example; ad-hoc credentials require explicit user typing; audit log makes post-hoc detection possible |
 | Inject shell metacharacters via tool arguments (`cwd`, `path`, `query`) | A1 | All paths typed as `RemotePath`; never concatenated into shell strings; SFTP-level path resolution |
-| Steal SSH credentials by getting the LLM to connect to attacker-controlled host | A1, A2 | Strict `known_hosts` enforcement; first-time connections require explicit `trust` CLI command or `accept_new_host: true` flag; audit log records all connection attempts |
+| Steal SSH credentials by getting the LLM to connect to attacker-controlled host | A1, A2 | Strict `known_hosts` enforcement; **first-time host trust must go through the CLI** `ssh-mcp trust <name>` which displays the SHA256 fingerprint before pinning the key. MCP tool schemas no longer expose `accept_new_host` — an AI cannot establish TOFU trust via tool parameters; audit log records all connection attempts |
 | Leak passwords via process list (`ps aux`) | A2 (remote) | No `echo PASSWORD \| sudo -S`; passwords passed only via SSH protocol (not shell) |
 | MITM a connection on first use | A4 | Strict host-key check by default; new hosts require explicit operator action |
 | Exfiltrate credentials via audit log | A3 | Audit log is `0600`; passwords scrubbed via redactor; ad-hoc inline credentials never written to disk |
@@ -530,9 +530,12 @@ func RedactSecret(b []byte) []byte
 // known_hosts file) and rejects mismatches.
 //
 // If acceptNew is true, unknown hosts are accepted AND appended to
-// the known_hosts file. acceptNew must only be set by:
-//   - the CLI 'trust' command
-//   - an ad-hoc tool call with explicit accept_new_host: true
+// the known_hosts file. As of v0.0.5 acceptNew is ONLY ever set true by:
+//   - the CLI 'trust' command (shows fingerprint, requires user confirm)
+// MCP tool schemas (ssh_exec inline, session_start inline, ssh_quick_setup,
+// ssh_persistent_setup) no longer expose accept_new_host — an AI tool call
+// cannot establish first-contact trust. Unknown hosts dialed from a tool
+// surface HOST_KEY_UNKNOWN; the user must run `ssh-mcp trust …` first.
 //
 // Mismatch is always rejected, regardless of acceptNew.
 func HostKeyCallback(acceptNew bool) ssh.HostKeyCallback
@@ -916,8 +919,9 @@ commands.
         "user":             { "type": "string" },
         "password":         { "type": "string", "description": "Plaintext password (testing only)" },
         "private_key_pem":  { "type": "string", "description": "PEM-encoded private key" },
-        "passphrase":       { "type": "string", "description": "Passphrase for private_key_pem" },
-        "accept_new_host":  { "type": "boolean", "default": false, "description": "If true, accept and trust an unknown host key on first contact. Default false: unknown hosts are rejected." }
+        "passphrase":       { "type": "string", "description": "Passphrase for private_key_pem" }
+        // v0.0.5: accept_new_host removed. Unknown hosts must be pinned
+        // via `ssh-mcp trust ...` from the CLI before any tool call.
       },
       "required": ["host", "user"]
     },
@@ -1359,7 +1363,8 @@ re-passing credentials.
     "password":        { "type": "string", "description": "Plaintext password" },
     "private_key_pem": { "type": "string" },
     "passphrase":      { "type": "string" },
-    "accept_new_host": { "type": "boolean", "default": false },
+    // accept_new_host intentionally absent (v0.0.5). Use CLI `ssh-mcp trust ...`
+    // to pin host keys; an AI tool call cannot establish first-contact trust.
     "name_hint":       { "type": "string", "description": "Suggested temporary name; bridge may sanitize/disambiguate" },
     "ttl_minutes":     { "type": "integer", "default": 30, "minimum": 1, "maximum": 240 }
   },
@@ -1891,8 +1896,10 @@ The complete set of `Response.error.code` values:
   the remote stderr when relevant.
 - `hint` is optional; populated for codes where actionable guidance
   helps the LLM:
-  - `HOST_KEY_UNKNOWN` → "Run `ssh-mcp trust <server>` from a
-    terminal, or set `accept_new_host: true` in the inline params."
+  - `HOST_KEY_UNKNOWN` → "Run `ssh-mcp trust <server>` (or
+    `ssh-mcp trust --host <h> --port <p>` for ad-hoc) from the
+    terminal. The CLI shows the SHA256 fingerprint before pinning the
+    key to known_hosts. AI tools cannot establish first-contact trust."
   - `INLINE_CREDS_DISABLED` → "The operator has disabled inline
     credentials. Use a configured server or have the operator enable
     `allow_inline_credentials`."

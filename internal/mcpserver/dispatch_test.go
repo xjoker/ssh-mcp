@@ -70,7 +70,16 @@ func TestEnvelopeWrapsOnError(t *testing.T) {
 // caller MUST receive AUDIT_FAILED.
 
 func TestIsDestructive(t *testing.T) {
-	for _, name := range []string{"ssh_exec", "ssh_group_exec", "sftp_op", "session_send", "session_start", "session_close", "tunnel", "ssh_quick_setup"} {
+	// v0.0.5: self_update + ssh_persistent_setup added to destructive set.
+	// self_update replaces the local binary (the security boundary itself);
+	// ssh_persistent_setup writes credentials to disk that survive restart.
+	// Both MUST emit a pending audit record before the handler runs.
+	for _, name := range []string{
+		"ssh_exec", "ssh_group_exec", "sftp_op",
+		"session_send", "session_start", "session_close",
+		"tunnel", "ssh_quick_setup", "ssh_persistent_setup",
+		"self_update",
+	} {
 		if !isDestructive(name) {
 			t.Errorf("expected %q to be destructive", name)
 		}

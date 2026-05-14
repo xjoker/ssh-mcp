@@ -177,21 +177,16 @@ func TestHandleSSHQuickSetup_TTLOverMaxRejected(t *testing.T) {
 	}
 }
 
-// TestHandleSSHQuickSetup_AcceptNewHostPlumbedToPool verifies that when
-// accept_new_host=true is passed to ssh_quick_setup the resulting
-// config.ServerConfig stored in the Pool carries AcceptNewHost=true.
+// TestHandleSSHQuickSetup_AcceptNewHostIgnoredByPolicy verifies that even when
+// accept_new_host=true is present in the JSON payload, the resulting
+// QuickSetupSpec.AcceptNewHost is always false. Since v0.0.5 the field is
+// removed from the schema and the handler hard-codes false — this test is a
+// regression guard ensuring the policy cannot be accidentally bypassed.
 //
-// Pool.AddTempServer is a concrete method on *ssh.Pool (not an interface), so
-// we construct a real ssh.Pool and call Pool.TempServerConfig (exported only in
-// tests via the ssh package's test helper) to retrieve the stored entry.
-// Since the ssh package does not export a getter, we verify the field
-// indirectly: we confirm that the QuickSetupSpec also has AcceptNewHost=true
-// (ensuring the value flowed all the way from the JSON input through the
-// handler to the spec) and that the handler passes the spec value into the
-// ServerConfig by checking the fakeQuickSetup-registered spec.
-func TestHandleSSHQuickSetup_AcceptNewHostPlumbedToPool(t *testing.T) {
+// Updated for v0.0.5: AI tools must not initiate first-contact trust.
+func TestHandleSSHQuickSetup_AcceptNewHostIgnoredByPolicy(t *testing.T) {
 	cfg := &config.Config{
-		Servers:  map[string]config.ServerConfig{},
+		Servers: map[string]config.ServerConfig{},
 	}
 	qs := &fakeQuickSetup{}
 
@@ -204,18 +199,20 @@ func TestHandleSSHQuickSetup_AcceptNewHostPlumbedToPool(t *testing.T) {
 		Pool:       pool,
 	}
 
+	// accept_new_host=true is intentionally kept in the payload to verify it
+	// is ignored even when the caller tries to pass it.
 	args := json.RawMessage(`{"host":"1.2.3.4","user":"root","password":"pw","accept_new_host":true}`)
 	resp := handleSSHQuickSetup(context.Background(), deps, args)
 	if !resp.OK {
 		t.Fatalf("expected OK, got error: %+v", resp.Error)
 	}
 
-	// Verify AcceptNewHost was propagated into the QuickSetupSpec.
+	// Updated for v0.0.5: AI tools must not initiate first-contact trust.
 	if len(qs.registered) == 0 {
 		t.Fatal("expected registration to occur")
 	}
-	if !qs.registered[0].spec.AcceptNewHost {
-		t.Error("QuickSetupSpec.AcceptNewHost should be true when accept_new_host=true")
+	if qs.registered[0].spec.AcceptNewHost {
+		t.Error("QuickSetupSpec.AcceptNewHost must be false regardless of accept_new_host in payload (v0.0.5 policy)")
 	}
 }
 

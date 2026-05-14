@@ -296,25 +296,33 @@ func TestSessionStart_BothServerAndInlineRejected(t *testing.T) {
 	}
 }
 
-// TestConfigServerConfigFromInline_AcceptNewHostPropagated verifies that
-// configServerConfigFromInline correctly forwards the acceptNewHost argument
-// into the returned ServerConfig. This is a unit test for the helper itself.
-func TestConfigServerConfigFromInline_AcceptNewHostPropagated(t *testing.T) {
-	got := configServerConfigFromInline("myserver", "1.2.3.4", 22, "root", true)
-	if !got.AcceptNewHost {
-		t.Error("configServerConfigFromInline: AcceptNewHost should be true when acceptNewHost=true")
+// TestConfigServerConfigFromInline_AcceptNewHostAlwaysFalse verifies that
+// configServerConfigFromInline always returns AcceptNewHost=false regardless of
+// any caller intent. The acceptNewHost parameter was removed in v0.0.5 to
+// enforce that AI tools must not initiate first-contact trust.
+//
+// Updated for v0.0.5: AI tools must not initiate first-contact trust.
+func TestConfigServerConfigFromInline_AcceptNewHostAlwaysFalse(t *testing.T) {
+	// Updated for v0.0.5: AI tools must not initiate first-contact trust.
+	got := configServerConfigFromInline("myserver", "1.2.3.4", 22, "root")
+	if got.AcceptNewHost {
+		t.Error("configServerConfigFromInline: AcceptNewHost must always be false (v0.0.5 policy)")
 	}
 
-	got2 := configServerConfigFromInline("myserver", "1.2.3.4", 22, "root", false)
+	got2 := configServerConfigFromInline("anotherserver", "5.6.7.8", 2222, "admin")
 	if got2.AcceptNewHost {
-		t.Error("configServerConfigFromInline: AcceptNewHost should be false when acceptNewHost=false")
+		t.Error("configServerConfigFromInline: AcceptNewHost must always be false (v0.0.5 policy)")
 	}
 }
 
-// TestSessionStart_InlineAcceptNewHostPlumbed verifies that when session_start
-// receives an inline request with accept_new_host=true the resulting
-// QuickSetupSpec.AcceptNewHost is true (demonstrating end-to-end propagation).
-func TestSessionStart_InlineAcceptNewHostPlumbed(t *testing.T) {
+// TestSessionStart_InlineAcceptNewHostIgnoredByPolicy verifies that even when
+// accept_new_host=true is present in the inline JSON payload, the resulting
+// QuickSetupSpec.AcceptNewHost is always false. Since v0.0.5 the field is
+// removed from the schema and the handler hard-codes false — this test is a
+// regression guard ensuring the policy cannot be accidentally bypassed.
+//
+// Updated for v0.0.5: AI tools must not initiate first-contact trust.
+func TestSessionStart_InlineAcceptNewHostIgnoredByPolicy(t *testing.T) {
 	cfg := &config.Config{
 		Settings: config.Settings{AllowInlineCredentials: true, SessionIdleSeconds: 60},
 		Servers:  map[string]config.ServerConfig{},
@@ -327,6 +335,8 @@ func TestSessionStart_InlineAcceptNewHostPlumbed(t *testing.T) {
 	mgr := newFakeSessionManager()
 	deps := &Deps{Cfg: cfg, QuickSetup: qs, Pool: pool, SessionMgr: mgr}
 
+	// accept_new_host=true is intentionally kept in the payload to verify it
+	// is ignored even when the caller tries to pass it.
 	args := json.RawMessage(`{"inline":{"host":"h","user":"u","password":"pw","accept_new_host":true}}`)
 	// Bound the call: registerInlineSession runs synchronously before
 	// SessionMgr.Start is invoked, so by the time the timed-out Start
@@ -340,8 +350,9 @@ func TestSessionStart_InlineAcceptNewHostPlumbed(t *testing.T) {
 	if len(qs.registerCalls) == 0 {
 		t.Fatal("expected inline session to call QuickSetup.Register")
 	}
-	if !qs.registerCalls[0].spec.AcceptNewHost {
-		t.Error("QuickSetupSpec.AcceptNewHost should be true for inline accept_new_host=true")
+	// Updated for v0.0.5: AI tools must not initiate first-contact trust.
+	if qs.registerCalls[0].spec.AcceptNewHost {
+		t.Error("QuickSetupSpec.AcceptNewHost must be false regardless of accept_new_host in payload (v0.0.5 policy)")
 	}
 	// SessionMgr.Start fails (fake transport), so the inline registration
 	// must be cleaned up immediately — it should NOT linger in qs.registered.

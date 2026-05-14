@@ -47,10 +47,20 @@ Then tell me: "Done — please restart Claude Code to activate the MCP server."
 After restart, paste this:
 
 ```
-Before we start: add the following to ~/.claude/settings.json so ssh-mcp tools
-run without confirmation prompts on every call:
+Before we start: add the following to ~/.claude/settings.json so low-risk
+ssh-mcp tools run without confirmation prompts on every call:
 
-  { "permissions": { "allow": ["mcp__ssh-bridge__*"] } }
+  {
+    "permissions": {
+      "allow": [
+        "mcp__ssh-bridge__list_servers",
+        "mcp__ssh-bridge__sftp_list",
+        "mcp__ssh-bridge__sftp_read",
+        "mcp__ssh-bridge__sftp_stat",
+        "mcp__ssh-bridge__audit_query"
+      ]
+    }
+  }
 
 Then use the ssh_quick_setup MCP tool to connect me to my SSH server.
 Ask me for: host, port, username, and auth method (agent / key / password).
@@ -125,39 +135,57 @@ ssh-mcp auth set ssh-password:prod
 
 ### Pre-authorise tools (avoid per-call permission prompts)
 
-By default Claude Code asks for confirmation on every MCP tool call. To pre-authorise all ssh-mcp tools, add the following to `~/.claude/settings.json` (user-wide) or `.claude/settings.json` (project-only):
+By default Claude Code asks for confirmation on every MCP tool call. You can pre-authorise individual tools by adding them to `permissions.allow` in `~/.claude/settings.json` (user-wide) or `.claude/settings.json` (project-only).
+
+> `permissions.allow` pre-approves specific tools — distinct from `autoApprove` in the MCP config, which bypasses all confirmation globally and is intentionally omitted from ssh-mcp examples.
+
+**Do not use the wildcard `"mcp__ssh-bridge__*"`.** A wildcard pre-authorises every tool including destructive and security-boundary tools, removing the human confirmation step that limits the blast radius of prompt injection or model mistakes.
+
+Instead, use the tiered approach below:
+
+#### Tier 1 — Safe to pre-authorise (read-only, no side effects)
 
 ```json
 {
   "permissions": {
-    "allow": ["mcp__ssh-bridge__*"]
+    "allow": [
+      "mcp__ssh-bridge__list_servers",
+      "mcp__ssh-bridge__sftp_list",
+      "mcp__ssh-bridge__sftp_read",
+      "mcp__ssh-bridge__sftp_stat",
+      "mcp__ssh-bridge__audit_query"
+    ]
   }
 }
 ```
 
-Or authorise individual tools for tighter control:
+#### Tier 2 — Pre-authorise only if you understand the implications
+
+These tools execute commands or write files on remote servers. Pre-authorising them removes the per-call confirmation that would otherwise catch unintended operations.
 
 ```json
 {
   "permissions": {
     "allow": [
       "mcp__ssh-bridge__ssh_exec",
-      "mcp__ssh-bridge__sftp_list",
-      "mcp__ssh-bridge__sftp_read",
-      "mcp__ssh-bridge__list_servers",
-      "mcp__ssh-bridge__ssh_quick_setup",
-      "mcp__ssh-bridge__ssh_persistent_setup",
+      "mcp__ssh-bridge__sftp_op",
       "mcp__ssh-bridge__session_start",
       "mcp__ssh-bridge__session_send",
       "mcp__ssh-bridge__session_close",
-      "mcp__ssh-bridge__audit_query",
-      "mcp__ssh-bridge__self_update"
+      "mcp__ssh-bridge__ssh_group_exec",
+      "mcp__ssh-bridge__ssh_quick_setup"
     ]
   }
 }
 ```
 
-> `permissions.allow` pre-approves specific tools — distinct from `autoApprove` in the MCP config, which bypasses all confirmation globally and is intentionally omitted from ssh-mcp examples.
+#### Tier 3 — Never wildcard-allow; require manual confirmation every time
+
+These tools have persistent or irreversible effects: `tunnel` establishes long-lived port forwards, `ssh_persistent_setup` writes permanent server credentials, and `self_update` replaces the running binary (the security boundary itself). Always confirm these manually.
+
+- `mcp__ssh-bridge__tunnel`
+- `mcp__ssh-bridge__ssh_persistent_setup`
+- `mcp__ssh-bridge__self_update`
 
 #### Why does Claude Code prompt every time I call `ssh_quick_setup`?
 
@@ -183,7 +211,7 @@ Repeated `ssh_quick_setup` calls for the same `host+port+user` already dedup int
 
 | Tool | Description |
 |------|-------------|
-| `sftp_op` | Upload, download, mkdir, delete, move, copy, symlink, stat, realpath. Small payloads only (base64 / JSON-bounded — use the CLI commands below for large files). |
+| `sftp_op` | Upload, download, mkdir, delete, move, copy, symlink, stat, realpath. Small payloads only (base64 / JSON-bounded — use the CLI commands below for large files). The `realpath` operation is subject to `allowed_paths` enforcement — it cannot be used to probe paths outside the configured allow-list. |
 | `sftp_list` | List a remote directory with metadata. |
 | `sftp_read` | Read a remote file with byte-offset support (tail / seek). |
 | `sftp_stat` | Stat a single remote path. |
@@ -212,7 +240,7 @@ Sessions are stateful: run `cd`, set environment variables, activate virtualenvs
 
 | Tool | Description |
 |------|-------------|
-| `tunnel` | Open a local or remote port-forward. Local: `localhost:{port} → server:{remotePort}`. Remote: `server:{port} → localhost:{localPort}`. |
+| `tunnel` ⚠️ | Open a local or remote port-forward. Local: `localhost:{port} → server:{remotePort}`. Remote: `server:{port} → localhost:{localPort}`. Tier 3 — never wildcard-allow. |
 
 ### Server Management
 
@@ -220,7 +248,7 @@ Sessions are stateful: run `cd`, set environment variables, activate virtualenvs
 |------|-------------|
 | `list_servers` | List configured servers with optional tag filter. Re-reads `config.toml` from disk by default (`refresh=true`) so manual edits are visible without restart; newly discovered entries are also injected into the SSH pool so `ssh_exec` / `session_start` can use them immediately. |
 | `ssh_quick_setup` | Register an ad-hoc server using inline credentials — stored in memory with a TTL (max 4 hours), never written to disk. Repeated calls for the same `host+port+user` reuse the existing registration. |
-| `ssh_persistent_setup` | Append a `[servers.<name>]` block to `config.toml` so the entry survives restart and has no TTL. Passwords go to the OS keychain by default (`password_storage="keychain"`); set `"plaintext"` (with `settings.allow_config_plaintext_password=true`) to store the literal value instead. |
+| `ssh_persistent_setup` ⚠️ | Append a `[servers.<name>]` block to `config.toml` so the entry survives restart and has no TTL. Passwords go to the OS keychain by default (`password_storage="keychain"`); set `"plaintext"` (with `settings.allow_config_plaintext_password=true`) to store the literal value instead. Tier 3 — never wildcard-allow. |
 
 ### Audit
 
@@ -232,7 +260,7 @@ Sessions are stateful: run `cd`, set environment variables, activate virtualenvs
 
 | Tool | Description |
 |------|-------------|
-| `self_update` | Check for a newer release and install it atomically. Use `check_only: true` to inspect availability without downloading. After update, restart the MCP server to apply the new binary. |
+| `self_update` ⚠️ | Check for a newer release and install it atomically. Use `check_only: true` to inspect availability without downloading. After update, restart the MCP server to apply the new binary. Tier 3 — never wildcard-allow. |
 
 ---
 
@@ -265,7 +293,9 @@ Every tool call is pre-recorded in a JSONL audit log before execution. `audit_qu
 
 - **No `autoApprove`** — example client configs intentionally omit it. SSH operations have unbounded remote effects and must stay on the human-confirmation path.
 - **Host key verification** — `HOST_KEY_MISMATCH` is a hard stop; the bridge never auto-accepts changed keys.
-- **`allowed_paths` enforcement** — SFTP paths are canonicalised through SFTP `realpath` before policy is applied, closing symlink TOCTOU.
+- **First-connection trust via CLI only** — `accept_new_host` has been removed from all MCP tool schemas (`ssh_quick_setup`, `ssh_exec`, `session_start`, `ssh_persistent_setup`). New hosts must be trusted through the CLI: `ssh-mcp trust <name>` or `ssh-mcp trust --host <h> --port <p>`. The CLI displays the SHA256 fingerprint and requires manual confirmation before writing to `known_hosts`. This prevents a prompt-injected instruction from silently establishing TOFU trust through the model.
+- **`allowed_paths` enforcement** — SFTP paths are canonicalised through SFTP `realpath` before policy is applied, closing symlink TOCTOU. This includes the `realpath` operation itself — it cannot probe paths outside the allow-list.
+- **`self_update` pre-audit** — the update operation records a pending audit entry before replacing the binary. If the audit write fails, the update is aborted. This ensures the action that replaces the security boundary is always traceable.
 - **Plaintext password guard** — rejected unless `allow_config_plaintext_password = true`; keychain is the default.
 - See [`SECURITY.md`](SECURITY.md) for the full threat model and disclosure policy.
 

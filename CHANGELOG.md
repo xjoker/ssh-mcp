@@ -12,6 +12,57 @@ Branch / version convention:
 
 ## [Unreleased]
 
+## [0.0.5] — 2026-05-14
+
+### Added
+- **Installer SHA-256 verification.** `scripts/install.sh` now downloads the
+  `checksums.sha256` file published alongside each GitHub release and verifies
+  the binary before placing it on `PATH`. A checksum mismatch causes the
+  installer to reject and delete the downloaded binary immediately, providing
+  basic supply-chain assurance.
+
+### Changed
+- **`permissions.allow` guidance reclassified into three tiers.** The README
+  previously showed `"mcp__ssh-bridge__*"` as the recommended quick-start
+  setting; this wildcard pre-authorises every tool including destructive and
+  security-boundary tools. The documentation now recommends a tiered approach:
+  - **Tier 1** (safe to pre-authorise, no side effects): `list_servers`,
+    `sftp_list`, `sftp_read`, `sftp_stat`, `audit_query`.
+  - **Tier 2** (pre-authorise only if you understand the implications —
+    remote command execution and file writes): `ssh_exec`, `sftp_op`,
+    `session_start`, `session_send`, `session_close`, `ssh_group_exec`,
+    `ssh_quick_setup`.
+  - **Tier 3** (never wildcard-allow — persistent or irreversible effects):
+    `tunnel`, `ssh_persistent_setup`, `self_update`.
+
+### Security
+- **`accept_new_host` removed from all MCP tool schemas.** The field has been
+  dropped from `ssh_quick_setup`, `ssh_exec` (inline), `session_start`
+  (inline), and `ssh_persistent_setup`. First-connection host-key trust can
+  only be established via the CLI: `ssh-mcp trust <name>` or
+  `ssh-mcp trust --host <h> --port <p>`. The CLI displays the SHA256
+  fingerprint and requires explicit confirmation before writing to
+  `known_hosts`. This closes the prompt-injection path where a model could
+  silently establish TOFU trust by passing `accept_new_host=true`.
+- **`self_update` pre-audit gate.** The update operation now writes a pending
+  audit record before downloading or replacing the binary. If the audit write
+  fails the update is aborted. Because `self_update` replaces the running
+  binary (the security boundary itself), the action must be traceable before
+  it executes.
+- **`sftp_op realpath` now enforces `allowed_paths`.** Previously `realpath`
+  was exempt from the path allow-list check, making it usable as a
+  path-existence probe for directories outside the configured scope. It now
+  goes through the same `allowedPathsForServer` check as all other `sftp_op`
+  operations.
+- **`list_servers refresh` and `ssh_persistent_setup` inherit `allowed_paths`
+  policy.** Servers injected into the pool's temp map via `list_servers
+  refresh=true` or registered by `ssh_persistent_setup` were previously not
+  consulted by `allowedPathsForServer`, which only looked up the static
+  `cfg.Servers` map. SFTP operations on these servers therefore bypassed the
+  `allowed_paths` check. `allowedPathsForServer` now also queries the pool's
+  temp map, so dynamically registered servers are subject to the same policy
+  as statically configured ones.
+
 ## [0.0.4] — 2026-05-14
 
 ### Added

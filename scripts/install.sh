@@ -3,6 +3,9 @@
 #
 # No Go, no git, no build tools required.
 #
+# SHA256 verification: automatically verifies binary integrity using checksums.sha256
+# from the GitHub release. Fails with non-zero exit if checksum mismatch detected.
+#
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/xjoker/ssh-mcp/main/scripts/install.sh | bash
 #   bash scripts/install.sh                 # from a local checkout
@@ -67,9 +70,44 @@ elif command -v wget >/dev/null 2>&1; then
 else
   fail "curl or wget is required to download the binary"
 fi
+
+# 7. Verify SHA256 checksum.
+log "verifying checksum..."
+CHECKSUM_URL="https://github.com/$REPO/releases/download/$TAG/checksums.sha256"
+CHECKSUM_FILE=$(mktemp) || fail "failed to create temporary file for checksums"
+trap "rm -f '$CHECKSUM_FILE'" EXIT
+
+if command -v curl >/dev/null 2>&1; then
+  curl -fsSL "$CHECKSUM_URL" -o "$CHECKSUM_FILE" || fail "failed to download checksums from $CHECKSUM_URL"
+elif command -v wget >/dev/null 2>&1; then
+  wget -qO "$CHECKSUM_FILE" "$CHECKSUM_URL" || fail "failed to download checksums from $CHECKSUM_URL"
+else
+  fail "curl or wget is required to download checksums"
+fi
+
+EXPECTED_SHA=$(grep " $ASSET$" "$CHECKSUM_FILE" | awk '{print $1}') || true
+[ -n "$EXPECTED_SHA" ] || fail "checksum not found for $ASSET in checksums.sha256"
+
+# Calculate actual SHA256 using shasum (macOS) or sha256sum (Linux).
+if command -v shasum >/dev/null 2>&1; then
+  ACTUAL_SHA=$(shasum -a 256 "$DEST" | awk '{print $1}')
+elif command -v sha256sum >/dev/null 2>&1; then
+  ACTUAL_SHA=$(sha256sum "$DEST" | awk '{print $1}')
+else
+  fail "shasum or sha256sum is required to verify checksums"
+fi
+
+if [ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]; then
+  rm -f "$DEST"
+  fail "checksum mismatch for $ASSET
+  expected: $EXPECTED_SHA
+  actual:   $ACTUAL_SHA
+  The binary may have been corrupted or tampered with. Please try again or visit https://github.com/$REPO/releases"
+fi
+
 chmod 0755 "$DEST"
 
-# 7. PATH hint when ~/.local/bin is not on PATH.
+# 8. PATH hint when ~/.local/bin is not on PATH.
 case ":$PATH:" in
   *":$PREFIX:"*) ;;
   *) warn "$PREFIX is not in PATH — add this to your shell profile:"

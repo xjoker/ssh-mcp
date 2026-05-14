@@ -20,16 +20,19 @@ var inlineSessionRegistrations sync.Map // map[string]string
 // configServerConfigFromInline builds a minimal ServerConfig used when an
 // inline session_start request is registered as a temp server. Auth is
 // "quick_setup" so the credResolver consults the QuickSetup registry.
-// acceptNewHost is forwarded from the inline.accept_new_host argument so that
-// the SSH pool honours the caller's host-key policy for this ephemeral entry.
-func configServerConfigFromInline(name, host string, port int, user string, acceptNewHost bool) config.ServerConfig {
+//
+// AcceptNewHost is hard-coded to false: AI-initiated first-contact trust
+// is forbidden. If the host is unknown, the dial will fail with
+// HOST_KEY_UNKNOWN and the caller must run `ssh-mcp trust ...` before
+// retrying.
+func configServerConfigFromInline(name, host string, port int, user string) config.ServerConfig {
 	return config.ServerConfig{
 		Name:          name,
 		Host:          host,
 		Port:          port,
 		User:          user,
 		Auth:          "quick_setup",
-		AcceptNewHost: acceptNewHost,
+		AcceptNewHost: false,
 	}
 }
 
@@ -56,8 +59,7 @@ var sessionStartSchema = json.RawMessage(`{
         "user":             { "type": "string" },
         "password":         { "type": "string" },
         "private_key_pem":  { "type": "string" },
-        "passphrase":       { "type": "string" },
-        "accept_new_host":  { "type": "boolean", "default": false }
+        "passphrase":       { "type": "string" }
       },
       "required": ["host", "user"]
     },
@@ -251,11 +253,13 @@ func registerInlineSession(deps *Deps, in *sftpInline) (string, envelope.Respons
 	}
 
 	spec := QuickSetupSpec{
-		NameHint:      "inline-session-" + in.Host,
-		Host:          in.Host,
-		Port:          port,
-		User:          in.User,
-		AcceptNewHost: in.AcceptNewHost,
+		NameHint: "inline-session-" + in.Host,
+		Host:     in.Host,
+		Port:     port,
+		User:     in.User,
+		// AcceptNewHost: see configServerConfigFromInline doc — hard-coded
+		// false. AI tools must not establish first-contact trust.
+		AcceptNewHost: false,
 		TTLMinutes:    ttl,
 	}
 	if in.Password != "" {
@@ -274,7 +278,7 @@ func registerInlineSession(deps *Deps, in *sftpInline) (string, envelope.Respons
 			"register inline session: "+err.Error(), false), false
 	}
 
-	deps.Pool.AddTempServer(name, configServerConfigFromInline(name, in.Host, port, in.User, in.AcceptNewHost), time.Unix(expiresAt, 0))
+	deps.Pool.AddTempServer(name, configServerConfigFromInline(name, in.Host, port, in.User), time.Unix(expiresAt, 0))
 	return name, envelope.Response{}, true
 }
 

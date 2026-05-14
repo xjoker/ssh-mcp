@@ -25,9 +25,15 @@ type quickSetupInput struct {
 	Password      string `json:"password,omitempty"`
 	PrivateKeyPEM string `json:"private_key_pem,omitempty"`
 	Passphrase    string `json:"passphrase,omitempty"`
-	AcceptNewHost bool   `json:"accept_new_host,omitempty"`
 	NameHint      string `json:"name_hint,omitempty"`
 	TTLMinutes    int    `json:"ttl_minutes,omitempty"`
+	// accept_new_host is intentionally NOT exposed in this schema. Establishing
+	// first-contact trust for a new host is a human decision (the fingerprint
+	// must be inspected) and must not be initiated by AI tool calls — that
+	// would let prompt injection set up MITM-friendly host entries. Use the
+	// CLI: `ssh-mcp trust <name>` or `ssh-mcp trust --host <h> --port <p>`,
+	// which prints the SHA256 fingerprint and writes a pinned key to
+	// known_hosts after the user confirms.
 }
 
 type quickSetupOutput struct {
@@ -51,7 +57,6 @@ var quickSetupSchema = json.RawMessage(`{
     "password":        { "type": "string", "description": "Plaintext password (stored in-memory only; never persisted)" },
     "private_key_pem": { "type": "string", "description": "PEM-encoded private key" },
     "passphrase":      { "type": "string", "description": "Passphrase for encrypted private key" },
-    "accept_new_host": { "type": "boolean", "default": false, "description": "Accept and record unknown host keys" },
     "name_hint":       { "type": "string", "description": "Suggested name for the temporary server (bridge may sanitize)" },
     "ttl_minutes":     { "type": "integer", "default": 30, "minimum": 1, "maximum": 240, "description": "TTL in minutes before the temporary entry expires" }
   }
@@ -109,12 +114,16 @@ func handleSSHQuickSetup(ctx context.Context, deps *Deps, args json.RawMessage) 
 	}
 
 	// 3. Determine secret bytes + auth kind. password takes priority.
+	// AcceptNewHost is hard-coded to false: first-contact trust is a CLI-only
+	// path (`ssh-mcp trust ...`) so an AI cannot establish MITM-friendly host
+	// entries via tool call. HOST_KEY_UNKNOWN error tells the caller exactly
+	// how to proceed.
 	spec := QuickSetupSpec{
 		NameHint:      input.NameHint,
 		Host:          input.Host,
 		Port:          port,
 		User:          input.User,
-		AcceptNewHost: input.AcceptNewHost,
+		AcceptNewHost: false,
 		TTLMinutes:    ttl,
 	}
 	if input.Password != "" {
@@ -142,12 +151,14 @@ func handleSSHQuickSetup(ctx context.Context, deps *Deps, args json.RawMessage) 
 	//    "quick_setup" and looks up the in-memory secret.
 	if deps.Pool != nil {
 		deps.Pool.AddTempServer(registeredName, config.ServerConfig{
-			Name:          registeredName,
-			Host:          input.Host,
-			Port:          port,
-			User:          input.User,
-			Auth:          "quick_setup",
-			AcceptNewHost: input.AcceptNewHost,
+			Name: registeredName,
+			Host: input.Host,
+			Port: port,
+			User: input.User,
+			Auth: "quick_setup",
+			// AcceptNewHost stays false — see input struct doc. First-contact
+			// trust must be established via `ssh-mcp trust ...` CLI.
+			AcceptNewHost: false,
 		}, time.Unix(expiresAt, 0))
 	}
 

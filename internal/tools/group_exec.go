@@ -295,7 +295,7 @@ func earlyCwdCheck(deps *Deps, serverName, rawPath string) (groupExecServerResul
 			},
 		}, true
 	}
-	errResp, allowed := enforceAllowedPath(deps.Cfg, serverName, rp)
+	errResp, allowed := enforceAllowedPath(deps, serverName, rp)
 	if !allowed {
 		return groupExecServerResult{
 			Server: serverName,

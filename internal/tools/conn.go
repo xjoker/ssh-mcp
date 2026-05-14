@@ -14,7 +14,6 @@ import (
 	"strings"
 
 	"github.com/xjoker/ssh-mcp/internal/auth"
-	"github.com/xjoker/ssh-mcp/internal/config"
 	"github.com/xjoker/ssh-mcp/internal/envelope"
 	"github.com/xjoker/ssh-mcp/internal/safety"
 	"github.com/xjoker/ssh-mcp/internal/ssh"
@@ -22,6 +21,9 @@ import (
 
 // sftpInline mirrors the inline JSON object reused across sftp_* tools.
 // It is intentionally separate from execInline to avoid coupling.
+//
+// accept_new_host is intentionally NOT a field: AI-initiated first-contact
+// trust is forbidden; use `ssh-mcp trust ...` to pin host keys instead.
 type sftpInline struct {
 	Host          string `json:"host"`
 	Port          int    `json:"port"`
@@ -29,7 +31,6 @@ type sftpInline struct {
 	Password      string `json:"password,omitempty"`
 	PrivateKeyPEM string `json:"private_key_pem,omitempty"`
 	Passphrase    string `json:"passphrase,omitempty"`
-	AcceptNewHost bool   `json:"accept_new_host"`
 }
 
 // sftpConnArgs holds only the server/inline fields (common to all sftp/tunnel tools).
@@ -38,26 +39,40 @@ type sftpConnArgs struct {
 	Inline *sftpInline `json:"inline,omitempty"`
 }
 
-// allowedPathsForServer returns the allowed_prefixes list for a configured
-// server name, or nil for inline / quick_setup / temp servers (those entries
-// are not in cfg.Servers so we cannot retrieve their AllowedPaths).
-// An empty slice means "all paths allowed" (no restriction).
-func allowedPathsForServer(cfg *config.Config, name string) []string {
-	if cfg == nil || name == "" {
+// allowedPathsForServer returns the allowed_prefixes list for a server,
+// consulting (in order):
+//  1. cfg.Servers — the static config snapshot loaded at MCP startup.
+//  2. The SSH pool's temp-server map — entries injected by
+//     `list_servers refresh` (zero-expiry shadows for hand-edited
+//     config entries) and `ssh_persistent_setup` (newly registered
+//     servers). These carry the AllowedPaths field copied from the
+//     freshly loaded TOML, so paths added/edited on disk after process
+//     start are still policy-enforced.
+//
+// Returns nil for genuine inline / quick_setup entries (no AllowedPaths
+// to enforce). An empty slice means "all paths allowed".
+func allowedPathsForServer(deps *Deps, name string) []string {
+	if name == "" {
 		return nil
 	}
-	srv, ok := cfg.Servers[name]
-	if !ok {
-		// Inline or temp server — no allowed_paths to enforce.
-		return nil
+	if deps != nil && deps.Cfg != nil {
+		if srv, ok := deps.Cfg.Servers[name]; ok {
+			return srv.AllowedPaths
+		}
 	}
-	return srv.AllowedPaths
+	// Pool fallback: zero-expiry refresh shadows + persistent_setup writes.
+	if deps != nil && deps.Pool != nil {
+		if srv, ok := deps.Pool.LookupTempServer(name); ok {
+			return srv.AllowedPaths
+		}
+	}
+	return nil
 }
 
 // enforceAllowedPath validates rp against the server's allowed_paths list.
-// Returns (zeroResponse, true) when allowed (or when server is inline/temp).
-// Returns (PERMISSION_DENIED response, false) when the path is outside the
-// configured prefixes.
+// Returns (zeroResponse, true) when allowed (or when server is inline/temp
+// with no policy). Returns (PERMISSION_DENIED response, false) when the
+// path is outside the configured prefixes.
 //
 // serverName == "" is treated as "inline / no restriction" and always
 // returns (zeroResponse, true).
@@ -67,8 +82,8 @@ func allowedPathsForServer(cfg *config.Config, name string) []string {
 // configured servers MUST call resolveAndCheckRemotePath after the
 // connection is established, which canonicalises through the remote OS
 // before applying the prefix policy.
-func enforceAllowedPath(cfg *config.Config, serverName string, rp safety.RemotePath) (envelope.Response, bool) {
-	prefixes := allowedPathsForServer(cfg, serverName)
+func enforceAllowedPath(deps *Deps, serverName string, rp safety.RemotePath) (envelope.Response, bool) {
+	prefixes := allowedPathsForServer(deps, serverName)
 	if err := safety.CheckAllowed(rp, prefixes); err != nil {
 		msg := fmt.Sprintf("path %q not in allowed_prefixes for server %q", rp.String(), serverName)
 		return envelope.Err(envelope.CodePermissionDenied, msg, false), false
@@ -122,7 +137,7 @@ func resolveAndCheckRemotePath(
 				false
 		}
 		// Validate the parent is under allowed_paths.
-		if errResp, allowed := enforceAllowedPath(deps.Cfg, serverName, parentRP); !allowed {
+		if errResp, allowed := enforceAllowedPath(deps, serverName, parentRP); !allowed {
 			return safety.RemotePath{}, errResp, false
 		}
 		joined := joinPath(parentRP.String(), base)
@@ -134,12 +149,12 @@ func resolveAndCheckRemotePath(
 				false
 		}
 		// Re-check the full synthetic path (typically same prefix as parent).
-		if errResp, allowed := enforceAllowedPath(deps.Cfg, serverName, joinedRP); !allowed {
+		if errResp, allowed := enforceAllowedPath(deps, serverName, joinedRP); !allowed {
 			return safety.RemotePath{}, errResp, false
 		}
 		return joinedRP, envelope.Response{}, true
 	}
-	if errResp, allowed := enforceAllowedPath(deps.Cfg, serverName, resolved); !allowed {
+	if errResp, allowed := enforceAllowedPath(deps, serverName, resolved); !allowed {
 		return safety.RemotePath{}, errResp, false
 	}
 	return resolved, envelope.Response{}, true
@@ -241,12 +256,13 @@ func resolveClient(
 			port = 22
 		}
 
+		// AcceptNewHost is hard-coded to false — see sftpInline doc.
 		c, err := deps.Pool.GetAdHoc(ctx, ssh.AdHocParams{
 			Host:          in.Host,
 			Port:          port,
 			User:          in.User,
 			Auth:          am,
-			AcceptNewHost: in.AcceptNewHost,
+			AcceptNewHost: false,
 		})
 		cleanup() // zero the secret immediately after the dial attempt
 		if err != nil {
@@ -336,7 +352,7 @@ func resolveAndCheckRemotePathWalkUp(
 	// Try the full path first; if it succeeds (target already exists),
 	// canonical form decides everything.
 	if rp, err := sftpc.Realpath(rawPath); err == nil {
-		if errResp, allowed := enforceAllowedPath(deps.Cfg, serverName, rp); !allowed {
+		if errResp, allowed := enforceAllowedPath(deps, serverName, rp); !allowed {
 			return safety.RemotePath{}, errResp, false
 		}
 		return rp, envelope.Response{}, true
@@ -357,7 +373,7 @@ func resolveAndCheckRemotePathWalkUp(
 		// Try parent — if it resolves, we found the existing ancestor.
 		if rp, err := sftpc.Realpath(parent); err == nil {
 			// Validate ancestor inside policy.
-			if errResp, allowed := enforceAllowedPath(deps.Cfg, serverName, rp); !allowed {
+			if errResp, allowed := enforceAllowedPath(deps, serverName, rp); !allowed {
 				return safety.RemotePath{}, errResp, false
 			}
 			// Re-attach unresolved tail; check each cumulative path.
@@ -369,7 +385,7 @@ func resolveAndCheckRemotePathWalkUp(
 					return safety.RemotePath{}, envelope.Err(envelope.CodeInvalidArgument,
 						fmt.Sprintf("invalid resolved path %q: %v", joined, vErr), false), false
 				}
-				if errResp, allowed := enforceAllowedPath(deps.Cfg, serverName, jrp); !allowed {
+				if errResp, allowed := enforceAllowedPath(deps, serverName, jrp); !allowed {
 					return safety.RemotePath{}, errResp, false
 				}
 			}

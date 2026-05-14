@@ -58,12 +58,15 @@ type persistentSetupInput struct {
 	//   "plaintext" — secret is written verbatim into config.toml. Requires
 	//                 settings.allow_config_plaintext_password=true; fails
 	//                 closed otherwise.
-	PasswordStorage string   `json:"password_storage,omitempty"`
-	AcceptNewHost   bool     `json:"accept_new_host,omitempty"`
-	Description     string   `json:"description,omitempty"`
-	Tags            []string `json:"tags,omitempty"`
-	DefaultDir      string   `json:"default_dir,omitempty"`
-	ProxyJump       string   `json:"proxy_jump,omitempty"`
+	PasswordStorage string `json:"password_storage,omitempty"`
+	// accept_new_host is intentionally NOT exposed. Establishing host-key
+	// trust for a new server is a human action — use the CLI
+	// `ssh-mcp trust <name>` after persistent_setup completes, which
+	// prints the SHA256 fingerprint before pinning it to known_hosts.
+	Description string   `json:"description,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+	DefaultDir  string   `json:"default_dir,omitempty"`
+	ProxyJump   string   `json:"proxy_jump,omitempty"`
 }
 
 type persistentSetupOutput struct {
@@ -103,7 +106,6 @@ var persistentSetupSchema = json.RawMessage(`{
     "key_passphrase":  { "type": "string", "description": "Plaintext passphrase for encrypted key (auth=key, optional). Stored according to password_storage." },
     "password":        { "type": "string", "description": "Plaintext password (auth=password). Stored according to password_storage." },
     "password_storage": { "type": "string", "enum": ["keychain", "plaintext"], "description": "How to persist password / key_passphrase. 'keychain' (default) writes the secret to the OS keychain and stores only a 'keychain:<service>:<account>' reference in config.toml. 'plaintext' stores the literal secret in config.toml and requires settings.allow_config_plaintext_password=true." },
-    "accept_new_host": { "type": "boolean", "default": false, "description": "Auto-append unknown host key to known_hosts on first dial in this session" },
     "description":     { "type": "string" },
     "tags":            { "type": "array", "items": { "type": "string" } },
     "default_dir":     { "type": "string", "description": "Default working directory" },
@@ -378,7 +380,12 @@ func handleSSHPersistentSetup(ctx context.Context, deps *Deps, args json.RawMess
 	sessionLive := false
 	if deps.Pool != nil {
 		if newSrv, ok := loaded.Servers[input.Name]; ok {
-			newSrv.AcceptNewHost = input.AcceptNewHost
+			// AcceptNewHost is explicitly left false — first dial to a
+			// just-registered server will surface HOST_KEY_UNKNOWN if the
+			// host isn't already in known_hosts. The caller must then run
+			// `ssh-mcp trust <name>` from the CLI to inspect and pin the
+			// fingerprint.
+			newSrv.AcceptNewHost = false
 			deps.Pool.AddTempServer(input.Name, newSrv, time.Time{})
 			sessionLive = true
 		}

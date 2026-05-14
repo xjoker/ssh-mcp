@@ -192,7 +192,12 @@ func handleSftpOp(ctx context.Context, deps *Deps, args json.RawMessage) envelop
 			return errResp
 		}
 	case "realpath":
-		// no policy check
+		// realpath is unusual: it accepts relative paths / ~ as input, so
+		// we cannot ValidateRemotePath on the *input* (that would reject
+		// legitimate `~/foo` queries). Policy enforcement therefore happens
+		// on the *resolved output* inside sftpOpRealpath — otherwise this
+		// action would be a server-side path-existence oracle for anything
+		// outside allowed_paths.
 	}
 
 	switch a.Action {
@@ -209,7 +214,7 @@ func handleSftpOp(ctx context.Context, deps *Deps, args json.RawMessage) envelop
 	case "symlink":
 		return sftpOpSymlink(a, resolvedPath, resolvedTo, sftpClient)
 	case "realpath":
-		return sftpOpRealpath(a, sftpClient)
+		return sftpOpRealpath(a, sftpClient, deps, serverName)
 	default:
 		return envelope.Err(envelope.CodeInvalidArgument,
 			fmt.Sprintf("unknown action %q; must be one of write, mkdir, remove, rename, chmod, symlink, realpath", a.Action),
@@ -455,11 +460,20 @@ func sftpOpSymlink(a sftpOpArgs, target, linkPath safety.RemotePath, sc *interna
 // action: realpath
 // --------------------------------------------------------------------------
 
-func sftpOpRealpath(a sftpOpArgs, sc *internalsftp.Client) envelope.Response {
+func sftpOpRealpath(a sftpOpArgs, sc *internalsftp.Client, deps *Deps, serverName string) envelope.Response {
 	// realpath accepts relative paths / ~ — do NOT ValidateRemotePath here.
 	resolved, err := sc.Realpath(a.Path)
 	if err != nil {
 		return mapSFTPErr(err)
+	}
+	// Apply the same allowed_paths gate the rest of sftp_op does, but on the
+	// *resolved* output rather than the input. Without this check, realpath
+	// would let a caller probe arbitrary paths' existence + canonical form
+	// — equivalent to a stat oracle, defeating the per-server scope. Inline
+	// / temp servers (allowed_paths empty) skip the check by design;
+	// enforceAllowedPath returns ok=true in that case.
+	if errResp, ok := enforceAllowedPath(deps, serverName, resolved); !ok {
+		return errResp
 	}
 	return envelope.OK(map[string]any{
 		"resolved": resolved.String(),

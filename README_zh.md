@@ -47,9 +47,20 @@
 重启后，粘贴：
 
 ```
-开始前，请将以下内容添加到 ~/.claude/settings.json，以避免每次调用 ssh-mcp 工具都弹出确认提示：
+开始前，请将以下内容添加到 ~/.claude/settings.json，以避免低风险
+ssh-mcp 工具每次调用都弹出确认提示：
 
-  { "permissions": { "allow": ["mcp__ssh-bridge__*"] } }
+  {
+    "permissions": {
+      "allow": [
+        "mcp__ssh-bridge__list_servers",
+        "mcp__ssh-bridge__sftp_list",
+        "mcp__ssh-bridge__sftp_read",
+        "mcp__ssh-bridge__sftp_stat",
+        "mcp__ssh-bridge__audit_query"
+      ]
+    }
+  }
 
 然后使用 ssh_quick_setup MCP 工具连接我的 SSH 服务器。
 询问我：主机地址、端口、用户名和认证方式（agent / key / password）。
@@ -124,39 +135,57 @@ ssh-mcp auth set ssh-password:prod
 
 ### 预授权工具（避免每次弹出确认提示）
 
-Claude Code 默认对每次 MCP 工具调用弹出确认提示。将以下内容加入 `~/.claude/settings.json`（用户全局）或 `.claude/settings.json`（仅当前项目），可预授权所有 ssh-mcp 工具：
+Claude Code 默认对每次 MCP 工具调用弹出确认提示。你可以将特定工具加入 `~/.claude/settings.json`（用户全局）或 `.claude/settings.json`（仅当前项目）的 `permissions.allow` 列表来预授权它们。
+
+> `permissions.allow` 只预批准指定工具，有别于 MCP 配置中的 `autoApprove`（全局跳过所有确认）。ssh-mcp 示例配置中刻意不使用 `autoApprove`。
+
+**不要使用通配符 `"mcp__ssh-bridge__*"`。** 通配符会预授权所有工具，包括破坏性和安全边界类工具，从而移除了限制 prompt injection 或模型误操作影响范围的人工确认环节。
+
+建议按以下分级处理：
+
+#### Tier 1 — 可以放心预授权（只读，无副作用）
 
 ```json
 {
   "permissions": {
-    "allow": ["mcp__ssh-bridge__*"]
+    "allow": [
+      "mcp__ssh-bridge__list_servers",
+      "mcp__ssh-bridge__sftp_list",
+      "mcp__ssh-bridge__sftp_read",
+      "mcp__ssh-bridge__sftp_stat",
+      "mcp__ssh-bridge__audit_query"
+    ]
   }
 }
 ```
 
-或按需授权单个工具以获得更精细的控制：
+#### Tier 2 — 仅在理解影响的前提下预授权
+
+这些工具会在远程服务器上执行命令或写入文件。预授权它们将移除逐次确认，从而无法拦截意外操作。
 
 ```json
 {
   "permissions": {
     "allow": [
       "mcp__ssh-bridge__ssh_exec",
-      "mcp__ssh-bridge__sftp_list",
-      "mcp__ssh-bridge__sftp_read",
-      "mcp__ssh-bridge__list_servers",
-      "mcp__ssh-bridge__ssh_quick_setup",
-      "mcp__ssh-bridge__ssh_persistent_setup",
+      "mcp__ssh-bridge__sftp_op",
       "mcp__ssh-bridge__session_start",
       "mcp__ssh-bridge__session_send",
       "mcp__ssh-bridge__session_close",
-      "mcp__ssh-bridge__audit_query",
-      "mcp__ssh-bridge__self_update"
+      "mcp__ssh-bridge__ssh_group_exec",
+      "mcp__ssh-bridge__ssh_quick_setup"
     ]
   }
 }
 ```
 
-> `permissions.allow` 只预批准指定工具，有别于 MCP 配置中的 `autoApprove`（全局跳过所有确认）。ssh-mcp 示例配置中刻意不使用 `autoApprove`。
+#### Tier 3 — 永远不要 wildcard 预授权；每次必须人工确认
+
+这些工具具有持久或不可逆影响：`tunnel` 建立长期端口转发，`ssh_persistent_setup` 写入永久服务器凭据，`self_update` 替换当前运行的二进制（即安全边界本身）。请始终逐次人工确认。
+
+- `mcp__ssh-bridge__tunnel`
+- `mcp__ssh-bridge__ssh_persistent_setup`
+- `mcp__ssh-bridge__self_update`
 
 #### 为什么每次调用 `ssh_quick_setup` 都会弹确认？
 
@@ -182,7 +211,7 @@ Claude Code 默认对每次 MCP 工具调用弹出确认提示。将以下内容
 
 | 工具 | 说明 |
 |------|------|
-| `sftp_op` | 上传、下载、创建目录、删除、移动、复制、创建软链接、stat、realpath。仅适合小文件（base64 / JSON 包大小限制 —— 大文件请用下方 CLI 命令）。 |
+| `sftp_op` | 上传、下载、创建目录、删除、移动、复制、创建软链接、stat、realpath。仅适合小文件（base64 / JSON 包大小限制 —— 大文件请用下方 CLI 命令）。`realpath` 操作同样受 `allowed_paths` 约束 —— 无法用于探测允许列表以外的路径。 |
 | `sftp_list` | 列出远程目录内容（含元数据）。 |
 | `sftp_read` | 读取远程文件，支持字节偏移（tail / seek）。 |
 | `sftp_stat` | 查询单个远程路径的元数据。 |
@@ -210,7 +239,7 @@ Claude Code 默认对每次 MCP 工具调用弹出确认提示。将以下内容
 
 | 工具 | 说明 |
 |------|------|
-| `tunnel` | 建立本地或远程端口转发。本地：`localhost:{port} → 服务器:{remotePort}`；远程：`服务器:{port} → localhost:{localPort}`。 |
+| `tunnel` ⚠️ | 建立本地或远程端口转发。本地：`localhost:{port} → 服务器:{remotePort}`；远程：`服务器:{port} → localhost:{localPort}`。Tier 3 — 永远不要 wildcard 预授权。 |
 
 ### 服务器管理
 
@@ -218,7 +247,7 @@ Claude Code 默认对每次 MCP 工具调用弹出确认提示。将以下内容
 |------|------|
 | `list_servers` | 列出已配置的服务器，支持标签过滤。默认 `refresh=true` 重读 `config.toml` —— 手动编辑后无需重启即可看到；新条目同时注入 SSH pool，`ssh_exec` / `session_start` 立即可用。 |
 | `ssh_quick_setup` | 使用内联凭据注册临时服务器 —— 存储在内存中，有 TTL（最长 4 小时），不写入磁盘。同 `host+port+user` 重复调用复用既有注册。 |
-| `ssh_persistent_setup` | 把 `[servers.<name>]` 块追加到 `config.toml`，重启后仍存在且无 TTL。密码默认存 OS keychain（`password_storage="keychain"`）—— config.toml 里只留引用；设为 `"plaintext"`（并开 `settings.allow_config_plaintext_password = true`）才直接写明文。 |
+| `ssh_persistent_setup` ⚠️ | 把 `[servers.<name>]` 块追加到 `config.toml`，重启后仍存在且无 TTL。密码默认存 OS keychain（`password_storage="keychain"`）—— config.toml 里只留引用；设为 `"plaintext"`（并开 `settings.allow_config_plaintext_password = true`）才直接写明文。Tier 3 — 永远不要 wildcard 预授权。 |
 
 ### 审计
 
@@ -230,7 +259,7 @@ Claude Code 默认对每次 MCP 工具调用弹出确认提示。将以下内容
 
 | 工具 | 说明 |
 |------|------|
-| `self_update` | 检查是否有新版本并原子替换二进制。`check_only: true` 仅检查不下载。更新后需重启 MCP server 以应用新版本。 |
+| `self_update` ⚠️ | 检查是否有新版本并原子替换二进制。`check_only: true` 仅检查不下载。更新后需重启 MCP server 以应用新版本。Tier 3 — 永远不要 wildcard 预授权。 |
 
 ---
 
@@ -263,7 +292,9 @@ Claude Code 默认对每次 MCP 工具调用弹出确认提示。将以下内容
 
 - **不使用 `autoApprove`** —— 示例客户端配置刻意省略了该选项。SSH 操作影响范围不可预知，必须保持人工确认。
 - **主机密钥验证** —— `HOST_KEY_MISMATCH` 是硬性中止；网桥永不自动接受变更的主机密钥。
-- **`allowed_paths` 执行** —— SFTP 路径在策略应用前通过 SFTP `realpath` 规范化，消除软链接 TOCTOU 漏洞。
+- **首次连接信任仅通过 CLI** —— `accept_new_host` 字段已从所有 MCP 工具 schema 中移除（`ssh_quick_setup`、`ssh_exec`、`session_start`、`ssh_persistent_setup`）。新主机必须通过 CLI 建立信任：`ssh-mcp trust <name>` 或 `ssh-mcp trust --host <h> --port <p>`。CLI 会显示 SHA256 指纹并要求人工确认后才写入 known_hosts。这可防止被 prompt injection 的模型通过工具参数静默建立 TOFU 信任。
+- **`allowed_paths` 执行** —— SFTP 路径在策略应用前通过 SFTP `realpath` 规范化，消除软链接 TOCTOU 漏洞。`realpath` 操作本身同样受此约束，不能用于探测允许列表以外的路径。
+- **`self_update` 预审计** —— 更新操作在替换二进制前会先写入一条 pending 审计记录。若审计写入失败，更新将中止。这确保替换安全边界本身的操作始终可追溯。
 - **明文密码防护** —— 除非设置 `allow_config_plaintext_password = true`，否则拒绝明文密码；推荐使用密钥链。
 - 完整威胁模型见 [`SECURITY.md`](SECURITY.md)。
 
