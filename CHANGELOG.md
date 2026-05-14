@@ -12,6 +12,22 @@ Branch / version convention:
 
 ## [Unreleased]
 
+## [0.0.4] — 2026-05-14
+
+### Added
+- **Command output captured in audit log.** Every `ssh_exec` / `session_send`
+  / streaming exec now persists `stdout` + `stderr` (after secret redaction)
+  alongside the existing metadata, so the AI agent and human operators can
+  replay history without re-running the command. New settings:
+  - `audit_record_output` (default `true`) — master switch.
+  - `audit_output_max_bytes` (default `32768` = 32 KiB per stream) — per-entry
+    cap. Oversized payloads are truncated with a `…[truncated, N bytes
+    total]` marker preserving the original size.
+- `ssh-mcp audit query` gained two output modes:
+  - `--output` — expanded multi-line block showing stdout / stderr / args
+    inline (human-friendly).
+  - `--json` — one JSONL record per entry with all fields (jq-friendly).
+
 ## [0.0.3] — 2026-05-14
 
 ### Added

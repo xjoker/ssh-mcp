@@ -16,7 +16,16 @@ type Settings struct {
 	MaxSessions                  int      `toml:"max_sessions"`
 	ConnIdleSeconds              int      `toml:"conn_idle_seconds"`
 	AuditRetentionDays           int      `toml:"audit_retention_days"`
-	WeakAlgorithmsOptIn          []string `toml:"weak_algorithms_opt_in"`
+	// AuditRecordOutput controls whether stdout/stderr of executed commands
+	// is written to audit log entries. Default true. Disable to keep audit
+	// payloads minimal (metadata only).
+	AuditRecordOutput bool `toml:"audit_record_output"`
+	// AuditOutputMaxBytes caps the per-entry size (in bytes) of each of
+	// stdout and stderr in the audit log. Larger outputs are truncated
+	// with a trailing "\n…[truncated, N bytes total]" marker. Default
+	// 32 KiB.
+	AuditOutputMaxBytes int      `toml:"audit_output_max_bytes"`
+	WeakAlgorithmsOptIn []string `toml:"weak_algorithms_opt_in"`
 }
 
 // CredRef is a parsed credential reference. See SDD §5.2 / §7.4.

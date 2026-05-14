@@ -177,6 +177,160 @@ func TestMiddlewareChain_AuditMetaEnrichment(t *testing.T) {
 	}
 }
 
+// TestMiddlewareChain_RecordsStdoutStderr verifies the new
+// settings.audit_record_output=true (default) path: when a handler attaches
+// Stdout/Stderr to AuditMeta, the dispatcher persists them on the audit entry
+// (with redaction applied).
+func TestMiddlewareChain_RecordsStdoutStderr(t *testing.T) {
+	auditDir := t.TempDir()
+	auditLog, err := audit.New(auditDir, 90)
+	if err != nil {
+		t.Fatalf("audit.New: %v", err)
+	}
+	defer auditLog.Close()
+
+	cfg := &config.Config{
+		Settings: config.Settings{
+			AuditRecordOutput:   true,
+			AuditOutputMaxBytes: 1024,
+		},
+	}
+	deps := &tools.Deps{Cfg: cfg, Audit: auditLog}
+
+	fakeHandler := func(_ context.Context, _ *tools.Deps, _ json.RawMessage) envelope.Response {
+		return envelope.OK("result").WithAudit(envelope.AuditMeta{
+			ExitCode: 0,
+			Stdout:   "hello from remote\n",
+			Stderr:   "warning: deprecated flag\n",
+			AuthMode: "key",
+		})
+	}
+
+	req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{
+		Arguments: json.RawMessage(`{"server":"test-server"}`),
+	}}
+
+	if _, err := middlewareChain(context.Background(), req, "ssh_exec", fakeHandler, deps); err != nil {
+		t.Fatalf("middlewareChain: %v", err)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+	entries, qErr := auditLog.Query(audit.Filter{Tool: "ssh_exec", Limit: 10})
+	if qErr != nil {
+		t.Fatalf("Query: %v", qErr)
+	}
+
+	var completed *audit.Entry
+	for i := range entries {
+		if entries[i].Status == "completed" {
+			completed = &entries[i]
+			break
+		}
+	}
+	if completed == nil {
+		t.Fatal("no completed audit entry")
+	}
+	if !strings.Contains(completed.Stdout, "hello from remote") {
+		t.Errorf("expected stdout captured in audit entry, got %q", completed.Stdout)
+	}
+	if !strings.Contains(completed.Stderr, "deprecated flag") {
+		t.Errorf("expected stderr captured in audit entry, got %q", completed.Stderr)
+	}
+}
+
+// TestMiddlewareChain_RecordOutputDisabled verifies that
+// settings.audit_record_output=false suppresses stdout/stderr persistence
+// even when handlers populate them.
+func TestMiddlewareChain_RecordOutputDisabled(t *testing.T) {
+	auditDir := t.TempDir()
+	auditLog, err := audit.New(auditDir, 90)
+	if err != nil {
+		t.Fatalf("audit.New: %v", err)
+	}
+	defer auditLog.Close()
+
+	cfg := &config.Config{
+		Settings: config.Settings{
+			AuditRecordOutput: false,
+		},
+	}
+	deps := &tools.Deps{Cfg: cfg, Audit: auditLog}
+
+	fakeHandler := func(_ context.Context, _ *tools.Deps, _ json.RawMessage) envelope.Response {
+		return envelope.OK("result").WithAudit(envelope.AuditMeta{
+			Stdout: "should NOT be in audit",
+			Stderr: "should NOT be in audit",
+		})
+	}
+
+	req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{
+		Arguments: json.RawMessage(`{"server":"test"}`),
+	}}
+	if _, err := middlewareChain(context.Background(), req, "ssh_exec", fakeHandler, deps); err != nil {
+		t.Fatalf("middlewareChain: %v", err)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+	entries, _ := auditLog.Query(audit.Filter{Tool: "ssh_exec", Limit: 10})
+	for _, e := range entries {
+		if e.Stdout != "" || e.Stderr != "" {
+			t.Errorf("audit_record_output=false but entry still has stdout=%q stderr=%q",
+				e.Stdout, e.Stderr)
+		}
+	}
+}
+
+// TestMiddlewareChain_OutputTruncation verifies that the configured cap
+// truncates oversized output and appends a marker.
+func TestMiddlewareChain_OutputTruncation(t *testing.T) {
+	auditDir := t.TempDir()
+	auditLog, err := audit.New(auditDir, 90)
+	if err != nil {
+		t.Fatalf("audit.New: %v", err)
+	}
+	defer auditLog.Close()
+
+	cfg := &config.Config{
+		Settings: config.Settings{
+			AuditRecordOutput:   true,
+			AuditOutputMaxBytes: 50, // tiny on purpose
+		},
+	}
+	deps := &tools.Deps{Cfg: cfg, Audit: auditLog}
+
+	bigOutput := strings.Repeat("A", 500)
+	fakeHandler := func(_ context.Context, _ *tools.Deps, _ json.RawMessage) envelope.Response {
+		return envelope.OK("result").WithAudit(envelope.AuditMeta{Stdout: bigOutput})
+	}
+
+	req := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{
+		Arguments: json.RawMessage(`{"server":"test"}`),
+	}}
+	if _, err := middlewareChain(context.Background(), req, "ssh_exec", fakeHandler, deps); err != nil {
+		t.Fatalf("middlewareChain: %v", err)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+	entries, _ := auditLog.Query(audit.Filter{Tool: "ssh_exec", Limit: 10})
+	var completed *audit.Entry
+	for i := range entries {
+		if entries[i].Status == "completed" {
+			completed = &entries[i]
+			break
+		}
+	}
+	if completed == nil {
+		t.Fatal("no completed audit entry")
+	}
+	if !strings.Contains(completed.Stdout, "[truncated") {
+		t.Errorf("expected truncation marker; got stdout=%q", completed.Stdout)
+	}
+	// Sanity: truncated payload should be much smaller than the original 500.
+	if len(completed.Stdout) > 200 {
+		t.Errorf("truncated stdout still oversized: %d bytes", len(completed.Stdout))
+	}
+}
+
 func TestMiddlewareChain_RedactsSFTPOpContent(t *testing.T) {
 	auditDir := t.TempDir()
 	auditLog, err := audit.New(auditDir, 90)

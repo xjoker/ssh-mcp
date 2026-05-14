@@ -309,6 +309,8 @@ func handleSSHExec(ctx context.Context, deps *Deps, args json.RawMessage) envelo
 		ExitCode: result.ExitCode,
 		BytesOut: bytesOut,
 		AuthMode: client.AuthMode(),
+		Stdout:   stdoutStr,
+		Stderr:   string(result.Stderr),
 	})
 }
 
@@ -429,6 +431,8 @@ func handleSSHExecStreaming(
 			ExitCode: exitCode,
 			BytesOut: bytesOut,
 			AuthMode: client.AuthMode(),
+			Stdout:   stdoutStr,
+			Stderr:   stderrStr,
 		})
 	}
 	return resp

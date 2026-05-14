@@ -353,6 +353,10 @@ func handleSessionSend(ctx context.Context, deps *Deps, args json.RawMessage) en
 			ExitCode:   result.ExitCode,
 			DurationMs: result.Duration.Milliseconds(),
 			Truncated:  result.Truncated,
+		}).WithAudit(envelope.AuditMeta{
+			ExitCode: result.ExitCode,
+			BytesOut: int64(len(result.Stdout)),
+			Stdout:   stdout,
 		})
 	}
 
@@ -395,6 +399,11 @@ func handleSessionSend(ctx context.Context, deps *Deps, args json.RawMessage) en
 		ExitCode:   result.ExitCode,
 		DurationMs: result.Duration.Milliseconds(),
 		Truncated:  result.Truncated,
+	}).WithAudit(envelope.AuditMeta{
+		ExitCode: result.ExitCode,
+		BytesOut: int64(len(result.Stdout) + len(result.Stderr)),
+		Stdout:   stdout,
+		Stderr:   stderr,
 	})
 }
 

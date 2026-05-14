@@ -328,8 +328,10 @@ ssh-mcp download <服务器> <远程路径> <本地路径>
 ssh-mcp cp       <源服务器>:<源路径> <目标服务器>:<目标路径>
 ssh-mcp fetch    <服务器> <url> <远程路径>
 
-# 审计与更新
-ssh-mcp audit query --tool ssh_exec --since 24h
+# 审计与更新（默认连同 stdout/stderr 一起记录到 audit log，可通过 audit_record_output=false 关闭）
+ssh-mcp audit query --tool ssh_exec --since 24h            # 元数据表
+ssh-mcp audit query --tool ssh_exec --since 1h --output    # 展开模式：stdout/stderr 内联
+ssh-mcp audit query --since 24h --json | jq                # JSONL 输出，方便工具消费
 ssh-mcp update
 ssh-mcp install claude-code     # 输出 claude mcp add 命令
 ssh-mcp install codex           # 输出 codex mcp add 命令

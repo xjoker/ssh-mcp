@@ -331,7 +331,9 @@ ssh-mcp cp       <src_srv>:<src_path> <dst_srv>:<dst_path>
 ssh-mcp fetch    <server> <url> <remote_path>
 
 # Audit & updates
-ssh-mcp audit query --tool ssh_exec --since 24h
+ssh-mcp audit query --tool ssh_exec --since 24h            # metadata table
+ssh-mcp audit query --tool ssh_exec --since 1h --output    # expanded: stdout/stderr inline
+ssh-mcp audit query --since 24h --json | jq                # JSONL for tooling
 ssh-mcp update
 ssh-mcp install claude-code     # print claude mcp add command
 ssh-mcp install codex           # print codex mcp add command

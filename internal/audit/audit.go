@@ -53,6 +53,16 @@ type Entry struct {
 	ErrorCode     string    `json:"error_code,omitempty"`
 	Status        string    `json:"status,omitempty"`
 	CorrelationID string    `json:"correlation_id,omitempty"`
+
+	// Stdout / Stderr capture the remote command's output for forensic
+	// replay. Populated by ssh_exec / ssh_group_exec / session_send. The
+	// dispatcher applies redaction and the configured per-entry size cap
+	// (settings.audit_output_max_bytes) before persisting. Truncated
+	// payloads append a "\n…[truncated, N bytes total]" suffix so a
+	// downstream reader can distinguish a clipped record from a literal
+	// short one. Empty when settings.audit_record_output=false.
+	Stdout string `json:"stdout,omitempty"`
+	Stderr string `json:"stderr,omitempty"`
 }
 
 // Filter specifies predicates for Query. SDD §5.9.

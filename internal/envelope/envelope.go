@@ -24,6 +24,15 @@ type AuditMeta struct {
 	// return exit 0 may still set this (it will correctly overwrite the
 	// default 0 in the audit entry).
 	ExitCode int
+
+	// Stdout and Stderr carry the remote command's output for forensic
+	// replay. They are populated by handlers that genuinely produce shell
+	// output (ssh_exec, ssh_group_exec, session_send). The dispatcher
+	// applies redaction and the configured per-entry size cap before
+	// writing them to the audit log; tools should pass the raw text and
+	// not pre-truncate.
+	Stdout string
+	Stderr string
 }
 
 // Response is encoded as JSON inside a single MCP TextContent.

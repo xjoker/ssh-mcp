@@ -131,7 +131,15 @@ func middlewareChain(
 			return
 		}
 
-		auditEntry := buildAuditEntry(start, toolName, sessionID, serverName, argsRedacted, correlationID, resp)
+		recordOutput := true
+		outputCap := 32 * 1024
+		if deps.Cfg != nil {
+			recordOutput = deps.Cfg.Settings.AuditRecordOutput
+			if deps.Cfg.Settings.AuditOutputMaxBytes > 0 {
+				outputCap = deps.Cfg.Settings.AuditOutputMaxBytes
+			}
+		}
+		auditEntry := buildAuditEntry(start, toolName, sessionID, serverName, argsRedacted, correlationID, resp, recordOutput, outputCap)
 		if auditErr := deps.Audit.Record(auditEntry); auditErr != nil {
 			fmt.Fprintf(getStderr(), "mcpserver: audit post-record failed for tool %q: %v\n", toolName, auditErr)
 			auditFailResp := envelope.Err(envelope.CodeAuditFailed,
@@ -187,7 +195,7 @@ func requestSessionID(req *mcp.CallToolRequest, fallback string) string {
 	return fallbackSessionID
 }
 
-func buildAuditEntry(start time.Time, toolName, sessionID, serverName, argsRedacted, correlationID string, resp envelope.Response) audit.Entry {
+func buildAuditEntry(start time.Time, toolName, sessionID, serverName, argsRedacted, correlationID string, resp envelope.Response, recordOutput bool, outputCap int) audit.Entry {
 	exitCode := 0
 	errorCode := ""
 	if !resp.OK && resp.Error != nil {
@@ -226,8 +234,30 @@ func buildAuditEntry(start time.Time, toolName, sessionID, serverName, argsRedac
 		if resp.Audit.AuthMode != "" {
 			auditEntry.AuthMode = resp.Audit.AuthMode
 		}
+		if recordOutput {
+			if resp.Audit.Stdout != "" {
+				auditEntry.Stdout = capAndRedactOutput(resp.Audit.Stdout, outputCap)
+			}
+			if resp.Audit.Stderr != "" {
+				auditEntry.Stderr = capAndRedactOutput(resp.Audit.Stderr, outputCap)
+			}
+		}
 	}
 	return auditEntry
+}
+
+// capAndRedactOutput applies safety.RedactSecret then truncates to maxBytes,
+// appending a "…[truncated, N bytes total]" marker when clipped. maxBytes ≤ 0
+// disables capping entirely.
+func capAndRedactOutput(s string, maxBytes int) string {
+	if s == "" {
+		return ""
+	}
+	redacted := string(safety.RedactSecret([]byte(s)))
+	if maxBytes <= 0 || len(redacted) <= maxBytes {
+		return redacted
+	}
+	return redacted[:maxBytes] + fmt.Sprintf("\n…[truncated, %d bytes total]", len(redacted))
 }
 
 func redactAuditArgs(toolName string, raw json.RawMessage) string {

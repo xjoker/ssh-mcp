@@ -98,6 +98,8 @@ type rawSettings struct {
 	MaxSessions                  *int     `toml:"max_sessions"`
 	ConnIdleSeconds              *int     `toml:"conn_idle_seconds"`
 	AuditRetentionDays           *int     `toml:"audit_retention_days"`
+	AuditRecordOutput            *bool    `toml:"audit_record_output"`
+	AuditOutputMaxBytes          *int     `toml:"audit_output_max_bytes"`
 	WeakAlgorithmsOptIn          []string `toml:"weak_algorithms_opt_in"`
 }
 
@@ -152,6 +154,8 @@ func Load(path string) (*Config, error) {
 		MaxSessions:                  intVal(rs.MaxSessions, 16),
 		ConnIdleSeconds:              intVal(rs.ConnIdleSeconds, 600),
 		AuditRetentionDays:           intVal(rs.AuditRetentionDays, 90),
+		AuditRecordOutput:            boolVal(rs.AuditRecordOutput, true),
+		AuditOutputMaxBytes:          intVal(rs.AuditOutputMaxBytes, 32*1024),
 		WeakAlgorithmsOptIn:          rs.WeakAlgorithmsOptIn,
 	}
 
