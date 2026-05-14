@@ -22,8 +22,8 @@ const (
 	CodeHostKeyUnknown          = "HOST_KEY_UNKNOWN"
 	CodeHostKeyMismatch         = "HOST_KEY_MISMATCH"
 	CodeSftpError               = "SFTP_ERROR"
-	CodeInlineCredsDisabled     = "INLINE_CREDS_DISABLED"
-	CodePlaintextPasswordDisabled = "PLAINTEXT_PASSWORD_DISABLED"
+	CodeInlineCredsDisabled       = "INLINE_CREDS_DISABLED"     // #nosec G101 -- error code constant, not a credential
+	CodePlaintextPasswordDisabled = "PLAINTEXT_PASSWORD_DISABLED" // #nosec G101 -- error code constant, not a credential
 	CodeUserDeclined            = "USER_DECLINED"
 	CodeAuditFailed             = "AUDIT_FAILED"
 	CodePartialFailure          = "PARTIAL_FAILURE"

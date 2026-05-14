@@ -100,66 +100,8 @@ func (ft *fakeTransport) OpenShellPTY(_ context.Context, _ string, _, _ uint32) 
 // Helper: Start a session with a fake shell, handling init probe
 // --------------------------------------------------------------------------
 
-// startSession creates a Manager with a single fake shell, registers a
-// handler that replies to the init probe (and any subsequent sentinel
-// commands), and returns the session id plus the shell for further control.
-func startSession(t *testing.T, ft *fakeTransport, sh *fakeShell) string {
-	t.Helper()
-
-	// We need to intercept stdin writes from the Manager and reply via stdout.
-	// Start returns only after the init probe echoes back.
-	// Strategy: run a goroutine that reads stdin and replies to the probe.
-	var sentinelVal string
-	var sentinelOnce sync.Once
-
-	// Process lines read from stdin and reply to the init probe.
-	go func() {
-		var buf strings.Builder
-		tmp := make([]byte, 1)
-		for {
-			n, err := sh.stdinR.Read(tmp)
-			if n > 0 {
-				buf.WriteByte(tmp[0])
-				if tmp[0] == '\n' {
-					line := strings.TrimRight(buf.String(), "\r\n")
-					buf.Reset()
-					// Capture sentinel from export command.
-					if strings.HasPrefix(line, "export __MSB_SENTINEL='") {
-						// Extract value between single quotes.
-						s := strings.TrimPrefix(line, "export __MSB_SENTINEL='")
-						s = strings.TrimSuffix(s, "'")
-						sentinelOnce.Do(func() { sentinelVal = s })
-					}
-					// Reply to init probe.
-					if strings.HasPrefix(line, "printf '%s\\n' 'init-") {
-						// Extract expected echo value.
-						// line: printf '%s\n' 'init-msb-sentinel-xxxx'
-						start := strings.Index(line, "'init-")
-						if start >= 0 {
-							echo := line[start+1 : len(line)-1] // strip surrounding quotes
-							sh.feedLine(echo)
-						}
-					}
-				}
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
-
-	_ = sentinelVal // suppress unused warning; used by caller
-
-	m := NewManager(ft, time.Hour)
-	t.Cleanup(m.CloseAll)
-
-	ctx := context.Background()
-	id, err := m.Start(ctx, "test-server")
-	if err != nil {
-		t.Fatalf("Start() error: %v", err)
-	}
-	return id
-}
+// (startSession removed: newManagedSession + shellResponder fully replace
+// the old hand-rolled init-probe handler used in early tests.)
 
 // --------------------------------------------------------------------------
 // Full integration helpers using a self-contained fake shell responder

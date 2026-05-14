@@ -316,7 +316,10 @@ func downloadCmd(args []string) int {
 	if *mkdirs {
 		localDir := filepath.Dir(localPath)
 		if localDir != "." && localDir != "" {
-			if err := os.MkdirAll(localDir, 0o755); err != nil {
+			// 0o700: download destination is user-private. The user explicitly
+			// chose this path; we don't second-guess by relaxing to 0o755 the
+			// way mkdir(1) would. Matches the audit dir convention.
+			if err := os.MkdirAll(localDir, 0o700); err != nil {
 				fmt.Fprintf(os.Stderr, "download: mkdir -p %s: %v\n", localDir, err)
 				return 1
 			}

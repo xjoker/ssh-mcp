@@ -481,13 +481,6 @@ func TestBuildStreamingEnvelope_AuditNil(t *testing.T) {
 // M02 — streaming progress stops after budget
 // --------------------------------------------------------------------------
 
-// fakeStreamingClient is a minimal stand-in for *ssh.Client that lets
-// handleSSHExecStreaming drive the OnStdout/OnStderr callbacks directly.
-// It implements only ExecStreaming behaviour via a user-supplied fn.
-type fakeStreamingClient struct {
-	fn func(opts interface{})
-}
-
 // TestStreaming_ProgressStopsAfterBudget verifies that once the output budget
 // is exceeded, the Progress callback receives exactly one additional event
 // with "truncated":true and no further plain chunk events (M02 fix).

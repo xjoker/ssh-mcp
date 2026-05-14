@@ -235,15 +235,8 @@ func serverAddCmd(args []string) int {
 	return 0
 }
 
-// rawServerForEncode is a map-friendly representation for TOML encoding.
-type rawServerForEncode struct {
-	Host        string `toml:"host"`
-	Port        int    `toml:"port,omitempty"`
-	User        string `toml:"user"`
-	Auth        string `toml:"auth"`
-	KeyPath     string `toml:"key_path,omitempty"`
-	Description string `toml:"description,omitempty"`
-}
+// (rawServerForEncode was removed: serverAppendToConfig writes TOML
+// fragments by hand via strings.Builder, no struct encode required.)
 
 // serverAppendToConfig appends a [servers.<name>] section to cfgPath.
 // If the file doesn't exist, it creates a minimal valid config first.

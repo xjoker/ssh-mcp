@@ -43,50 +43,15 @@ var serverNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
 const maxConfigFileBytes = 4 * 1024 * 1024
 
-// rawConfig mirrors the on-disk TOML structure before key normalisation.
-type rawConfig struct {
-	Settings Settings                `toml:"settings"`
-	Servers  map[string]ServerConfig `toml:"servers"`
-}
-
-// applySettingsDefaults fills in zero-valued Settings fields with SDD defaults.
-func applySettingsDefaults(s *Settings) {
-	if s.DefaultTimeoutMs == 0 {
-		s.DefaultTimeoutMs = 120_000
-	}
-	if s.MaxTimeoutMs == 0 {
-		s.MaxTimeoutMs = 1_800_000
-	}
-	if s.OutputMaxBytes == 0 {
-		s.OutputMaxBytes = 65_536
-	}
-	if s.SftpProgressThresholdBytes == 0 {
-		s.SftpProgressThresholdBytes = 10 * 1024 * 1024
-	}
-	if s.SessionIdleSeconds == 0 {
-		s.SessionIdleSeconds = 3_600
-	}
-	if s.MaxSessions == 0 {
-		s.MaxSessions = 16
-	}
-	if s.ConnIdleSeconds == 0 {
-		s.ConnIdleSeconds = 600
-	}
-	if s.AuditRetentionDays == 0 {
-		s.AuditRetentionDays = 90
-	}
-	// Boolean defaults (zero = false in Go).
-	// AllowInlineCredentials default = true
-	// We cannot tell "not set" from "set to false" with plain struct decode,
-	// so we rely on the rawDefaults approach below.
-}
-
-// boolDefault is used to apply bool defaults because Go's zero-value for bool
-// is false, making it impossible to distinguish "unset" from "set to false"
-// without a custom decoder. We store the raw TOML in rawConfig and let the
-// caller pass the decoded Settings; we patch booleans using the presence
-// detection trick via toml.Primitive is not available here, so instead we
-// decode into a wrapper that has *bool pointers.
+// (rawConfig + applySettingsDefaults were removed once the rawTopLevel +
+// rawSettings approach below took over: defaults are now applied
+// inline in Load via boolVal / intVal, which correctly distinguish
+// "field absent from TOML" from "field present and set to zero/false".)
+//
+// boolDefault rationale: Go's zero-value for bool is false, making it
+// impossible to distinguish "unset" from "set to false" without a
+// custom decoder. We decode the file into a wrapper that has *bool
+// pointers (rawSettings); a nil pointer means absent.
 type rawSettings struct {
 	AllowConfigPlaintextPassword *bool    `toml:"allow_config_plaintext_password"`
 	AllowInlineCredentials       *bool    `toml:"allow_inline_credentials"`

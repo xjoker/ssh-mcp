@@ -132,9 +132,14 @@ func (p *Pool) buildHTTPWrapper(ctx context.Context, pc config.ProxyConfig, allo
 		Timeout:  30 * time.Second,
 	}
 	if cfg.UseTLS {
+		// G402: InsecureSkipVerify is an opt-in dev-only escape hatch
+		// surfaced by [proxies.<name>] insecure_skip_verify = true. The
+		// config validator rejects this field on non-https proxies; the
+		// README + SECURITY.md flag it as dev-only. We pass the user's
+		// explicit choice through unchanged.
 		cfg.TLSConfig = &tls.Config{
 			ServerName:         pc.Host,
-			InsecureSkipVerify: pc.InsecureSkipVerify, //nolint:gosec — opt-in dev flag
+			InsecureSkipVerify: pc.InsecureSkipVerify, // #nosec G402 -- opt-in dev flag per [proxies.X] insecure_skip_verify
 			MinVersion:         tls.VersionTLS12,
 		}
 	}

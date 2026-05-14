@@ -119,8 +119,10 @@ func New(dir string, retentionDays int) (*Logger, error) {
 	}
 
 	// Enforce directory permission: set 0700 explicitly in case it already
-	// existed with looser permissions.
-	if err := os.Chmod(dir, 0700); err != nil {
+	// existed with looser permissions. 0700 is intentional — audit log is
+	// user-private; only the owning user (the ssh-mcp daemon's UID) needs
+	// to traverse / list / create here.
+	if err := os.Chmod(dir, 0o700); err != nil { // #nosec G302 -- audit dir is user-private by design
 		return nil, fmt.Errorf("audit: cannot chmod dir %s: %w", dir, err)
 	}
 

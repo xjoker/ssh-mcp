@@ -271,12 +271,8 @@ func handleSSHExec(ctx context.Context, deps *Deps, args json.RawMessage) envelo
 	}
 	if input.PTY {
 		ptyOpts.PTY = true
-		if input.PTYCols > 0 {
-			ptyOpts.PTYCols = uint32(input.PTYCols)
-		}
-		if input.PTYRows > 0 {
-			ptyOpts.PTYRows = uint32(input.PTYRows)
-		}
+		ptyOpts.PTYCols = clampPTYDim(input.PTYCols, 220, 10, 500)
+		ptyOpts.PTYRows = clampPTYDim(input.PTYRows, 50, 5, 200)
 	}
 
 	result, err := client.ExecBuffered(ctx, remoteCmd, ptyOpts)

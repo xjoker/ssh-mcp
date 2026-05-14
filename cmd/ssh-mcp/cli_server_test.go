@@ -19,18 +19,6 @@ description = "test server"
 tags = ["dev", "lab"]
 `
 
-// serverConfigWithPassword has a server whose password uses a keychain reference.
-const serverConfigWithPassword = `[settings]
-allow_config_plaintext_password = false
-
-[servers.secured]
-host = "192.0.2.2"
-user = "bob"
-auth = "key"
-key_path = "/home/bob/.ssh/id_ed25519"
-password = "keychain:ssh-mcp:bob"
-`
-
 // writeConfig writes content to a temp config file and sets the env var.
 func writeConfig(t *testing.T, content string) string {
 	t.Helper()

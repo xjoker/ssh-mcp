@@ -213,6 +213,8 @@ func Agent() (agent.ExtendedAgent, io.Closer) {
 	if sock == "" {
 		return nil, nil
 	}
+	// #nosec G704 -- ssh-agent unix socket is intentional: $SSH_AUTH_SOCK
+	// is a filesystem path under the user's control, not a network endpoint.
 	conn, err := net.Dial("unix", sock)
 	if err != nil {
 		return nil, nil

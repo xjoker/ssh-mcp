@@ -291,7 +291,15 @@ func TestQuickSetupRegistry_OnEvictRunsOutsideLock(t *testing.T) {
 	r = newQuickSetupRegistry(nil, func(string) {
 		locked := make(chan struct{})
 		go func() {
+			// Deliberate Lock-then-Unlock with no body: this probes whether
+			// the registry mutex is currently held. If the calling code path
+			// still holds r.mu when our onEvict callback runs, this goroutine
+			// blocks on Lock and the select below hits the 200 ms timeout
+			// (= bug). If the mutex was released before onEvict (the desired
+			// invariant), Lock returns immediately, Unlock runs, and the
+			// channel closes within microseconds.
 			r.mu.Lock()
+			//lint:ignore SA2001 probe pattern: empty critical section is intentional
 			r.mu.Unlock()
 			close(locked)
 		}()

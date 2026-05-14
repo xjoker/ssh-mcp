@@ -63,22 +63,8 @@ func minimalConfig(name, host string, port int) *config.Config {
 	}
 }
 
-// newPoolWithFakeDialer creates a Pool whose dialer never actually connects;
-// it returns the provided error (or a non-nil placeholder when dialErr is nil).
-func newPoolWithFakeDialer(cfg *config.Config, resolver CredResolver, dialErr error) *Pool {
-	p := NewPool(cfg, resolver)
-	var returned bool
-	_ = returned
-	p.dialer = func(_ context.Context, _, _ string, _ *gossh.ClientConfig) (*gossh.Client, error) {
-		if dialErr != nil {
-			return nil, dialErr
-		}
-		// Return a live client over a net.Pipe pair so tests that need a real
-		// *gossh.Client can proceed without an actual SSH server.
-		return nil, fmt.Errorf("fake: dial not implemented for success path")
-	}
-	return p
-}
+// (newPoolWithFakeDialer was removed: live tests now build the Pool
+// directly and inject p.dialer inline.)
 
 // --------------------------------------------------------------------------
 // Test: Get unknown server → "not found" error
@@ -621,9 +607,7 @@ func silentListener(t *testing.T) (addr string, stop func()) {
 			}
 			// Hold the connection open until stopCh is closed.
 			go func(c net.Conn) {
-				select {
-				case <-stopCh:
-				}
+				<-stopCh
 				_ = c.Close()
 			}(conn)
 		}

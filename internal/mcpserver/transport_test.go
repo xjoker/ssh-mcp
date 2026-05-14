@@ -2,7 +2,6 @@ package mcpserver
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	gossh "golang.org/x/crypto/ssh"
@@ -11,17 +10,6 @@ import (
 	sshpkg "github.com/xjoker/ssh-mcp/internal/ssh"
 	"github.com/xjoker/ssh-mcp/internal/tools"
 )
-
-// fakePool is a minimal fake that records Get/GetAdHoc calls.
-type fakePool struct {
-	getErr error
-	client *sshpkg.Client
-	gotName string
-}
-
-func (f *fakePool) GetAdHoc(ctx context.Context, params sshpkg.AdHocParams) (*sshpkg.Client, error) {
-	return nil, errors.New("not implemented")
-}
 
 // --------------------------------------------------------------------------
 // credResolver tests
@@ -228,12 +216,6 @@ func TestAuthLabel(t *testing.T) {
 // --------------------------------------------------------------------------
 // sshTransport + sshDialer — verify Pool.Get is called
 // --------------------------------------------------------------------------
-
-// mockPool records calls to Get.
-type mockPool struct {
-	getCalled []string
-	getErr    error
-}
 
 // We can't easily test OpenShell/SSHDial without a real SSH connection.
 // Instead, we verify that Get is called with the correct server name.

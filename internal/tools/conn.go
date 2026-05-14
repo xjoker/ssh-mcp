@@ -19,6 +19,26 @@ import (
 	"github.com/xjoker/ssh-mcp/internal/ssh"
 )
 
+// clampPTYDim normalises a user-supplied PTY dimension (cols / rows) to the
+// uint32 type the ssh library expects, defending against the gosec G115
+// integer-overflow class: a negative or oversized int from a non-conforming
+// MCP client (one that bypasses the JSON schema's minimum/maximum) would
+// otherwise wrap into a huge uint32 (e.g. -1 → 4294967295) and travel into
+// gossh.RequestPty as a nonsensical terminal size. The defaults match the
+// schema (cols 10..500 default 220, rows 5..200 default 50).
+func clampPTYDim(v int, defaultV, minV, maxV uint32) uint32 {
+	if v <= 0 {
+		return defaultV
+	}
+	if v < int(minV) {
+		return minV
+	}
+	if v > int(maxV) {
+		return maxV
+	}
+	return uint32(v) // #nosec G115 -- v is bounded to [minV, maxV] above, both uint32
+}
+
 // sftpInline mirrors the inline JSON object reused across sftp_* tools.
 // It is intentionally separate from execInline to avoid coupling.
 //

@@ -135,8 +135,8 @@ func handleSessionStart(ctx context.Context, deps *Deps, args json.RawMessage) e
 	}
 
 	if input.PTY {
-		cols := uint32(input.PTYCols)
-		rows := uint32(input.PTYRows)
+		cols := clampPTYDim(input.PTYCols, 220, 10, 500)
+		rows := clampPTYDim(input.PTYRows, 50, 5, 200)
 		id, initialResult, err := deps.SessionMgr.StartPTY(ctx, serverName, cols, rows, input.Command, input.InitWaitMs)
 		if err != nil {
 			if inlineRegistered != "" {

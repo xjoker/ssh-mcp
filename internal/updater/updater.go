@@ -150,7 +150,12 @@ func Download(ctx context.Context, rel *Release, destPath string) error {
 	}
 	tmpPath := filepath.Join(dir, fmt.Sprintf(".ssh-mcp-update-%s-%x", rel.Version, rnd))
 
-	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o755)
+	// Tighten file mode to 0700 (user rwx, group/other none). The binary will
+	// be executed by the user only; ssh-mcp installs are per-user (~/.local/bin
+	// on POSIX, %LOCALAPPDATA%\Programs on Windows), so granting read/execute
+	// to group/other has no legitimate need and widens the attack surface
+	// during the brief temp-file window before atomic rename.
+	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o700) // #nosec G302 -- 0700 is the tightened permission, not the wide one gosec assumes
 	if err != nil {
 		return fmt.Errorf("updater: create temp file: %w", err)
 	}

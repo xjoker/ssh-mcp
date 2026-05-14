@@ -1040,82 +1040,10 @@ func scanUntilLine(ctx context.Context, r *bufio.Reader, target string) error {
 // The sentinel line itself is NOT added to outputLines.
 // maxBytes caps the total bytes appended to outputLines; lines beyond the cap
 // are discarded and truncated is set to true via the returned flag.
-func scanSentinel(ctx context.Context, r *bufio.Reader, sentinel string, outputLines *[]string, maxBytes int64) (exitCode int, truncated bool, err error) {
-	type scanResult struct {
-		exitCode  int
-		truncated bool
-		err       error
-	}
-	done := make(chan scanResult, 1)
-
-	go func() {
-		// We accumulate all lines; trailing empty lines before the sentinel
-		// will be stripped at the end.
-		var lines []string
-		var bytesAccum int64
-		var trunc bool
-		for {
-			raw, lineTrunc, readErr := readBoundedLine(r, sessionLineMaxBytes)
-			// A truncated physical line still counts toward the output cap and
-			// sets the overall truncation flag.
-			if lineTrunc {
-				trunc = true
-			}
-			line := strings.TrimRight(string(raw), "\r\n")
-
-			// Check for sentinel line: must start with our specific sentinel string.
-			// Sentinel lines are never truncated in practice (they are short), but
-			// we only match when lineTrunc is false to be safe.
-			if !lineTrunc && strings.HasPrefix(line, sentinel+" ") {
-				rest := line[len(sentinel)+1:]
-				var rc int
-				_, scanErr := fmt.Sscanf(rest, "%d", &rc)
-				if scanErr == nil {
-					// Strip leading empty line that the printf '\n...' adds.
-					if len(lines) > 0 && lines[0] == "" {
-						lines = lines[1:]
-					}
-					// Trim trailing empty line.
-					for len(lines) > 0 && lines[len(lines)-1] == "" {
-						lines = lines[:len(lines)-1]
-					}
-					*outputLines = lines
-					done <- scanResult{rc, trunc, nil}
-					return
-				}
-				// Malformed sentinel line — treat as output.
-			}
-
-			// Accumulate with cap enforcement.
-			lineBytes := int64(len(line) + 1) // +1 for the stripped newline
-			bytesAccum += lineBytes
-			if bytesAccum <= maxBytes {
-				lines = append(lines, line)
-			} else {
-				trunc = true
-				// Still consume the line but don't store it.
-			}
-
-			if readErr != nil {
-				done <- scanResult{-1, trunc, readErr}
-				return
-			}
-		}
-	}()
-
-	select {
-	case <-ctx.Done():
-		return -1, false, ctx.Err()
-	case res := <-done:
-		return res.exitCode, res.truncated, res.err
-	}
-}
-
-// isContextErr returns true if err is context.DeadlineExceeded or
-// context.Canceled.
-func isContextErr(err error) bool {
-	return err == context.DeadlineExceeded || err == context.Canceled
-}
+// (scanSentinel and isContextErr were removed in v0.0.4: the persistent
+// stdout pump replaced the per-Send scan goroutine, and timeout handling
+// no longer needs an isContextErr helper since the pump-vs-deadline
+// select uses ctx.Done() directly.)
 
 // newUUID generates a UUID v4 string using crypto/rand to avoid an external
 // dependency on github.com/google/uuid.
