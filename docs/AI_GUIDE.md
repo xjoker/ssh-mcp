@@ -285,7 +285,11 @@ session_start {server:"prod", pty:true, command:"btop",
   the same host.
 - Query the audit log (`audit_query`) for content that you can compute
   from your own conversation history — it is for forensic review, not
-  short-term memory.
+  short-term memory. Each entry includes `stdout` + `stderr` of the
+  recorded command (after redaction; capped by
+  `settings.audit_output_max_bytes`, default 32 KiB), so a one-shot
+  query can answer "what did `<server>` say to `<command>` 2 hours
+  ago" without re-running anything.
 
 ---
 

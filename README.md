@@ -236,6 +236,8 @@ size limit, streams directly via SFTP — no base64):
 
 Sessions are stateful: run `cd`, set environment variables, activate virtualenvs — the state carries across `session_send` calls.
 
+**Timeout / busy semantics (v0.0.4):** A `session_send` `TIMEOUT` no longer poisons the session. The session keeps the shell open and stashes the running command's completion marker as "stale"; the next `session_send` first drains that tail output (5 s budget) before issuing its own command. If the prior command is still producing output past the budget, the next call returns `SESSION_BUSY` (retriable) — the caller can wait and retry, or call `session_close` to abort. The genuine `SESSION_DEAD` code is reserved for actual shell EOF (remote disconnect).
+
 ### Tunnels
 
 | Tool | Description |
@@ -254,7 +256,14 @@ Sessions are stateful: run `cd`, set environment variables, activate virtualenvs
 
 | Tool | Description |
 |------|-------------|
-| `audit_query` | Search the append-only JSONL audit log by server, tool, time range, exit code, or error status. |
+| `audit_query` | Search the append-only JSONL audit log by server, tool, time range, exit code, or error status. The entry includes the executed command's `stdout` + `stderr` (after secret redaction) so the AI can replay history without re-running the command. Toggle with `settings.audit_record_output` (default `true`); cap per-entry size with `audit_output_max_bytes` (default `32 KiB`). |
+
+The CLI offers two extra view modes on top of the default table:
+
+```sh
+ssh-mcp audit query --since 1h --output    # expanded; stdout/stderr/args inline
+ssh-mcp audit query --since 1h --json      # one JSONL record per entry (jq-friendly)
+```
 
 ### Self-Update
 

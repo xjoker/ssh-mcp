@@ -237,6 +237,8 @@ Claude Code 默认对每次 MCP 工具调用弹出确认提示。你可以将特
 
 会话有状态：`cd`、设置环境变量、激活 virtualenv —— 状态在多次 `session_send` 间持续保留。
 
+**超时 / busy 语义（v0.0.4）**：`session_send` 的 `TIMEOUT` 不再杀死 session。session 保持 shell 打开，并把当前命令的完成标记暂存为 "stale"；下一次 `session_send` 进入时先 drain 这段尾部输出（5 秒预算）再发自己的命令。如果上一条命令在预算内还在产生输出，下一次调用会返回 `SESSION_BUSY`（retriable）—— 调用方可以稍等重试，或调用 `session_close` 中止。真正的 `SESSION_DEAD` 仅在 shell EOF（远端断连）时返回。
+
 ### 端口隧道
 
 | 工具 | 说明 |
@@ -255,7 +257,14 @@ Claude Code 默认对每次 MCP 工具调用弹出确认提示。你可以将特
 
 | 工具 | 说明 |
 |------|------|
-| `audit_query` | 搜索仅追加的 JSONL 审计日志，支持按服务器、工具、时间范围、退出码、错误状态过滤。 |
+| `audit_query` | 搜索仅追加的 JSONL 审计日志，支持按服务器、工具、时间范围、退出码、错误状态过滤。entry 包含已执行命令的 `stdout` + `stderr`（敏感串脱敏后），方便 AI 回放历史而无需重跑命令。`settings.audit_record_output` 控制开关（默认 `true`）；`audit_output_max_bytes` 控制每条上限（默认 32 KiB）。 |
+
+CLI 在默认表格视图之上还提供两种视图：
+
+```sh
+ssh-mcp audit query --since 1h --output    # 展开模式：stdout/stderr/args 内联
+ssh-mcp audit query --since 1h --json      # 每条一行 JSONL（jq 友好）
+```
 
 ### 自更新
 
