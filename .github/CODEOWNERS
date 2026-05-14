@@ -1,0 +1,10 @@
+# Catch-all — the repo maintainer reviews everything by default.
+* @xjoker
+
+# Security-sensitive paths get the same maintainer + future security reviewers
+# can be added here.
+/internal/safety/  @xjoker
+/internal/auth/    @xjoker
+/internal/audit/   @xjoker
+/SECURITY.md       @xjoker
+/scripts/install.* @xjoker

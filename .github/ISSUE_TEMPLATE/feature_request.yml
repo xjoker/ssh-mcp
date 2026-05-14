@@ -1,0 +1,44 @@
+name: Feature request
+description: Propose a new feature or enhancement.
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please describe the **use case** first (what are you trying to do?) and the **proposed solution** second (how should it work?). Concrete tool/CLI signatures are welcome.
+
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      description: What workflow does this unblock? Why does ssh-mcp need to grow this capability rather than the user scripting it themselves?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Sketch the MCP tool input/output, the CLI flag, or the config field you have in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What workarounds exist today? Why are they insufficient?
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      description: Best estimate.
+      options:
+        - Small (single tool field or CLI flag)
+        - Medium (new tool or significant refactor)
+        - Large (new subsystem)
+        - Don't know
+    validations:
+      required: true

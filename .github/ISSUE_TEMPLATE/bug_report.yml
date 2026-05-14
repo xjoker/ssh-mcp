@@ -1,0 +1,81 @@
+name: Bug report
+description: Something is broken or unexpected in ssh-mcp.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please include enough detail that a maintainer can reproduce locally — paste the exact output of `ssh-mcp version`, the failing tool call, and any visible error.
+
+        **Security issue?** Do NOT file a public bug — email the maintainer per `SECURITY.md`.
+
+  - type: input
+    id: version
+    attributes:
+      label: ssh-mcp version
+      description: Output of `ssh-mcp version`.
+      placeholder: "ssh-mcp 0.0.6 (commit 4428115)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - macOS (Intel)
+        - macOS (Apple Silicon)
+        - Linux (amd64)
+        - Linux (arm64)
+        - Windows
+        - Other (specify in description)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: client
+    attributes:
+      label: MCP client
+      description: How is ssh-mcp invoked?
+      options:
+        - Claude Code (terminal)
+        - Claude Desktop
+        - Codex
+        - Direct CLI (no MCP)
+        - Other (specify)
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you try, and what went wrong? Include the exact MCP tool call or CLI invocation if possible.
+      placeholder: |
+        I called `ssh_exec` with `{"server": "prod", "command": "uptime"}` and got TIMEOUT after 1 s, even though the command finishes in 0.1 s on plain `ssh`.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      placeholder: "Tool to return stdout/stderr in under a second."
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / audit entry
+      description: |
+        Relevant lines from `~/Library/Application Support/ssh-mcp/audit/<date>.jsonl` (macOS) or `~/.local/share/ssh-mcp/audit/<date>.jsonl` (Linux). Redact any secrets that the redactor missed before pasting.
+      render: text
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant `config.toml` excerpt
+      description: Only the `[servers.<name>]` / `[proxies.<name>]` involved. Strip passwords.
+      render: toml

@@ -4,6 +4,8 @@ SSH operations as MCP tools for AI assistants — run commands, manage files, op
 
 **[中文文档 →](README_zh.md)** (translated; English is the authoritative version)
 
+> **Pre-1.0 status.** `ssh-mcp` is on the `0.x.y` line. Functionality is stable enough for personal / small-team use (see `SECURITY.md` for the threat model), but breaking changes can still ship between minor releases when a security or design fix calls for it — they're always called out under `### Breaking` in `CHANGELOG.md`. The `1.0.0` release will lock in standard semver compatibility.
+
 ---
 
 ## Let Your AI Assistant Install This

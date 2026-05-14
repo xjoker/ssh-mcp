@@ -9,8 +9,9 @@ on:
 jobs:
   test:
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -26,11 +27,15 @@ jobs:
       - name: go test
         run: go test -race ./...
 
+      # The shell scripts (bash) need an explicit shell on windows-latest
+      # so the runner uses Git for Windows' bash rather than PowerShell.
       - name: check deps
+        shell: bash
         run: bash scripts/check-deps.sh
 
       - name: check no insecure
+        shell: bash
         run: bash scripts/check-no-insecure.sh
 
       - name: build
-        run: go build -o bin/ssh-mcp ./cmd/ssh-mcp
+        run: go build ./cmd/ssh-mcp

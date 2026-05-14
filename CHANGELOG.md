@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+**Pre-1.0 versioning policy:** while the version number is `0.x.y`, the
+project reserves the right to make breaking changes between minor releases
+when a security or design fix requires it. Each breaking change is called
+out in a `### Breaking` section in the affected release. The `1.0.0`
+release will commit to standard semver compatibility going forward.
+
 Branch / version convention:
 - Development happens on `dev`; releases are tagged on `main`.
 - Dev versions carry a `-dev` suffix (e.g. `0.0.1-dev`); release versions
@@ -75,6 +81,12 @@ Branch / version convention:
     `ssh_quick_setup`.
   - **Tier 3** (never wildcard-allow — persistent or irreversible effects):
     `tunnel`, `ssh_persistent_setup`, `self_update`.
+
+### Breaking
+- **`accept_new_host` removed from all MCP tool schemas.** Listed under
+  Breaking because callers that previously passed `accept_new_host=true`
+  must drop the field; first-contact host trust is now CLI-only. See the
+  Security entry below for the full rationale.
 
 ### Security
 - **`accept_new_host` removed from all MCP tool schemas.** The field has been
