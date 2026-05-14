@@ -2,7 +2,9 @@
 
 将 SSH 操作封装为 MCP 工具，供 AI 助手直接调用 —— 执行命令、管理文件、建立隧道、维持持久会话。
 
-**[English →](README.md)**
+**[English README →](README.md)** （权威版本 / authoritative source）
+
+> 本文档为 [English README](README.md) 的翻译版本。当中英描述出现冲突时，以英文版本为准。新功能/新版本通常先在英文版本落地，中文版会在同一 release 内同步翻译。
 
 ---
 
@@ -263,10 +265,72 @@ Claude Code 默认对每次 MCP 工具调用弹出确认提示。你可以将特
 
 ---
 
+## 代理链（Proxy Chain）
+
+对于复杂网络拓扑，`proxy_chain` 允许将某台服务器的 TCP 拨号路径经过一个或多个代理路由——HTTP CONNECT、HTTPS CONNECT、SOCKS5 或另一台 SSH 主机——按外到内的顺序串联成链。
+
+### 支持的代理类型
+
+| `type` | 协议 | 说明 |
+|--------|------|------|
+| `http` | HTTP CONNECT（明文）| 可选 Basic auth，通过 `user` + `password`（CredRef）配置 |
+| `https` | HTTP CONNECT over TLS | `insecure_skip_verify = true` 仅供开发用 |
+| `socks5` | SOCKS5 | 支持可选的 `user` + `password` 认证 |
+| `ssh` | SSH 隧道 | 两种模式：`server = "<name>"`（推荐）或直连 `host`/`port`/`user`/`auth` |
+
+SSH 代理建议优先使用 `server = "<name>"` 形式——可完整复用该 server 的认证配置、主机密钥固定以及嵌套的 `proxy_chain`。
+
+### 配置示例
+
+```toml
+[proxies.corp-http]
+type     = "http"
+host     = "proxy.corp"
+port     = 8080
+user     = "alice"
+password = "keychain:ssh-mcp:proxy-pass:corp"
+
+[proxies.tor]
+type = "socks5"
+host = "127.0.0.1"
+port = 9050
+
+[proxies.bastion-via-server]
+type   = "ssh"
+server = "bastion"   # 复用 [servers.bastion] 的认证和主机密钥
+
+[proxies.bastion-direct]
+type = "ssh"
+host = "jump.example.com"
+port = 22
+user = "deploy"
+auth = "agent"
+
+[servers.internal-db]
+host        = "10.0.0.50"
+user        = "dba"
+auth        = "key"
+key_path    = "~/.ssh/id_ed25519"
+proxy_chain = ["corp-http", "tor", "bastion-via-server"]   # 外→内顺序
+```
+
+`proxy_chain` 元素按从左到右、由外到内解析：先拨 `corp-http`，再通过它隧穿 `tor`，然后 `bastion-via-server`，最终经最后一跳到达 `internal-db`。
+
+### 规则与限制
+
+- `proxy_chain` 与 `proxy_jump` **互斥**。存在 `proxy_chain` 时优先使用它；`proxy_jump` 保留以维持向后兼容。
+- 链最大长度：**8 跳**。
+- 同一链中不允许出现重复的代理名称，配置加载时即报错。
+- SSH 代理的 `server` 引用会做环检测（扩展原有 `proxy_jump` 环检测逻辑）。
+- 端口转发（tunnel）透明地走服务器的 `proxy_chain`，无需额外配置。
+- 代理的 `password` 字段是 CredRef 字符串，与服务器凭据同等安全级别——默认走密钥链（keychain）。v0.0.6 中 `ssh` 直连模式不支持加密私钥；请用 `ssh-agent` 或通过 `server = "…"` 引用已配置的 server（servers 那侧支持 `key_passphrase`）。
+
+---
+
 ## 核心亮点
 
 **多跳 SSH 跳板链**
-通过 `proxy_jump` 透明地经过跳板机路由。任意深度的链路均可工作——在 `config.toml` 里配置 `proxy_jump` 即可，A → B → C 无需额外设置。
+通过 `proxy_jump` 透明地经过跳板机路由。任意深度的链路均可工作——在 `config.toml` 里配置 `proxy_jump` 即可，A → B → C 无需额外设置。混合 HTTP/SOCKS5/SSH 的多协议链路请参阅上方[代理链（Proxy Chain）](#代理链proxy-chain)章节。
 
 **PTY 支持**
 `ssh_exec` 和 `session_start` 均支持完整伪终端分配。可运行 `htop`、`btop`、`ncdu`、`vim` 等 TUI 程序；使用 `strip_ansi` 获取纯文本输出。

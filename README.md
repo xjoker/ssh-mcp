@@ -2,7 +2,7 @@
 
 SSH operations as MCP tools for AI assistants — run commands, manage files, open tunnels, maintain persistent sessions.
 
-**[中文文档 →](README_zh.md)**
+**[中文文档 →](README_zh.md)** (translated; English is the authoritative version)
 
 ---
 
@@ -264,10 +264,72 @@ Sessions are stateful: run `cd`, set environment variables, activate virtualenvs
 
 ---
 
+## Proxy Chain
+
+For complex network topologies, `proxy_chain` lets you route a server's TCP dial path through one or more proxies — HTTP CONNECT, HTTPS CONNECT, SOCKS5, or another SSH host — chained in outer-to-inner order.
+
+### Supported proxy types
+
+| `type` | Protocol | Notes |
+|--------|----------|-------|
+| `http` | HTTP CONNECT (plaintext) | Optional Basic auth via `user` + `password` (CredRef) |
+| `https` | HTTP CONNECT over TLS | `insecure_skip_verify = true` available for dev only |
+| `socks5` | SOCKS5 | Optional `user` + `password` auth |
+| `ssh` | SSH tunnel | Two modes: `server = "<name>"` (recommended) or direct `host`/`port`/`user`/`auth` |
+
+For SSH proxies, prefer the `server = "<name>"` form — it reuses the referenced server's full auth config, host-key pinning, and any nested proxy chain.
+
+### Configuration example
+
+```toml
+[proxies.corp-http]
+type     = "http"
+host     = "proxy.corp"
+port     = 8080
+user     = "alice"
+password = "keychain:ssh-mcp:proxy-pass:corp"
+
+[proxies.tor]
+type = "socks5"
+host = "127.0.0.1"
+port = 9050
+
+[proxies.bastion-via-server]
+type   = "ssh"
+server = "bastion"   # reuses [servers.bastion] auth + host-key
+
+[proxies.bastion-direct]
+type = "ssh"
+host = "jump.example.com"
+port = 22
+user = "deploy"
+auth = "agent"
+
+[servers.internal-db]
+host        = "10.0.0.50"
+user        = "dba"
+auth        = "key"
+key_path    = "~/.ssh/id_ed25519"
+proxy_chain = ["corp-http", "tor", "bastion-via-server"]   # outer → inner
+```
+
+`proxy_chain` items are resolved left-to-right, outer to inner: `corp-http` is dialled first, then `tor` is tunnelled through it, then `bastion-via-server`, and finally `internal-db` is reached through the last hop.
+
+### Rules and limits
+
+- `proxy_chain` and `proxy_jump` are **mutually exclusive** on a server. When `proxy_chain` is present it takes precedence; `proxy_jump` is retained for backward compatibility.
+- Maximum chain length: **8 hops**.
+- Duplicate proxy names within a single chain are rejected at config-load time.
+- SSH proxy `server` references are cycle-detected (extends the existing `proxy_jump` cycle check).
+- Tunnel port-forwards transparently use the server's `proxy_chain` — no extra configuration needed.
+- Proxy `password` is a CredRef string (same security level as server credentials — keychain by default). Encrypted SSH private keys aren't supported for direct-mode `ssh` proxies in v0.0.6 — use `ssh-agent` or reference a configured server via `server = "…"`.
+
+---
+
 ## Highlights
 
 **Multi-hop SSH chains**
-Route through bastion hosts transparently via `proxy_jump`. Chains of arbitrary depth work — A → B → C requires only `proxy_jump` entries in `config.toml`.
+Route through bastion hosts transparently via `proxy_jump`. Chains of arbitrary depth work — A → B → C requires only `proxy_jump` entries in `config.toml`. For mixed HTTP/SOCKS5/SSH chains see [Proxy Chain](#proxy-chain) above.
 
 **PTY support**
 Full pseudo-terminal allocation for `ssh_exec` and `session_start`. Run `htop`, `btop`, `ncdu`, `vim` and other TUI programs; use `strip_ansi` to get clean text back.

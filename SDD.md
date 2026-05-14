@@ -179,6 +179,7 @@ We explicitly do **not** defend against:
 | MITM a connection on first use | A4 | Strict host-key check by default; new hosts require explicit operator action |
 | Exfiltrate credentials via audit log | A3 | Audit log is `0600`; passwords scrubbed via redactor; ad-hoc inline credentials never written to disk |
 | Persist plaintext credentials via casual configuration | A3 | Config plaintext rejected by default; opt-in requires explicit flag; warning printed at every startup |
+| Leak proxy credentials via config file | A3 | `[proxies.<name>]` `password` field is a CredRef string — same guard as server credentials; keychain storage is the default; plaintext requires `allow_config_plaintext_password = true`. (`type="ssh"` direct mode in v0.0.6 supports only unencrypted keys / agent / password; for encrypted keys, reference an existing `[servers.<name>]` via `server = "…"` which supports `key_passphrase`.) |
 | Cause LLM context overflow / DoS via huge command output | A2 | All `ssh_exec` outputs truncated at configurable size; SFTP reads bounded |
 
 ### 3.4 Defense Posture
@@ -2074,6 +2075,59 @@ When `server.ProxyJump` is set:
 
 The chain is built lazily on first use and cached. Dropping the jump
 connection invalidates downstream connections; reaper handles cleanup.
+
+### 12.4-bis Proxy Chain Implementation
+
+`proxy_chain` provides a general-purpose multi-hop dial path that supports
+four proxy protocols. The implementation spans two packages:
+
+**`internal/proxy/` — protocol wrappers**
+
+```
+Dialer interface  →  net.Conn  (context-aware)
+Wrapper func      →  takes a base Dialer, returns a new Dialer that
+                     dials through one proxy hop
+Chain(base, hops) →  composes N wrappers: outer hops first, innermost
+                     wrapper dials the final SSH target
+```
+
+Four wrapper implementations:
+
+- **HTTP CONNECT** — dials base, sends `CONNECT host:port HTTP/1.1`,
+  optionally adds `Proxy-Authorization: Basic …` header.
+- **HTTPS CONNECT** — same as HTTP but wraps the base conn in TLS before
+  sending CONNECT. `insecure_skip_verify` disables cert verification
+  (dev only; rejected by config validator on non-`https` entries).
+- **SOCKS5** — delegates to `golang.org/x/net/proxy.SOCKS5`; supports
+  optional username/password auth.
+- **SSH tunnel** — two sub-modes:
+  - `server = "<name>"`: resolves via `Pool.Get(name)` (which may itself
+    walk a nested chain); calls `ssh.Client.Dial("tcp", target)` to
+    obtain the forwarded `net.Conn`.
+  - Direct mode (`host`/`port`/`user`/`auth`): builds a one-off
+    `ssh.ClientConfig`, dials the jump host through the base Dialer,
+    and returns the forwarded conn.
+
+**`internal/ssh/proxychain.go` — integration with Pool.dial**
+
+When a server has `proxy_chain` set, `Pool.dial` calls
+`proxy.Chain(netDialer, hops)` to build a composite `Dialer`, then
+passes its result to `ssh.NewClientConn`. The chain is resolved at dial
+time; hops are not cached independently (the outer SSH connection's
+pool entry is what gets cached).
+
+**Chain ordering:** `proxy_chain = ["A", "B", "C"]` means A is the
+outermost wrapper (dialled first against the raw network), C is the
+innermost (dials the final SSH target). Wrapper N passes its `net.Conn`
+to wrapper N+1 as that wrapper's base dialer.
+
+**Tunnel port-forwards** call `pool.dial` for the underlying SSH
+connection, so they inherit `proxy_chain` automatically — no extra
+configuration is needed.
+
+**Backward compatibility:** when `proxy_chain` is empty and `proxy_jump`
+is set, `Pool.dial` falls through to the existing single-hop SSH path
+described in §12.4.
 
 ---
 

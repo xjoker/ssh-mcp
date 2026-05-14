@@ -71,8 +71,12 @@ type ServerConfig struct {
 	DefaultDir    string   `toml:"default_dir"`
 	Description   string   `toml:"description"`
 	ProxyJump     string   `toml:"proxy_jump"`
-	AllowedPaths  []string `toml:"allowed_paths"`
-	Tags          []string `toml:"tags"`
+	// ProxyChain lists named proxy entries (from [proxies.<name>] tables) that
+	// form an ordered tunnel chain to reach this server. Mutually exclusive with
+	// ProxyJump. SDD §12.4-bis (proxy chain).
+	ProxyChain   []string `toml:"proxy_chain"`
+	AllowedPaths []string `toml:"allowed_paths"`
+	Tags         []string `toml:"tags"`
 
 	// AcceptNewHost is a runtime-only field (not deserialised from TOML) that
 	// lets the SSH pool accept an unknown host key on first contact for this
@@ -86,11 +90,30 @@ type ServerConfig struct {
 	AcceptNewHost bool `toml:"-"`
 }
 
+// ProxyConfig represents a named entry from the [proxies.<name>] TOML table.
+// ProxyConfigs are referenced from ServerConfig.ProxyChain by name.
+// SDD §12.4-bis (proxy chain).
+type ProxyConfig struct {
+	Name     string  // populated from TOML key, lower-cased
+	Type     string  `toml:"type"`     // "http" | "https" | "socks5" | "ssh"
+	Host     string  `toml:"host"`     // http/https/socks5: required. ssh: required unless Server is set.
+	Port     int     `toml:"port"`     // http/https/socks5/ssh direct: required
+	User     string  `toml:"user"`     // optional auth username (http Basic, socks5, ssh ad-hoc)
+	Password CredRef `toml:"password"` // optional auth secret; same CredRef rules as ServerConfig.Password
+	// SSH proxy specifics:
+	Server  string `toml:"server"`   // alternative to Host/Port/User/Auth: name of [servers.<name>] to use as SSH proxy
+	Auth    string `toml:"auth"`     // "agent" | "key" | "password" — for ssh type with direct Host (not via Server)
+	KeyPath string `toml:"key_path"` // for ssh type with auth=key
+	// HTTPS-specific (type="https"):
+	InsecureSkipVerify bool `toml:"insecure_skip_verify"` // disable cert verification (dev only)
+}
+
 // Config is the top-level configuration object. SDD §5.2.
 type Config struct {
 	Settings Settings
 	Servers  map[string]ServerConfig
-	Path     string // file path the config was loaded from
+	Proxies  map[string]ProxyConfig // keyed by lower-cased proxy name
+	Path     string                 // file path the config was loaded from
 }
 
 // MarshalText implements encoding.TextMarshaler so that BurntSushi/toml can

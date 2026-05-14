@@ -684,6 +684,363 @@ func TestLoad_RejectsOversizedConfig(t *testing.T) {
 	}
 }
 
+// ---- proxy chain: valid configs ------------------------------------------------
+
+// TestLoad_Proxy_HTTP parses a valid [proxies.http-corp] entry.
+func TestLoad_Proxy_HTTP(t *testing.T) {
+	cfg := mustLoad(t, `
+[servers.myserver]
+host = "example.com"
+user = "deploy"
+auth = "agent"
+
+[proxies.http-corp]
+type = "http"
+host = "proxy.corp.example.com"
+port = 3128
+user = "proxyuser"
+password = "keychain:ssh-mcp:proxy-corp"
+`)
+	p, ok := cfg.Proxies["http-corp"]
+	if !ok {
+		t.Fatal("expected proxy 'http-corp'")
+	}
+	if p.Type != "http" {
+		t.Errorf("Type = %q, want 'http'", p.Type)
+	}
+	if p.Host != "proxy.corp.example.com" {
+		t.Errorf("Host = %q", p.Host)
+	}
+	if p.Port != 3128 {
+		t.Errorf("Port = %d, want 3128", p.Port)
+	}
+	if p.Name != "http-corp" {
+		t.Errorf("Name = %q, want 'http-corp'", p.Name)
+	}
+	if p.Password.Kind != config.CredRefKeychain {
+		t.Errorf("Password.Kind = %v, want CredRefKeychain", p.Password.Kind)
+	}
+}
+
+// TestLoad_Proxy_Socks5 parses a valid [proxies.socks-tor] entry.
+func TestLoad_Proxy_Socks5(t *testing.T) {
+	cfg := mustLoad(t, `
+[servers.myserver]
+host = "example.com"
+user = "deploy"
+auth = "agent"
+
+[proxies.socks-tor]
+type = "socks5"
+host = "127.0.0.1"
+port = 9050
+`)
+	p, ok := cfg.Proxies["socks-tor"]
+	if !ok {
+		t.Fatal("expected proxy 'socks-tor'")
+	}
+	if p.Type != "socks5" {
+		t.Errorf("Type = %q, want 'socks5'", p.Type)
+	}
+	if p.Port != 9050 {
+		t.Errorf("Port = %d, want 9050", p.Port)
+	}
+}
+
+// TestLoad_Proxy_SSH_ViaServer parses a valid [proxies.ssh-bastion] that
+// references a [servers.<name>] entry.
+func TestLoad_Proxy_SSH_ViaServer(t *testing.T) {
+	cfg := mustLoad(t, `
+[servers.bastion]
+host = "bastion.example.com"
+user = "deploy"
+auth = "agent"
+
+[servers.target]
+host = "target.internal"
+user = "admin"
+auth = "agent"
+proxy_chain = ["ssh-bastion"]
+
+[proxies.ssh-bastion]
+type   = "ssh"
+server = "bastion"
+`)
+	p, ok := cfg.Proxies["ssh-bastion"]
+	if !ok {
+		t.Fatal("expected proxy 'ssh-bastion'")
+	}
+	if p.Type != "ssh" {
+		t.Errorf("Type = %q, want 'ssh'", p.Type)
+	}
+	if p.Server != "bastion" {
+		t.Errorf("Server = %q, want 'bastion'", p.Server)
+	}
+	srv := cfg.Servers["target"]
+	if len(srv.ProxyChain) != 1 || srv.ProxyChain[0] != "ssh-bastion" {
+		t.Errorf("ProxyChain = %v, want [ssh-bastion]", srv.ProxyChain)
+	}
+}
+
+// TestLoad_Proxy_SSH_Direct parses a valid [proxies.ssh-direct] with explicit
+// host/port/user/auth credentials (not referencing a server entry).
+func TestLoad_Proxy_SSH_Direct(t *testing.T) {
+	cfg := mustLoad(t, `
+[servers.myserver]
+host = "example.com"
+user = "deploy"
+auth = "agent"
+proxy_chain = ["ssh-direct"]
+
+[proxies.ssh-direct]
+type     = "ssh"
+host     = "jump.example.com"
+port     = 22
+user     = "jumpuser"
+auth     = "agent"
+`)
+	p, ok := cfg.Proxies["ssh-direct"]
+	if !ok {
+		t.Fatal("expected proxy 'ssh-direct'")
+	}
+	if p.Host != "jump.example.com" {
+		t.Errorf("Host = %q", p.Host)
+	}
+	if p.Auth != "agent" {
+		t.Errorf("Auth = %q", p.Auth)
+	}
+}
+
+// TestLoad_Server_ProxyChain_Parsed verifies proxy_chain parses into slice.
+func TestLoad_Server_ProxyChain_Parsed(t *testing.T) {
+	cfg := mustLoad(t, `
+[proxies.a]
+type = "http"
+host = "proxy-a.example.com"
+port = 3128
+
+[proxies.b]
+type = "socks5"
+host = "proxy-b.example.com"
+port = 1080
+
+[servers.myserver]
+host        = "example.com"
+user        = "deploy"
+auth        = "agent"
+proxy_chain = ["a", "b"]
+`)
+	srv := cfg.Servers["myserver"]
+	if len(srv.ProxyChain) != 2 {
+		t.Fatalf("ProxyChain length = %d, want 2", len(srv.ProxyChain))
+	}
+	if srv.ProxyChain[0] != "a" || srv.ProxyChain[1] != "b" {
+		t.Errorf("ProxyChain = %v, want [a b]", srv.ProxyChain)
+	}
+}
+
+// ---- proxy chain: error cases --------------------------------------------------
+
+// TestLoad_Proxy_UnknownType rejects an unknown proxy type.
+func TestLoad_Proxy_UnknownType(t *testing.T) {
+	mustFail(t, `
+[servers.myserver]
+host = "example.com"
+user = "deploy"
+auth = "agent"
+
+[proxies.bad]
+type = "ftp"
+host = "proxy.example.com"
+port = 21
+`, "type must be one of http/https/socks5/ssh")
+}
+
+// TestLoad_Proxy_HTTP_MissingHost rejects http proxy without host.
+func TestLoad_Proxy_HTTP_MissingHost(t *testing.T) {
+	mustFail(t, `
+[servers.myserver]
+host = "example.com"
+user = "deploy"
+auth = "agent"
+
+[proxies.bad]
+type = "http"
+port = 3128
+`, "host is required")
+}
+
+// TestLoad_Proxy_Socks5_MissingPort rejects socks5 proxy without port.
+func TestLoad_Proxy_Socks5_MissingPort(t *testing.T) {
+	mustFail(t, `
+[servers.myserver]
+host = "example.com"
+user = "deploy"
+auth = "agent"
+
+[proxies.bad]
+type = "socks5"
+host = "127.0.0.1"
+`, "port 0 out of range")
+}
+
+// TestLoad_Proxy_SSH_BothServerAndHost rejects ssh proxy with both server and host.
+func TestLoad_Proxy_SSH_BothServerAndHost(t *testing.T) {
+	mustFail(t, `
+[servers.bastion]
+host = "bastion.example.com"
+user = "deploy"
+auth = "agent"
+
+[servers.myserver]
+host = "example.com"
+user = "deploy"
+auth = "agent"
+
+[proxies.bad]
+type   = "ssh"
+server = "bastion"
+host   = "other.example.com"
+port   = 22
+user   = "u"
+auth   = "agent"
+`, "cannot set both server and host")
+}
+
+// TestLoad_Proxy_SSH_ServerNotFound rejects ssh proxy where Server doesn't exist.
+func TestLoad_Proxy_SSH_ServerNotFound(t *testing.T) {
+	mustFail(t, `
+[servers.myserver]
+host = "example.com"
+user = "deploy"
+auth = "agent"
+
+[proxies.bad]
+type   = "ssh"
+server = "nonexistent-server"
+`, "is not a defined server")
+}
+
+// TestLoad_Proxy_InsecureSkipVerify_WrongType rejects insecure_skip_verify on socks5.
+func TestLoad_Proxy_InsecureSkipVerify_WrongType(t *testing.T) {
+	mustFail(t, `
+[servers.myserver]
+host = "example.com"
+user = "deploy"
+auth = "agent"
+
+[proxies.bad]
+type                 = "socks5"
+host                 = "127.0.0.1"
+port                 = 1080
+insecure_skip_verify = true
+`, "insecure_skip_verify is only valid for type=https")
+}
+
+// TestLoad_ProxyChain_UnknownProxy rejects proxy_chain referencing undefined proxy.
+func TestLoad_ProxyChain_UnknownProxy(t *testing.T) {
+	mustFail(t, `
+[servers.myserver]
+host        = "example.com"
+user        = "deploy"
+auth        = "agent"
+proxy_chain = ["undefined-proxy"]
+`, "unknown proxy")
+}
+
+// TestLoad_ProxyChain_AndProxyJump_Mutually_Exclusive rejects both fields set.
+func TestLoad_ProxyChain_AndProxyJump_Mutually_Exclusive(t *testing.T) {
+	mustFail(t, `
+[servers.bastion]
+host = "bastion.example.com"
+user = "deploy"
+auth = "agent"
+
+[proxies.myproxy]
+type = "http"
+host = "proxy.example.com"
+port = 3128
+
+[servers.target]
+host        = "target.example.com"
+user        = "admin"
+auth        = "agent"
+proxy_jump  = "bastion"
+proxy_chain = ["myproxy"]
+`, "proxy_chain and proxy_jump are mutually exclusive")
+}
+
+// TestLoad_ProxyChain_CycleViaSSHServer rejects cycles where proxy.ssh.server
+// creates an edge back to an ancestor server.
+func TestLoad_ProxyChain_CycleViaSSHServer(t *testing.T) {
+	// server-a's proxy_chain contains proxy-a which SSHs into server-b,
+	// but server-b's proxy_chain contains proxy-b which SSHs into server-a.
+	mustFail(t, `
+[servers.server-a]
+host        = "a.example.com"
+user        = "deploy"
+auth        = "agent"
+proxy_chain = ["proxy-a"]
+
+[servers.server-b]
+host        = "b.example.com"
+user        = "deploy"
+auth        = "agent"
+proxy_chain = ["proxy-b"]
+
+[proxies.proxy-a]
+type   = "ssh"
+server = "server-b"
+
+[proxies.proxy-b]
+type   = "ssh"
+server = "server-a"
+`, "cycle")
+}
+
+// TestLoad_ProxyChain_TooLong rejects a chain longer than 8 entries.
+func TestLoad_ProxyChain_TooLong(t *testing.T) {
+	// Build 9 proxy entries and reference them from a server.
+	proxyDefs := ""
+	proxyNames := ""
+	for i := 0; i < 9; i++ {
+		proxyDefs += fmt.Sprintf(`
+[proxies.p%d]
+type = "http"
+host = "proxy%d.example.com"
+port = 3128
+`, i, i)
+		if i > 0 {
+			proxyNames += ", "
+		}
+		proxyNames += fmt.Sprintf(`"p%d"`, i)
+	}
+	content := `
+[servers.myserver]
+host        = "example.com"
+user        = "deploy"
+auth        = "agent"
+proxy_chain = [` + proxyNames + `]
+` + proxyDefs
+	mustFail(t, content, "exceeds maximum")
+}
+
+// TestLoad_ProxyChain_DuplicateName rejects duplicate proxy names in a chain.
+func TestLoad_ProxyChain_DuplicateName(t *testing.T) {
+	mustFail(t, `
+[proxies.myproxy]
+type = "http"
+host = "proxy.example.com"
+port = 3128
+
+[servers.myserver]
+host        = "example.com"
+user        = "deploy"
+auth        = "agent"
+proxy_chain = ["myproxy", "myproxy"]
+`, "duplicate proxy name")
+}
+
 func TestLoad_KeyPathTildeExpanded(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {

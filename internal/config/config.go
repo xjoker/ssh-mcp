@@ -106,6 +106,7 @@ type rawSettings struct {
 type rawTopLevel struct {
 	Settings rawSettings             `toml:"settings"`
 	Servers  map[string]ServerConfig `toml:"servers"`
+	Proxies  map[string]ProxyConfig  `toml:"proxies"`
 }
 
 func boolVal(p *bool, def bool) bool {
@@ -177,9 +178,19 @@ func Load(path string) (*Config, error) {
 		servers[lk] = v
 	}
 
+	// Normalise proxy map keys to lowercase and set Name field.
+	proxies := make(map[string]ProxyConfig, len(raw.Proxies))
+	for k, v := range raw.Proxies {
+		lk := strings.ToLower(k)
+		v.Name = lk
+		v.Server = strings.ToLower(v.Server)
+		proxies[lk] = v
+	}
+
 	cfg := &Config{
 		Settings: settings,
 		Servers:  servers,
+		Proxies:  proxies,
 		Path:     path,
 	}
 
@@ -337,10 +348,220 @@ func validate(cfg *Config) error {
 		errs = append(errs, cycleErr)
 	}
 
+	// Proxy-chain rules.
+	errs = append(errs, validateProxies(cfg)...)
+	errs = append(errs, validateProxyChainRefs(cfg)...)
+
+	// Proxy-chain cycle detection (extends proxy_jump graph).
+	if cycleErr := detectProxyChainCycles(cfg); cycleErr != "" {
+		errs = append(errs, cycleErr)
+	}
+
 	if len(errs) > 0 {
 		return fmt.Errorf("config: validation errors:\n  %s", strings.Join(errs, "\n  "))
 	}
 	return nil
+}
+
+const maxProxyChainLength = 8
+
+// validateProxies validates each ProxyConfig entry.
+func validateProxies(cfg *Config) []string {
+	var errs []string
+	for name, p := range cfg.Proxies {
+		// Name format: same rules as server names.
+		if len(name) == 0 || len(name) > 64 || !serverNameRe.MatchString(name) {
+			errs = append(errs, fmt.Sprintf("proxy %q: name must match ^[a-z0-9][a-z0-9_-]*$ and be 1-64 chars", name))
+		}
+
+		// Type must be one of the allowed values.
+		switch p.Type {
+		case "http", "https", "socks5", "ssh":
+			// ok
+		default:
+			errs = append(errs, fmt.Sprintf("proxy %q: type must be one of http/https/socks5/ssh, got %q", name, p.Type))
+			// Skip further checks; type-specific rules would be misleading.
+			continue
+		}
+
+		// InsecureSkipVerify is only valid for type=https.
+		if p.InsecureSkipVerify && p.Type != "https" {
+			errs = append(errs, fmt.Sprintf("proxy %q: insecure_skip_verify is only valid for type=https", name))
+		}
+
+		switch p.Type {
+		case "http", "https", "socks5":
+			// Host required, Port required (1–65535).
+			if p.Host == "" {
+				errs = append(errs, fmt.Sprintf("proxy %q: host is required for type=%s", name, p.Type))
+			}
+			if p.Port < 1 || p.Port > 65535 {
+				errs = append(errs, fmt.Sprintf("proxy %q: port %d out of range [1,65535]", name, p.Port))
+			}
+			// ssh-only fields must be absent.
+			if p.Server != "" {
+				errs = append(errs, fmt.Sprintf("proxy %q: server field is only valid for type=ssh", name))
+			}
+			if p.Auth != "" {
+				errs = append(errs, fmt.Sprintf("proxy %q: auth field is only valid for type=ssh", name))
+			}
+			if p.KeyPath != "" {
+				errs = append(errs, fmt.Sprintf("proxy %q: key_path field is only valid for type=ssh", name))
+			}
+			// Password without User is an error; User without Password is fine.
+			if !p.Password.IsZero() && p.User == "" {
+				errs = append(errs, fmt.Sprintf("proxy %q: password requires user to be set", name))
+			}
+			// Plaintext gate.
+			if !p.Password.IsZero() && isPlaintext(p.Password) && !cfg.Settings.AllowConfigPlaintextPassword {
+				errs = append(errs, fmt.Sprintf("proxy %q: password is plaintext but PLAINTEXT_PASSWORD_DISABLED (set allow_config_plaintext_password=true to permit)", name))
+			}
+
+		case "ssh":
+			serverSet := p.Server != ""
+			directSet := p.Host != "" || p.Port != 0 || p.User != "" || p.Auth != "" || p.KeyPath != "" || !p.Password.IsZero()
+
+			if serverSet && directSet {
+				errs = append(errs, fmt.Sprintf("proxy %q: cannot set both server and host/port/user/auth/key_path/password for type=ssh", name))
+				break
+			}
+			if !serverSet && !directSet {
+				errs = append(errs, fmt.Sprintf("proxy %q: type=ssh requires either server or host+port+user+auth", name))
+				break
+			}
+
+			if serverSet {
+				// Reference mode: server must exist in cfg.Servers.
+				if _, ok := cfg.Servers[p.Server]; !ok {
+					errs = append(errs, fmt.Sprintf("proxy %q: server %q is not a defined server", name, p.Server))
+				}
+			} else {
+				// Direct mode: host, port, user, auth all required.
+				if p.Host == "" {
+					errs = append(errs, fmt.Sprintf("proxy %q: host is required for type=ssh direct mode", name))
+				}
+				if p.Port < 1 || p.Port > 65535 {
+					errs = append(errs, fmt.Sprintf("proxy %q: port %d out of range [1,65535]", name, p.Port))
+				}
+				if p.User == "" {
+					errs = append(errs, fmt.Sprintf("proxy %q: user is required for type=ssh direct mode", name))
+				}
+				switch p.Auth {
+				case "agent", "key", "password":
+					// ok
+				default:
+					errs = append(errs, fmt.Sprintf("proxy %q: auth must be one of agent/key/password for type=ssh, got %q", name, p.Auth))
+				}
+				if p.Auth == "key" && p.KeyPath == "" {
+					errs = append(errs, fmt.Sprintf("proxy %q: auth=key requires key_path", name))
+				}
+				if p.Auth == "password" && p.Password.IsZero() {
+					errs = append(errs, fmt.Sprintf("proxy %q: auth=password requires password", name))
+				}
+				// Plaintext gate.
+				if !p.Password.IsZero() && isPlaintext(p.Password) && !cfg.Settings.AllowConfigPlaintextPassword {
+					errs = append(errs, fmt.Sprintf("proxy %q: password is plaintext but PLAINTEXT_PASSWORD_DISABLED (set allow_config_plaintext_password=true to permit)", name))
+				}
+			}
+		}
+	}
+	return errs
+}
+
+// validateProxyChainRefs validates ServerConfig.ProxyChain fields.
+func validateProxyChainRefs(cfg *Config) []string {
+	var errs []string
+	for srvName, srv := range cfg.Servers {
+		if len(srv.ProxyChain) == 0 {
+			continue
+		}
+		// proxy_chain and proxy_jump are mutually exclusive.
+		if srv.ProxyJump != "" {
+			errs = append(errs, fmt.Sprintf("server %q: proxy_chain and proxy_jump are mutually exclusive", srvName))
+		}
+		// Length cap.
+		if len(srv.ProxyChain) > maxProxyChainLength {
+			errs = append(errs, fmt.Sprintf("server %q: proxy_chain length %d exceeds maximum of %d", srvName, len(srv.ProxyChain), maxProxyChainLength))
+		}
+		// Each name must exist in cfg.Proxies, and must not repeat.
+		seen := make(map[string]bool, len(srv.ProxyChain))
+		for _, proxyName := range srv.ProxyChain {
+			if _, ok := cfg.Proxies[proxyName]; !ok {
+				errs = append(errs, fmt.Sprintf("server %q: proxy_chain references unknown proxy %q", srvName, proxyName))
+			}
+			if seen[proxyName] {
+				errs = append(errs, fmt.Sprintf("server %q: proxy_chain contains duplicate proxy name %q", srvName, proxyName))
+			}
+			seen[proxyName] = true
+		}
+	}
+	return errs
+}
+
+// detectProxyChainCycles detects cycles that span proxy_jump edges and
+// proxy_chain ssh-Server edges combined.
+//
+// It treats the graph as:
+//
+//	server A → server B  when A.ProxyJump == B.Name
+//	server A → server B  when A.ProxyChain contains proxy P where P.Type=="ssh" && P.Server==B.Name
+//
+// Returns an error string, or "" if no cycle found.
+func detectProxyChainCycles(cfg *Config) string {
+	const (
+		white = 0
+		gray  = 1
+		black = 2
+	)
+	color := make(map[string]int, len(cfg.Servers))
+
+	// Build adjacency: server → []server it tunnels through.
+	adj := make(map[string][]string, len(cfg.Servers))
+	for name, srv := range cfg.Servers {
+		var targets []string
+		if srv.ProxyJump != "" {
+			targets = append(targets, srv.ProxyJump)
+		}
+		for _, proxyName := range srv.ProxyChain {
+			p, ok := cfg.Proxies[proxyName]
+			if !ok {
+				continue // already reported as unknown ref
+			}
+			if p.Type == "ssh" && p.Server != "" {
+				targets = append(targets, p.Server)
+			}
+		}
+		if len(targets) > 0 {
+			adj[name] = targets
+		}
+	}
+
+	var dfs func(name string) string
+	dfs = func(name string) string {
+		if color[name] == gray {
+			return fmt.Sprintf("proxy cycle detected involving server %q", name)
+		}
+		if color[name] == black {
+			return ""
+		}
+		color[name] = gray
+		for _, target := range adj[name] {
+			if msg := dfs(target); msg != "" {
+				return msg
+			}
+		}
+		color[name] = black
+		return ""
+	}
+
+	for name := range cfg.Servers {
+		if color[name] == white {
+			if msg := dfs(name); msg != "" {
+				return msg
+			}
+		}
+	}
+	return ""
 }
 
 // isPlaintext reports whether a CredRef is plaintext (CredRefPlaintext).

@@ -12,6 +12,47 @@ Branch / version convention:
 
 ## [Unreleased]
 
+## [0.0.6] — 2026-05-14
+
+### Added
+- **Proxy Chain (`proxy_chain`).** A new top-level `[proxies.<name>]` table lets
+  you describe named proxy hops. Any `[servers.<name>]` can reference them via
+  `proxy_chain = ["hop1", "hop2", …]` (outer-to-inner order, max 8 hops).
+  The full TCP dial path to the remote SSH server passes through every hop in
+  the chain; tunnel port-forwards inherit the chain transparently.
+- **Four proxy protocols supported:**
+  - `http` — HTTP CONNECT (plaintext), optional Basic auth.
+  - `https` — HTTP CONNECT over TLS; `insecure_skip_verify = true` opt-in for
+    development environments only.
+  - `socks5` — SOCKS5 via `golang.org/x/net/proxy`; optional user/password auth.
+    (`golang.org/x/net` dependency already present; no new top-level dependency
+    introduced.)
+  - `ssh` — SSH tunnel in two modes: `server = "<name>"` reuses an existing
+    `[servers.<name>]` entry (recommended; inherits its auth, host-key, and
+    nested chain); or direct `host`/`port`/`user`/`auth` for standalone hops.
+- **CredRef auth for proxy credentials.** The `password` field in
+  `[proxies.<name>]` accepts the same CredRef strings as server credentials
+  (`keychain:…`, `plaintext:…`, bare strings with the plaintext guard).
+  Proxy passwords are stored in the OS keychain by default. Encrypted SSH
+  private keys are not supported for `type = "ssh"` direct-mode proxies in
+  this release — use `ssh-agent` forwarding instead, or reference an existing
+  `[servers.<name>]` (which DOES support `key_passphrase`) via `server = "…"`.
+- **Cycle detection extended to SSH proxy chains.** The existing
+  `detectProxyJumpCycles` logic is extended to cover `ssh`-type proxy entries
+  that reference other servers via `server = "<name>"`, preventing infinite
+  dial recursion.
+- **Config-layer validation for `proxy_chain`.** Validated at load time:
+  proxy names must match `^[a-z0-9][a-z0-9_-]*$`; `type` must be one of the
+  four values above; chain elements must all exist in `cfg.Proxies`; chain
+  length ≤ 8; no duplicate names within a chain; `insecure_skip_verify` is
+  rejected on non-`https` types; SSH direct mode requires exactly one of
+  `server` or `host`/`port`/`user`/`auth`.
+
+### Compatibility
+- **`proxy_jump` retained.** Servers that use `proxy_jump` continue to work
+  without changes. `proxy_chain` takes precedence when both fields are present
+  on the same server entry; a lint warning is emitted by `config validate`.
+
 ## [0.0.5] — 2026-05-14
 
 ### Added

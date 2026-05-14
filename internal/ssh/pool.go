@@ -410,6 +410,13 @@ func (p *Pool) dial(ctx context.Context, srv config.ServerConfig, acceptNew bool
 
 	addr := fmt.Sprintf("%s:%d", srv.Host, port)
 
+	// Dial route precedence: proxy_chain > proxy_jump > direct. The config
+	// layer enforces that proxy_chain and proxy_jump are mutually exclusive,
+	// so this ordering is just defensive — only one branch will be entered
+	// in practice.
+	if len(srv.ProxyChain) > 0 {
+		return p.dialViaChain(ctx, srv, addr, clientCfg, authLabel, visited)
+	}
 	if srv.ProxyJump != "" {
 		return p.dialViaProxy(ctx, srv, addr, clientCfg, authLabel, visited)
 	}
