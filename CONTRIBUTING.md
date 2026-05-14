@@ -2,7 +2,7 @@
 
 ## Development Setup
 
-Requirements: **Go 1.21+** (see `go.mod` for the minimum version in use).
+Requirements: **Go 1.25+** (see `go.mod` for the canonical minimum; CI runs the latest 1.26.x for the stdlib CVE fixes — set up a recent toolchain locally to match).
 
 ```sh
 git clone https://github.com/xjoker/ssh-mcp.git
