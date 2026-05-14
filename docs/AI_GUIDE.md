@@ -48,8 +48,14 @@ Decision order (top wins):
 4. **Multi-step interactive workflow** (sudo prompt, REPL, `cd && build &&
    test`)? → `session_start` once, `session_send` per step, then
    `session_close`. **Always close the session** even on failure.
-5. **File transfer / mkdir / rename / chmod**? → `sftp_op`. Don't shell
-   out for these.
+5. **File transfer / mkdir / rename / chmod**? → `sftp_op` for **small**
+   payloads (mkdir, rename, chmod, tiny configs). Don't shell out for
+   these. For **large files** or **server-to-server** transfers, ask the
+   user to run one of the CLI commands instead (no JSON / base64 size
+   limit): `ssh-mcp upload <srv> <local> <remote>`, `ssh-mcp download`,
+   `ssh-mcp cp <src>:<path> <dst>:<path>` (no inter-server SSH trust
+   needed), `ssh-mcp fetch <srv> <url> <remote>` (proxy through local
+   when the remote can't reach the URL).
 6. **Need a port-forward**? → `tunnel` action=create (local|remote). Always
    close it explicitly when the task is done.
 7. **No server configured for the host the user wants**? → propose
@@ -182,8 +188,9 @@ agent/key.
 | `HOST_KEY_MISMATCH` | Server's host key changed. | **Stop**. Surface this prominently — possible MITM. Do not retry. |
 | `AUTH_FAILED` | Wrong key / password / agent unavailable. | Suggest `auth set` (password) or `ssh-add` (agent). Do not loop. |
 | `PERMISSION_DENIED` | Path outside `allowed_paths`, or remote chmod refused. | Show the user the path and the configured prefix. Don't widen scope silently. |
-| `TIMEOUT` | Command hit `timeout_ms`. | Retry only with explicit user OK and a higher `timeout_ms`. Note the retriable flag. |
-| `SESSION_DEAD` | Persistent shell exited or got an error sentinel. | Discard the session_id; start a new session if the workflow needs to continue. |
+| `TIMEOUT` | Command hit `timeout_ms`. | Retry only with explicit user OK and a higher `timeout_ms`. Note the retriable flag. **The session itself stays alive** — the next `session_send` will drain the prior command's tail output before issuing your new command. No need to start a fresh session. |
+| `SESSION_BUSY` | A `session_send` arrived while the prior command's tail output was still draining (5 s budget). | Either wait briefly and retry, or call `session_close` if the prior command is stuck. Do NOT discard the session on this code. |
+| `SESSION_DEAD` | The remote shell actually closed (EOF on stdout). | Discard the session_id and start a new session. This is **not** triggered by command timeout alone — only by genuine shell exit. |
 | `SESSION_LIMIT` | 16 concurrent sessions reached (default). | Close idle sessions before opening more. |
 | `INLINE_CREDS_DISABLED` | Operator turned off inline secrets. | Do not push back — fall back to a configured server. |
 | `USER_DECLINED` | User said no in the elicitation. | Accept the decline. Do not rephrase and re-ask. |
@@ -228,9 +235,16 @@ tunnel {action:"close", tunnel_id:"<from create>"}
 
 ### Register a server permanently (survives restart)
 ```
+# key-based
 ssh_persistent_setup {name:"prod-db", host:"db.example.com", port:22,
                        user:"deploy", auth:"key",
                        key_path:"~/.ssh/id_ed25519"}
+
+# password-based — secret goes to the OS keychain by default
+# (password_storage="keychain"), config.toml only stores a reference.
+ssh_persistent_setup {name:"prod-db", host:"db.example.com", port:22,
+                       user:"deploy", auth:"password",
+                       password:"<plaintext>"}
 # entry is live immediately — no restart required
 ssh_exec {server:"prod-db", command:"hostname"}
 ```

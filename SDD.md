@@ -1019,7 +1019,16 @@ completion using a sentinel-based protocol (not regex prompt detection).
 
 **Output:** `{ "stdout", "stderr", "exit_code", "duration_ms", "truncated" }`
 
-**Errors:** `SESSION_DEAD`, `TIMEOUT`, `INVALID_ARGUMENT`.
+**Errors:** `SESSION_DEAD`, `SESSION_BUSY`, `TIMEOUT`, `INVALID_ARGUMENT`.
+
+**Timeout semantics:** A `TIMEOUT` on `session_send` does **not** kill the
+session. The bridge stashes the command's per-command nonce as "stale" and
+keeps the shell alive; a follow-up `session_send` first drains the prior
+command's tail output (5 s budget) before issuing its own command. If the
+prior command is still producing output past the drain budget the
+follow-up returns `SESSION_BUSY` (the caller may wait and retry, or call
+`session_close`). `SESSION_DEAD` is reserved for genuine shell EOF on
+stdout (remote disconnect, shell exit).
 
 ### 6.4 `session_close`
 
@@ -1245,7 +1254,8 @@ expose to the LAN the operator must explicitly pass `local_bind:
 {
   "type": "object",
   "properties": {
-    "tag": { "type": "string", "description": "Filter by tag" }
+    "tag":     { "type": "string", "description": "Filter by tag" },
+    "refresh": { "type": "boolean", "description": "Re-read config.toml from disk (default true). Newly discovered entries are also injected into the SSH pool as zero-expiry temp servers so subsequent ssh_exec / session_start can resolve them immediately, without an MCP restart." }
   }
 }
 ```
@@ -1857,7 +1867,8 @@ The complete set of `Response.error.code` values:
 | `RATE_LIMITED` | 429 | true | (reserved; not used in MVP) |
 | `INTERNAL_ERROR` | 500 | true | Unexpected internal failure |
 | `CONN_FAILED` | 502 | true | TCP / SSH handshake failure (network-level) |
-| `SESSION_DEAD` | 503 | true | Session terminated (caller should re-`session_start`) |
+| `SESSION_DEAD` | 503 | true | Remote shell closed (EOF on stdout). Caller should re-`session_start`. NOT triggered by a command `TIMEOUT` alone — see §6.3. |
+| `SESSION_BUSY` | 503 | true | A `session_send` arrived while the prior command's tail output was still draining (5 s budget). Caller may retry, or call `session_close` if the prior command is stuck. |
 | `HOST_KEY_UNKNOWN` | — | false | First connection to host; user must run `trust` |
 | `HOST_KEY_MISMATCH` | — | false | Host key changed since last seen — possible MITM |
 | `SFTP_ERROR` | — | varies | SFTP protocol-level error (bubbled from pkg/sftp) |
