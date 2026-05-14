@@ -18,7 +18,10 @@ allowlist_for() {
     config)    echo "" ;;
     auth)      echo "safety config" ;;
     audit)     echo "safety" ;;
-    ssh)       echo "safety config" ;;
+    proxy)     echo "" ;;
+    # v0.0.6: ssh.proxychain imports internal/proxy (dialer abstractions) and
+    # internal/auth (resolve direct-mode SSH proxy creds via CredRef).
+    ssh)       echo "safety config auth proxy" ;;
     sftp)      echo "safety" ;;
     session)   echo "ssh safety" ;;
     tunnel)    echo "ssh safety" ;;
