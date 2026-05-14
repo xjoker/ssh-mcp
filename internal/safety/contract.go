@@ -130,6 +130,28 @@ var (
 
 	// `sshpass -p VALUE` (space form, separate from above which also covers it).
 	reSshpass = regexp.MustCompile(`(?i)\bsshpass\s+-p\s+\S+`)
+
+	// HTTP Authorization header lines: `Authorization: Bearer xxxx`,
+	// `Authorization: Basic xxxx`, `Proxy-Authorization: ...`. Matches the
+	// header name (case-insensitive) + scheme + token. Common when audit
+	// records stdout/stderr of curl, http clients, log dumps.
+	reAuthHeader = regexp.MustCompile(`(?i)((?:proxy-)?authorization)\s*:\s*(bearer|basic|digest|token)\s+\S+`)
+
+	// Bare provider-prefix tokens commonly leaked in CLI output:
+	//   - GitHub:  ghp_/gho_/ghu_/ghs_/ghr_  + base62
+	//   - OpenAI / Anthropic: sk-...  (≥ 20 chars after prefix)
+	//   - npm:     npm_ + 36 base62
+	//   - Slack:   xox[bpar]-NNN-NNN-NNN-hex
+	// These intentionally use loose length lower bounds because some
+	// providers have multiple key formats (e.g. sk-proj-…). False positives
+	// against natural text are unlikely thanks to the distinctive prefixes.
+	reGithubToken = regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{20,}`)
+	reSkToken     = regexp.MustCompile(`\bsk-[A-Za-z0-9_\-]{20,}`)
+	reNpmToken    = regexp.MustCompile(`\bnpm_[A-Za-z0-9]{30,}`)
+	reSlackToken  = regexp.MustCompile(`\bxox[bpars]-[A-Za-z0-9-]{10,}`)
+	// JWT (header.payload.signature with base64url segments). Limit length
+	// to avoid matching every dotted identifier.
+	reJWT = regexp.MustCompile(`\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}`)
 )
 
 // sensitiveFieldNames is the canonical set of JSON field names whose values
@@ -335,6 +357,30 @@ func redactBytes(b []byte) []byte {
 		return []byte(s[:idx+2] + redactedPlaceholder)
 	})
 	out = reSshpass.ReplaceAll(out, []byte("sshpass -p "+redactedPlaceholder))
+
+	// Header / token forms commonly seen in stdout/stderr of curl, HTTP
+	// clients, package managers, and log dumps. Important now that audit
+	// log captures command output (settings.audit_record_output).
+	out = reAuthHeader.ReplaceAllFunc(out, func(m []byte) []byte {
+		s := string(m)
+		// Preserve "<HeaderName>: <Scheme> " then replace the token.
+		// Find the second whitespace (after scheme) and cut.
+		colon := strings.IndexByte(s, ':')
+		if colon < 0 {
+			return []byte(redactedPlaceholder)
+		}
+		rest := strings.TrimLeft(s[colon+1:], " \t")
+		schemeEnd := strings.IndexAny(rest, " \t")
+		if schemeEnd < 0 {
+			return []byte(s[:colon+1] + " " + redactedPlaceholder)
+		}
+		return []byte(s[:colon+1] + " " + rest[:schemeEnd] + " " + redactedPlaceholder)
+	})
+	out = reGithubToken.ReplaceAll(out, []byte(redactedPlaceholder))
+	out = reSkToken.ReplaceAll(out, []byte(redactedPlaceholder))
+	out = reNpmToken.ReplaceAll(out, []byte(redactedPlaceholder))
+	out = reSlackToken.ReplaceAll(out, []byte(redactedPlaceholder))
+	out = reJWT.ReplaceAll(out, []byte(redactedPlaceholder))
 	return out
 }
 

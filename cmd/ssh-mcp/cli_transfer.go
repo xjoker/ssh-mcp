@@ -25,6 +25,7 @@ import (
 	"time"
 
 	pkgsftp "github.com/pkg/sftp"
+	"golang.org/x/term"
 
 	"github.com/xjoker/ssh-mcp/internal/config"
 	sshpkg "github.com/xjoker/ssh-mcp/internal/ssh"
@@ -96,6 +97,11 @@ func dialServer(ctx context.Context, cfgPath, serverName string) (*transferConn,
 // progressWriter is an io.Writer that wraps an inner writer and prints a
 // throttled progress line to stderr. total may be 0 (unknown size); in that
 // case only "X bytes copied" is shown without a percentage.
+//
+// In TTY mode (stderr is an interactive terminal) the line updates in-place
+// using \r every 500 ms; in non-TTY mode (CI, piped logs) we suppress the
+// streaming updates entirely and only emit the single final "— done" line
+// to avoid spamming log files with carriage-return reflow.
 type progressWriter struct {
 	inner    io.Writer
 	total    int64
@@ -104,6 +110,7 @@ type progressWriter struct {
 	last     time.Time
 	started  time.Time
 	interval time.Duration
+	tty      bool
 }
 
 func newProgressWriter(w io.Writer, total int64, label string) *progressWriter {
@@ -115,13 +122,18 @@ func newProgressWriter(w io.Writer, total int64, label string) *progressWriter {
 		started:  now,
 		last:     now,
 		interval: 500 * time.Millisecond,
+		tty:      term.IsTerminal(int(os.Stderr.Fd())),
 	}
 }
 
 func (p *progressWriter) Write(b []byte) (int, error) {
 	n, err := p.inner.Write(b)
 	p.written += int64(n)
-	if time.Since(p.last) >= p.interval {
+	// Streaming updates only when attached to a TTY. In a non-interactive
+	// stderr (CI log, file redirect) the \r-based reflow turns into a wall
+	// of garbled lines — skip the throttled updates and let Done emit a
+	// single tidy summary.
+	if p.tty && time.Since(p.last) >= p.interval {
 		p.print(false)
 		p.last = time.Now()
 	}
@@ -150,7 +162,7 @@ func (p *progressWriter) print(final bool) {
 	if final {
 		fmt.Fprintln(os.Stderr, line+" — done")
 	} else {
-		// Carriage return so the line refreshes in-place when stderr is a TTY.
+		// TTY path — reflow in place.
 		fmt.Fprintf(os.Stderr, "\r%s", line)
 	}
 }
@@ -237,11 +249,18 @@ func uploadCmd(args []string) int {
 
 	pw := newProgressWriter(dst, info.Size(), fmt.Sprintf("upload %s → %s:%s", filepath.Base(localPath), server, remotePath))
 	written, copyErr := io.Copy(pw, src)
-	_ = dst.Close()
+	closeErr := dst.Close()
 	pw.Done()
 
 	if copyErr != nil {
 		fmt.Fprintf(os.Stderr, "upload: stream: %v\n", copyErr)
+		return 1
+	}
+	// Close() must run AFTER io.Copy to flush — SFTP servers often surface
+	// quota / disk-full errors only on close. Treating Close errors as
+	// success would silently leave the user with a corrupted remote file.
+	if closeErr != nil {
+		fmt.Fprintf(os.Stderr, "upload: close remote %s:%s: %v (remote file may be truncated/incomplete)\n", server, remotePath, closeErr)
 		return 1
 	}
 	fmt.Fprintf(os.Stderr, "upload: %d bytes written to %s:%s\n", written, server, remotePath)
@@ -312,12 +331,17 @@ func downloadCmd(args []string) int {
 
 	pw := newProgressWriter(dst, info.Size(), fmt.Sprintf("download %s:%s → %s", server, remotePath, filepath.Base(localPath)))
 	written, copyErr := io.Copy(pw, src)
-	_ = dst.Close()
+	closeErr := dst.Close()
 	pw.Done()
 
 	if copyErr != nil {
 		fmt.Fprintf(os.Stderr, "download: stream: %v\n", copyErr)
 		// Leave the partial file on disk so the user can inspect / resume manually.
+		return 1
+	}
+	if closeErr != nil {
+		// Local disk-full / FS errors usually surface only at close.
+		fmt.Fprintf(os.Stderr, "download: close local %s: %v (file may be truncated/incomplete)\n", localPath, closeErr)
 		return 1
 	}
 	fmt.Fprintf(os.Stderr, "download: %d bytes written to %s\n", written, localPath)
@@ -359,8 +383,13 @@ func cpCmd(args []string) int {
 		fmt.Fprintln(os.Stderr, "cp: destination must be of form <server>:<path>")
 		return 1
 	}
-	if srcServer == dstServer {
-		fmt.Fprintln(os.Stderr, "cp: source and destination servers are the same; use a remote shell command instead")
+	// Server name canonicalisation matches the rest of the codebase (config
+	// keys are stored lower-cased; dialServer also lower-cases). Compare in
+	// canonical form so `Prod:/x → prod:/x` is correctly recognised as the
+	// same server and rejected — otherwise the destination `Create` could
+	// truncate the very file being read on the source side.
+	if strings.EqualFold(srcServer, dstServer) {
+		fmt.Fprintln(os.Stderr, "cp: source and destination are the same server; use a remote shell command (mv/cp) instead")
 		return 1
 	}
 
@@ -410,11 +439,15 @@ func cpCmd(args []string) int {
 
 	pw := newProgressWriter(dstFile, info.Size(), fmt.Sprintf("cp %s:%s → %s:%s", srcServer, srcPath, dstServer, dstPath))
 	written, copyErr := io.Copy(pw, srcFile)
-	_ = dstFile.Close()
+	closeErr := dstFile.Close()
 	pw.Done()
 
 	if copyErr != nil {
 		fmt.Fprintf(os.Stderr, "cp: stream: %v\n", copyErr)
+		return 1
+	}
+	if closeErr != nil {
+		fmt.Fprintf(os.Stderr, "cp: close %s:%s: %v (destination may be truncated/incomplete)\n", dstServer, dstPath, closeErr)
 		return 1
 	}
 	fmt.Fprintf(os.Stderr, "cp: %d bytes copied %s:%s → %s:%s\n", written, srcServer, srcPath, dstServer, dstPath)
@@ -508,11 +541,15 @@ func fetchCmd(args []string) int {
 
 	pw := newProgressWriter(dst, resp.ContentLength, fmt.Sprintf("fetch %s → %s:%s", url, server, remotePath))
 	written, copyErr := io.Copy(pw, resp.Body)
-	_ = dst.Close()
+	closeErr := dst.Close()
 	pw.Done()
 
 	if copyErr != nil {
 		fmt.Fprintf(os.Stderr, "fetch: stream: %v\n", copyErr)
+		return 1
+	}
+	if closeErr != nil {
+		fmt.Fprintf(os.Stderr, "fetch: close remote %s:%s: %v (remote file may be truncated/incomplete)\n", server, remotePath, closeErr)
 		return 1
 	}
 	fmt.Fprintf(os.Stderr, "fetch: %d bytes written to %s:%s\n", written, server, remotePath)

@@ -22,11 +22,42 @@ Branch / version convention:
   - `audit_record_output` (default `true`) — master switch.
   - `audit_output_max_bytes` (default `32768` = 32 KiB per stream) — per-entry
     cap. Oversized payloads are truncated with a `…[truncated, N bytes
-    total]` marker preserving the original size.
+    total]` marker preserving the original size. Truncation snaps to a
+    valid UTF-8 rune boundary so multi-byte / CJK / emoji output survives.
 - `ssh-mcp audit query` gained two output modes:
   - `--output` — expanded multi-line block showing stdout / stderr / args
     inline (human-friendly).
   - `--json` — one JSONL record per entry with all fields (jq-friendly).
+- `safety.RedactSecret` now scrubs additional text-form secrets relevant
+  to captured stdout: `Authorization: Bearer/Basic/Digest/Token …`,
+  `Proxy-Authorization: …`, bare GitHub/OpenAI/Anthropic/npm/Slack tokens
+  (`ghp_`, `sk-…`, `npm_`, `xox[bpars]-…`), and JWT triplets (`eyJ…`).
+- New error code `SESSION_BUSY` (retriable). Distinct from `SESSION_DEAD`:
+  the session is alive, the previous command is just still flushing tail
+  output. Callers may retry, or `session_close` to abort. `mapSessionError`
+  surfaces this with a hint instead of falling through to INTERNAL_ERROR.
+
+### Fixed
+- `ssh-mcp cp <Prod:/x> <prod:/x>` previously bypassed the same-server
+  guard because the comparison was case-sensitive while `dialServer`
+  lower-cases the name. The two would resolve to the same physical
+  connection and `Create(dst)` could truncate the file being read.
+  Comparison now uses `strings.EqualFold`.
+- `upload` / `download` / `cp` / `fetch` were ignoring `dst.Close()`
+  errors. SFTP and local-filesystem quota / disk-full conditions are
+  routinely reported only at close — a swallowed error would falsely
+  claim success on a truncated destination. Close errors now propagate.
+- Session stdout pump no longer drops the completion sentinel when
+  `lineCh` is full. Previously a backed-up pump could discard the
+  sentinel of a timed-out command, leaving `staleNonces` permanently
+  un-drainable so the session was stuck in `SESSION_BUSY` forever. The
+  pump now never drops sentinel lines (blocks instead) and reaps oldest
+  non-sentinel output to make room.
+- `list_servers refresh=true` now also reaps temp-server shadows for
+  entries that were deleted or renamed from `config.toml` since process
+  start. Previously the stale shadow lingered (and could be invoked by
+  `ssh_exec` against an authorised-key combination the operator has
+  since revoked) until the next MCP restart.
 
 ## [0.0.3] — 2026-05-14
 

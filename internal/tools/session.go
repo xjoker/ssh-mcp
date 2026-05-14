@@ -465,6 +465,11 @@ func mapSessionError(err error) envelope.Response {
 	switch {
 	case strings.Contains(msg, "TIMEOUT"):
 		return envelope.Err(envelope.CodeTimeout, msg, true)
+	case strings.Contains(msg, "SESSION_BUSY"):
+		// Distinct from DEAD: the shell is alive, the prior command is
+		// just still flushing. Retriable; caller may wait or session_close.
+		return envelope.ErrWithHint(envelope.CodeSessionBusy, msg,
+			"Previous command still producing output. Retry briefly, or call session_close to abort.", true)
 	case strings.Contains(msg, "SESSION_DEAD"):
 		return envelope.Err(envelope.CodeSessionDead, msg, false)
 	case strings.Contains(msg, "not found"):

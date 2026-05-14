@@ -108,11 +108,28 @@ func handleListServers(_ context.Context, deps *Deps, args json.RawMessage) enve
 		if reloaded, err := config.Load(deps.Cfg.Path); err == nil && reloaded != nil {
 			effective = reloaded.Servers
 			if deps.Pool != nil {
+				// Inject every fresh on-disk entry as a zero-expiry
+				// temp-server. Pool's temp-server map shadows cfg.Servers,
+				// so this makes additions and edits immediately resolvable.
 				for name, srv := range reloaded.Servers {
-					// Inject every fresh on-disk entry as a temp-server with
-					// zero expiry. This makes hand-edited additions and
-					// modifications immediately resolvable.
 					deps.Pool.AddTempServer(name, srv, time.Time{})
+				}
+				// Reap previously-injected refresh shadows that the on-disk
+				// file no longer defines (entries deleted or renamed via
+				// manual edit). Without this, deleted servers would remain
+				// callable in the running MCP process — confusing and a
+				// stale-credential foot-gun. We only remove ZERO-EXPIRY
+				// temp entries (those carry the "from config refresh"
+				// semantics); ssh_quick_setup entries have a non-zero
+				// ExpiresAt and are left alone.
+				for _, tmp := range deps.Pool.ListTempServers() {
+					if !tmp.ExpiresAt.IsZero() {
+						continue // genuine ad-hoc quick_setup entry
+					}
+					if _, stillThere := reloaded.Servers[tmp.Server.Name]; stillThere {
+						continue
+					}
+					deps.Pool.RemoveTempServer(tmp.Server.Name)
 				}
 			}
 		}

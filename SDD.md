@@ -746,15 +746,21 @@ When a session is started, we send a probe command:
 export __MSB_SENTINEL='msb-sentinel-<random_bytes_hex>'
 ```
 
-Each `Send(cmd)` is wrapped:
+Each `Send(cmd)` is wrapped (the closing brace lives on its own line so
+heredoc terminators like `EOF` are not collided with the trailing
+sentinel printf — multi-line scripts are first-class):
 
 ```sh
-{ <cmd> ; } ; __rc=$? ; printf '\n%s %s\n' "$__MSB_SENTINEL" "$__rc"
+{ <cmd>
+} ; __rc=$? ; printf '\n%s %s\n' "$__MSB_SENTINEL-<nonce>" "$__rc"
 ```
 
-The reader scans the output stream for a line matching exactly
-`<sentinel> <integer>`. That line is consumed (not returned to the user)
-and its integer becomes the exit code. This gives us:
+Each Send generates a fresh `<nonce>`; the reader scans the output stream
+for a line matching exactly `<sentinel>-<nonce> <integer>`. Per-command
+nonces let the session module distinguish a stale completion sentinel
+(from a previously timed-out command) from the current command's
+completion. That line is consumed (not returned to the user) and its
+integer becomes the exit code. This gives us:
 
 - Reliable completion detection (random sentinel can't be forged in
   benign command output)
@@ -1999,17 +2005,24 @@ the dead client, and dials fresh.
 
 ```
    ┌──────────┐
-   │  Ready   │◄──────┐
-   └────┬─────┘       │
-        │ Send()      │ command completes
-        ▼             │
-   ┌──────────┐       │
-   │  Busy    │───────┘
-   └────┬─────┘
-        │ Send timeout, or sentinel mismatch
+   │  Ready   │◄──────────────────┐
+   └────┬─────┘                   │
+        │ Send()                  │ command completes
+        ▼                         │
+   ┌──────────┐                   │
+   │  Busy    │───────────────────┤
+   └────┬─────┘                   │
+        │ Send timeout            │
+        │ (shell stays alive,     │
+        │  nonce → staleNonces)   │
+        ▼                         │
+   ┌──────────────────────┐       │ next Send drains stale
+   │  Ready w/ staleNonces│───────┘ within budget → Ready
+   └────┬─────────────────┘
+        │ shell EOF (remote disconnect / exit)
         ▼
    ┌──────────┐
-   │  Error   │
+   │  Error   │  ← reports SESSION_DEAD to subsequent Sends
    └────┬─────┘
         │ Close()
         ▼
@@ -2018,10 +2031,17 @@ the dead client, and dials fresh.
    └──────────┘
 ```
 
-A `Busy` session that doesn't return to `Ready` within `timeout_ms`
-becomes `Error`. The next `Send` to an `Error` session returns
-`SESSION_DEAD`; the client must `session_close` and `session_start`
-again.
+A `Send` timeout no longer poisons the session: the in-flight command's
+nonce is parked on `staleNonces`, the persistent stdout pump keeps
+reading, and the next `Send` first drains any tail output emitted by the
+prior command (bounded by `staleDrainBudget`, 5 s). Outcomes for that
+next `Send`:
+
+- prior command completed in the drain window → success on the new command.
+- prior command still producing output past the budget → `SESSION_BUSY`
+  (retriable; caller may wait or `session_close`).
+- shell EOF observed on `lineCh` (remote disconnect) → state transitions
+  to `Error`; subsequent `Send`s return `SESSION_DEAD`.
 
 ### 12.3 Idle Reapers
 

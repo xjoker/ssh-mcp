@@ -154,13 +154,16 @@ type pumpedLine struct {
 }
 
 // stdoutPumpLoop reads logical lines from the session's stdout reader and
-// pushes them to lineCh. When lineCh is full the OLDEST line is dropped to
-// make room — this prevents the pump from blocking when no Send is actively
-// consuming. Exits cleanly when pumpStop is closed (Close path) or the
-// reader returns an error (remote disconnect).
+// pushes them to lineCh. When lineCh is full the OLDEST NON-SENTINEL line is
+// dropped to make room — sentinels (lines starting with the session
+// sentinel prefix) are NEVER dropped, since losing one would leave a
+// staleNonce un-drainable and trap the session in permanent SESSION_BUSY.
+// Exits cleanly when pumpStop is closed (Close path) or the reader returns
+// an error (remote disconnect).
 func (s *session) stdoutPumpLoop() {
 	defer close(s.pumpDone)
 	defer close(s.lineCh)
+	sentinelPrefix := s.sentinel + "-"
 	for {
 		select {
 		case <-s.pumpStop:
@@ -173,18 +176,53 @@ func (s *session) stdoutPumpLoop() {
 				text:      strings.TrimRight(string(raw), "\r\n"),
 				truncated: lineTrunc,
 			}
-			// Try non-blocking push first. If full, drop oldest then push.
+			// Try non-blocking push first.
 			select {
 			case s.lineCh <- pl:
 			default:
-				select {
-				case <-s.lineCh: // discard oldest
-				default:
-				}
-				select {
-				case s.lineCh <- pl:
-				case <-s.pumpStop:
-					return
+				// Channel full. Sentinels are load-bearing for session
+				// recovery, so we block until one slot opens rather than
+				// drop them. For ordinary output we drop the oldest
+				// non-sentinel line and push.
+				if !pl.truncated && strings.HasPrefix(pl.text, sentinelPrefix) {
+					// Sentinel: block until pushed or session closed.
+					select {
+					case s.lineCh <- pl:
+					case <-s.pumpStop:
+						return
+					}
+				} else {
+					// Non-sentinel: discard oldest and push, but if the
+					// oldest happens to be a sentinel itself, keep popping
+					// non-sentinels until we find space (degenerate case:
+					// every queued line is a sentinel — then block).
+					popped := false
+					for i := 0; i < cap(s.lineCh); i++ {
+						select {
+						case head := <-s.lineCh:
+							if !head.truncated && strings.HasPrefix(head.text, sentinelPrefix) {
+								// Put the sentinel back at the tail (best
+								// effort — channel can't reorder, so we
+								// push immediately; if full, block).
+								select {
+								case s.lineCh <- head:
+								case <-s.pumpStop:
+									return
+								}
+								continue
+							}
+							popped = true
+						default:
+						}
+						if popped {
+							break
+						}
+					}
+					select {
+					case s.lineCh <- pl:
+					case <-s.pumpStop:
+						return
+					}
 				}
 			}
 		}

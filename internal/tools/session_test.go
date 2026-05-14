@@ -195,6 +195,25 @@ func TestSessionError_SessionDead(t *testing.T) {
 	}
 }
 
+// TestSessionError_SessionBusy verifies SESSION_BUSY mapping is retriable
+// and reports the dedicated code (not INTERNAL_ERROR fallback).
+func TestSessionError_SessionBusy(t *testing.T) {
+	err := &wrappedErr{"session: Send: SESSION_BUSY (previous command still running; call session_close to abort, or retry)"}
+	resp := mapSessionError(err)
+	if resp.OK {
+		t.Fatal("expected not-OK")
+	}
+	if resp.Error == nil || resp.Error.Code != envelope.CodeSessionBusy {
+		t.Fatalf("expected SESSION_BUSY, got %+v", resp.Error)
+	}
+	if !resp.Error.Retriable {
+		t.Fatal("expected retriable=true for SESSION_BUSY")
+	}
+	if resp.Error.Hint == "" {
+		t.Error("expected hint on SESSION_BUSY response")
+	}
+}
+
 // --------------------------------------------------------------------------
 // session_close tests
 // --------------------------------------------------------------------------

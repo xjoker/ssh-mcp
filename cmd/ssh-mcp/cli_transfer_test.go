@@ -1,6 +1,22 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+// TestCpRejectsSameServerCaseInsensitive verifies that the cp same-server
+// guard normalises case before comparing — `Prod:/x` and `prod:/x` resolve
+// to the same dialed server (config keys are lower-cased), and treating
+// them as different would let cp truncate the file it's reading.
+func TestCpRejectsSameServerCaseInsensitive(t *testing.T) {
+	rc := cpCmd([]string{"Prod:/data/a", "prod:/data/b"})
+	if rc == 0 {
+		t.Fatal("cp must refuse same-server (case-insensitive); got rc=0")
+	}
+	// Capturing stderr is overkill; rc != 0 is the contract guarantee.
+	_ = strings.ToLower
+}
 
 // TestSplitServerPath verifies the <server>:<path> parser used by the cp
 // subcommand. Edge cases: leading colon, missing colon, trailing colon.

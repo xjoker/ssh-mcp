@@ -248,7 +248,10 @@ func buildAuditEntry(start time.Time, toolName, sessionID, serverName, argsRedac
 
 // capAndRedactOutput applies safety.RedactSecret then truncates to maxBytes,
 // appending a "…[truncated, N bytes total]" marker when clipped. maxBytes ≤ 0
-// disables capping entirely.
+// disables capping entirely. The truncation point is snapped backwards to a
+// UTF-8 rune boundary so the truncated payload is always valid UTF-8 —
+// otherwise the audit JSON encoder would replace the half-cut rune with
+// U+FFFD and corrupt forensic replays of CJK / emoji output.
 func capAndRedactOutput(s string, maxBytes int) string {
 	if s == "" {
 		return ""
@@ -257,7 +260,12 @@ func capAndRedactOutput(s string, maxBytes int) string {
 	if maxBytes <= 0 || len(redacted) <= maxBytes {
 		return redacted
 	}
-	return redacted[:maxBytes] + fmt.Sprintf("\n…[truncated, %d bytes total]", len(redacted))
+	cut := maxBytes
+	// Snap back to a rune start. Continuation bytes are 10xxxxxx (0x80..0xBF).
+	for cut > 0 && cut < len(redacted) && (redacted[cut]&0xC0) == 0x80 {
+		cut--
+	}
+	return redacted[:cut] + fmt.Sprintf("\n…[truncated, %d bytes total]", len(redacted))
 }
 
 func redactAuditArgs(toolName string, raw json.RawMessage) string {
