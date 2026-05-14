@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"testing"
 	"time"
 
@@ -228,4 +229,140 @@ func contains(s, sub string) bool {
 			}
 			return false
 		}())
+}
+
+// TestHandleListServers_RefreshPicksUpDiskEdits verifies that the default
+// refresh=true behavior re-reads config.toml from disk so manually added
+// servers (e.g. via a text editor outside the MCP process) are surfaced
+// without restarting the MCP server, and are also injected into the SSH
+// pool so subsequent ssh_exec / session_start can resolve them.
+func TestHandleListServers_RefreshPicksUpDiskEdits(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := dir + "/config.toml"
+
+	original := `[settings]
+default_timeout_ms = 120000
+
+[servers.alpha]
+host = "alpha.example.com"
+port = 22
+user = "u1"
+auth = "agent"
+`
+	if err := writeFileFixture(cfgPath, original); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("initial Load: %v", err)
+	}
+	cfg.Path = cfgPath
+	pool := ssh.NewPool(cfg, nil)
+	deps := &Deps{Cfg: cfg, Pool: pool}
+
+	// Sanity: pre-edit list contains only alpha.
+	resp := handleListServers(context.Background(), deps, json.RawMessage(`{}`))
+	if !resp.OK {
+		t.Fatalf("pre-edit list_servers err: %+v", resp.Error)
+	}
+	data, _ := json.Marshal(resp.Data)
+	var pre listServersOutput
+	_ = json.Unmarshal(data, &pre)
+	if len(pre.Servers) != 1 || pre.Servers[0].Name != "alpha" {
+		t.Fatalf("pre-edit expected only alpha, got %+v", pre.Servers)
+	}
+
+	// Simulate manual edit: append a new [servers.beta] block.
+	appended := original + `
+[servers.beta]
+host = "beta.example.com"
+port = 22
+user = "u2"
+auth = "agent"
+`
+	if err := writeFileFixture(cfgPath, appended); err != nil {
+		t.Fatal(err)
+	}
+
+	// Refresh=true (default) — beta must appear.
+	resp = handleListServers(context.Background(), deps, json.RawMessage(`{}`))
+	if !resp.OK {
+		t.Fatalf("post-edit list_servers err: %+v", resp.Error)
+	}
+	data, _ = json.Marshal(resp.Data)
+	var post listServersOutput
+	_ = json.Unmarshal(data, &post)
+	names := make(map[string]bool, len(post.Servers))
+	for _, s := range post.Servers {
+		names[s.Name] = true
+	}
+	if !names["alpha"] || !names["beta"] {
+		t.Fatalf("expected both alpha and beta after refresh, got %+v", post.Servers)
+	}
+	// And there should be exactly 2 rows — no duplication.
+	if len(post.Servers) != 2 {
+		t.Errorf("expected 2 servers after refresh, got %d: %+v", len(post.Servers), post.Servers)
+	}
+
+	// The new entry must also be live in the pool (zero-expiry temp).
+	if _, ok := pool.LookupTempServer("beta"); !ok {
+		t.Errorf("expected pool.LookupTempServer to find beta after refresh injection")
+	}
+}
+
+// TestHandleListServers_NoRefreshPreservesSnapshot verifies that refresh=false
+// suppresses the disk reload — useful for callers who want a deterministic
+// view of the in-memory state.
+func TestHandleListServers_NoRefreshPreservesSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := dir + "/config.toml"
+
+	original := `[settings]
+default_timeout_ms = 120000
+
+[servers.alpha]
+host = "alpha.example.com"
+port = 22
+user = "u1"
+auth = "agent"
+`
+	if err := writeFileFixture(cfgPath, original); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	cfg.Path = cfgPath
+	deps := &Deps{Cfg: cfg}
+
+	// Append a new entry to disk.
+	if err := writeFileFixture(cfgPath, original+`
+[servers.beta]
+host = "beta.example.com"
+port = 22
+user = "u2"
+auth = "agent"
+`); err != nil {
+		t.Fatal(err)
+	}
+
+	// refresh=false — only alpha should appear.
+	resp := handleListServers(context.Background(), deps, json.RawMessage(`{"refresh": false}`))
+	if !resp.OK {
+		t.Fatalf("list_servers err: %+v", resp.Error)
+	}
+	data, _ := json.Marshal(resp.Data)
+	var out listServersOutput
+	_ = json.Unmarshal(data, &out)
+	if len(out.Servers) != 1 || out.Servers[0].Name != "alpha" {
+		t.Errorf("expected only alpha with refresh=false, got %+v", out.Servers)
+	}
+}
+
+// writeFileFixture is a tiny test helper since the tools package doesn't
+// already have one.
+func writeFileFixture(path, content string) error {
+	return os.WriteFile(path, []byte(content), 0o600)
 }

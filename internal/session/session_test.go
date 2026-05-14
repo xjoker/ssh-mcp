@@ -168,10 +168,21 @@ func startSession(t *testing.T, ft *fakeTransport, sh *fakeShell) string {
 // shellResponder reads commands from sh.stdinR, handles sentinel-wrapped
 // commands, and writes realistic stdout/stderr responses.
 type shellResponder struct {
-	sh         *fakeShell
-	sentinel   string
-	mu         sync.Mutex
-	handlers   []respHandler // consumed in order
+	sh             *fakeShell
+	sentinel       string
+	mu             sync.Mutex
+	handlers       []respHandler // consumed in order
+	recordedLines  []string      // every line read from stdin, in arrival order
+	recordedLinesM sync.Mutex
+}
+
+// snapshotLines returns a copy of every stdin line observed so far.
+func (sr *shellResponder) snapshotLines() []string {
+	sr.recordedLinesM.Lock()
+	defer sr.recordedLinesM.Unlock()
+	cp := make([]string, len(sr.recordedLines))
+	copy(cp, sr.recordedLines)
+	return cp
 }
 
 type respHandler struct {
@@ -220,6 +231,11 @@ func (sr *shellResponder) run() {
 }
 
 func (sr *shellResponder) handleLine(line string) {
+	// Record every line for tests that need to inspect the wrapper shape.
+	sr.recordedLinesM.Lock()
+	sr.recordedLines = append(sr.recordedLines, line)
+	sr.recordedLinesM.Unlock()
+
 	// Handle export sentinel.
 	if strings.HasPrefix(line, "export __MSB_SENTINEL='") {
 		s := strings.TrimPrefix(line, "export __MSB_SENTINEL='")
@@ -238,24 +254,47 @@ func (sr *shellResponder) handleLine(line string) {
 		return
 	}
 
-	// Handle sentinel-wrapped command: { <cmd> ; } ; __rc=$? ; printf '\n<sentinel> %s\n' "$__rc"
-	if strings.HasPrefix(line, "{ ") {
+	// Handle sentinel-wrapped command. The wrapper Send emits is multi-line:
+	//   { <cmd>
+	//   } ; __rc=$? ; printf '\n<sentinel>-<nonce> %s\n' "$__rc"
+	// We trigger on the closing line because that's where the per-command
+	// completion mark lives. Any preceding `{ ` / heredoc body lines are
+	// ignored — the responder is fake and doesn't actually execute commands.
+	if strings.HasPrefix(line, "} ; __rc=") {
 		h, ok := sr.nextHandler()
 		if !ok {
 			// No handler — write a default sentinel with exit 0.
 			h = respHandler{"", "", 0}
 		}
-		// Write stdout lines.
 		if h.stdout != "" {
 			sr.sh.feedLine(h.stdout)
 		}
-		// Write stderr via stderr pipe.
 		if h.stderr != "" {
 			_, _ = fmt.Fprintln(sr.sh.stderrW, h.stderr)
 		}
-		// Write sentinel line.
-		sr.sh.feedLine(fmt.Sprintf("%s %d", sr.sentinel, h.exitCode))
+		mark := extractCompletionMark(line, sr.sentinel)
+		if mark == "" {
+			mark = sr.sentinel
+		}
+		sr.sh.feedLine(fmt.Sprintf("%s %d", mark, h.exitCode))
 	}
+}
+
+// extractCompletionMark pulls "<sessionSentinel>-<nonce>" out of the wrapped
+// command line. Returns "" if the line doesn't match the expected shape.
+func extractCompletionMark(line, sessionSentinel string) string {
+	needle := `printf '\n` + sessionSentinel + "-"
+	i := strings.Index(line, needle)
+	if i < 0 {
+		return ""
+	}
+	rest := line[i+len(`printf '\n`):] // starts with "<sentinel>-<nonce> %s\n' ..."
+	// Mark ends at the first space.
+	spaceIdx := strings.IndexByte(rest, ' ')
+	if spaceIdx <= 0 {
+		return ""
+	}
+	return rest[:spaceIdx]
 }
 
 // newManager creates a Manager backed by a fakeTransport with one fakeShell
@@ -279,6 +318,45 @@ func newManagedSession(t *testing.T) (*Manager, string, *shellResponder) {
 		t.Fatalf("newManagedSession: Start: %v", err)
 	}
 	return m, id, sr
+}
+
+// TestSend_HeredocWrapperShape verifies that Send's wrapper places the
+// closing brace on its own line — required for heredoc commands whose
+// terminator (e.g. EOF) must appear on a line by itself. Without this
+// shape, "EOF" would share a line with " ; } ; ..." and the heredoc
+// would never close, hanging the shell.
+func TestSend_HeredocWrapperShape(t *testing.T) {
+	m, id, sr := newManagedSession(t)
+
+	sr.addResponse("", "", 0)
+	if _, err := m.Send(context.Background(), id, "python3 - <<'EOF'\nprint('hi')\nEOF", 5*time.Second); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	// Inspect every line the responder observed on stdin. We expect to see
+	// "EOF" on its own line BEFORE the wrapper closer ("} ; __rc=...") on a
+	// separate line.
+	lines := sr.snapshotLines()
+	eofIdx := -1
+	closerIdx := -1
+	for i, ln := range lines {
+		if ln == "EOF" {
+			eofIdx = i
+		}
+		if strings.HasPrefix(ln, "} ; __rc=") {
+			closerIdx = i
+		}
+	}
+	if eofIdx == -1 {
+		t.Fatalf("expected 'EOF' on its own line; recorded lines:\n%s", strings.Join(lines, "\n"))
+	}
+	if closerIdx == -1 {
+		t.Fatalf("expected wrapper closer line ('} ; __rc='); recorded lines:\n%s", strings.Join(lines, "\n"))
+	}
+	if eofIdx >= closerIdx {
+		t.Fatalf("EOF (idx=%d) must precede the wrapper closer (idx=%d):\n%s",
+			eofIdx, closerIdx, strings.Join(lines, "\n"))
+	}
 }
 
 // --------------------------------------------------------------------------
@@ -449,32 +527,38 @@ func TestTimeout(t *testing.T) {
 	}
 }
 
-// TestSendToErrorSession verifies that after a session enters Error state,
-// subsequent Send calls return SESSION_DEAD.
-func TestSendToErrorSession(t *testing.T) {
-	sh := newFakeShell()
-	startHangShell(sh)
+// TestSendAfterPumpEOFReturnsSessionDead verifies that once the underlying
+// shell closes (stdout EOF), subsequent Sends return SESSION_DEAD.
+//
+// This is the only path that should now produce SESSION_DEAD on a Send —
+// a command timeout alone no longer poisons the session (see
+// TestSend_AfterTimeoutSessionStaysAlive).
+func TestSendAfterPumpEOFReturnsSessionDead(t *testing.T) {
+	m, id, sr := newManagedSession(t)
 
-	m := NewManager(&hangTransport{sh: sh}, time.Hour)
-	defer m.CloseAll()
-
-	ctx := context.Background()
-	id, err := m.Start(ctx, "test-server")
-	if err != nil {
-		t.Fatalf("Start error: %v", err)
+	// Successful round-trip first, to confirm the pump is healthy.
+	sr.addResponse("ok", "", 0)
+	if _, err := m.Send(context.Background(), id, "true", 2*time.Second); err != nil {
+		t.Fatalf("baseline Send failed: %v", err)
 	}
 
-	// Force timeout → Error state.
-	_, _ = m.Send(ctx, id, "anything", 50*time.Millisecond)
+	// Close the remote shell's stdout to drive the pump to EOF.
+	sr.sh.closeStdout()
 
-	// Next Send should return SESSION_DEAD.
-	_, err = m.Send(ctx, id, "cmd", 5*time.Second)
-	if err == nil {
-		t.Fatal("Expected SESSION_DEAD error, got nil")
+	// Give the pump a moment to observe EOF and close lineCh.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		// Poll until the next Send sees SESSION_DEAD or we exhaust the budget.
+		_, err := m.Send(context.Background(), id, "cmd", 200*time.Millisecond)
+		if err == nil {
+			t.Fatal("expected error after pump EOF, got nil")
+		}
+		if strings.Contains(err.Error(), "SESSION_DEAD") || strings.Contains(err.Error(), "shell stdout closed") {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
-	if !strings.Contains(err.Error(), "SESSION_DEAD") {
-		t.Errorf("Expected SESSION_DEAD in error, got: %v", err)
-	}
+	t.Fatal("did not observe SESSION_DEAD / EOF after closing stdout within 2s")
 }
 
 // TestCloseIdempotent verifies that Close on an already-closed session
@@ -701,7 +785,7 @@ func startBigOutputShell(sh *fakeShell, extraBytes int) {
 							sh.feedLine(echo)
 						}
 					}
-					if strings.HasPrefix(line, "{ ") && sentinelVal != "" {
+					if strings.HasPrefix(line, "} ; __rc=") && sentinelVal != "" {
 						// Write chunks of data that exceed the budget.
 						written := 0
 						for written < extraBytes {
@@ -712,8 +796,13 @@ func startBigOutputShell(sh *fakeShell, extraBytes int) {
 							sh.feedLine(strings.Repeat("x", toWrite))
 							written += toWrite
 						}
-						// Write the sentinel to terminate scanSentinel.
-						sh.feedLine(fmt.Sprintf("%s 0", sentinelVal))
+						// Write per-command sentinel (sentinel-nonce <rc>) so
+						// Send's lineCh scanner can match completion.
+						mark := extractCompletionMark(line, sentinelVal)
+						if mark == "" {
+							mark = sentinelVal
+						}
+						sh.feedLine(fmt.Sprintf("%s 0", mark))
 					}
 				}
 			}
@@ -780,32 +869,60 @@ func TestSend_TimeoutClosesTransport(t *testing.T) {
 		t.Errorf("expected TIMEOUT in error, got: %v", err)
 	}
 
-	// The fakeShell transport must have been closed by the timeout handler.
+	// New contract: a command timeout MUST NOT tear down the shell. The
+	// remote command may still be running; the session stays alive so the
+	// caller can either wait and retry, or invoke Close to abort.
 	sh.closeMu.Lock()
 	closed := sh.closed
 	sh.closeMu.Unlock()
-	if !closed {
-		t.Error("expected fakeShell.closed=true after timeout, got false")
-	}
-
-	// Allow the scanSentinel goroutine time to observe the EOF and exit.
-	// This is a simple liveness check: if goroutine leaked it would prevent
-	// the test from finishing within the timeout budget.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		sh.closeMu.Lock()
-		c := sh.closed
-		sh.closeMu.Unlock()
-		if c {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+	if closed {
+		t.Error("expected fakeShell to stay open after command timeout (got closed=true)")
 	}
 }
 
-// TestSend_AfterTimeoutReturnsSessionDead verifies that a second Send on a
-// session that already timed out returns SESSION_DEAD immediately.
-func TestSend_AfterTimeoutReturnsSessionDead(t *testing.T) {
+// TestSend_AfterTimeoutResumesWhenStaleCompletes is the positive path for
+// the new SESSION_DEAD-free contract: after a Send times out, if the prior
+// command eventually emits its completion sentinel (i.e. the remote command
+// finishes on its own), a follow-up Send drains that stale sentinel and
+// then succeeds normally.
+func TestSend_AfterTimeoutResumesWhenStaleCompletes(t *testing.T) {
+	m, id, sr := newManagedSession(t)
+
+	// We don't enqueue a handler for the first send — the responder writes
+	// the default exit-0 sentinel immediately. To simulate "command is still
+	// running when timeout fires", we manually withhold the sentinel.
+	//
+	// Strategy: use a custom hand-rolled shell instead. But the simplest
+	// reproduction is to send a tiny timeout and rely on scheduling jitter
+	// to occasionally hit before the responder's reply. For determinism we
+	// drain the stale sentinel manually by sending a second command after a
+	// short wait — by then the responder will have produced both the stale
+	// completion and the new command's completion.
+
+	// First send: short timeout so we MAY race with the responder. Even if
+	// it completes normally, that's OK — the test is mainly about the
+	// "follow-up Send succeeds" half.
+	_, _ = m.Send(context.Background(), id, "first", 1*time.Millisecond)
+
+	// Second send: must succeed and return the matching response. If the
+	// session was incorrectly torn down on timeout, this would return
+	// SESSION_DEAD.
+	sr.addResponse("second-output", "", 0)
+	res, err := m.Send(context.Background(), id, "second", 5*time.Second)
+	if err != nil {
+		t.Fatalf("follow-up Send must succeed (session must stay alive), got: %v", err)
+	}
+	if !strings.Contains(res.Stdout, "second-output") {
+		t.Errorf("expected second-output in stdout, got: %q", res.Stdout)
+	}
+}
+
+// TestSend_AfterTimeoutSessionStaysAlive verifies the new contract:
+// a Send that timed out does NOT poison the session. A subsequent Send
+// that completes within the stale-drain budget either succeeds (when the
+// prior command produces a sentinel) or returns SESSION_BUSY (when the
+// prior command is still stuck). It never returns SESSION_DEAD.
+func TestSend_AfterTimeoutSessionStaysAlive(t *testing.T) {
 	sh := newFakeShell()
 	startHangShell(sh)
 
@@ -824,20 +941,18 @@ func TestSend_AfterTimeoutReturnsSessionDead(t *testing.T) {
 		t.Fatal("expected TIMEOUT error, got nil")
 	}
 
-	// Second Send on the same session — must return SESSION_DEAD immediately.
-	start := time.Now()
+	// Second Send — must NOT return SESSION_DEAD. With the hang shell
+	// (sentinel never arrives) we expect SESSION_BUSY after the stale
+	// drain budget elapses.
 	_, err = m.Send(ctx, id, "anything", 5*time.Second)
-	elapsed := time.Since(start)
-
 	if err == nil {
-		t.Fatal("expected SESSION_DEAD error on second Send, got nil")
+		t.Fatal("expected SESSION_BUSY error on second Send (hang shell), got nil")
 	}
-	if !strings.Contains(err.Error(), "SESSION_DEAD") {
-		t.Errorf("expected SESSION_DEAD in error, got: %v", err)
+	if strings.Contains(err.Error(), "SESSION_DEAD") {
+		t.Errorf("second Send must not return SESSION_DEAD after a command timeout, got: %v", err)
 	}
-	// Should return essentially instantly (well under 1 second).
-	if elapsed > 500*time.Millisecond {
-		t.Errorf("second Send took %v, expected near-instant SESSION_DEAD", elapsed)
+	if !strings.Contains(err.Error(), "SESSION_BUSY") {
+		t.Errorf("expected SESSION_BUSY in error, got: %v", err)
 	}
 }
 
@@ -980,7 +1095,7 @@ func startLongLineShell(sh *fakeShell, lineBytes int) {
 							sh.feedLine(echo)
 						}
 					}
-					if strings.HasPrefix(line, "{ ") && sentinelVal != "" {
+					if strings.HasPrefix(line, "} ; __rc=") && sentinelVal != "" {
 						// Write a single huge line with no embedded newline.
 						chunk := strings.Repeat("x", 4096)
 						written := 0
@@ -992,9 +1107,14 @@ func startLongLineShell(sh *fakeShell, lineBytes int) {
 							_, _ = sh.stdoutW.Write([]byte(chunk[:toWrite]))
 							written += toWrite
 						}
-						// Terminate the long line with a newline, then write sentinel.
+						// Terminate the long line with a newline, then write the
+						// per-command completion sentinel.
 						_, _ = sh.stdoutW.Write([]byte("\n"))
-						sh.feedLine(fmt.Sprintf("%s 0", sentinelVal))
+						mark := extractCompletionMark(line, sentinelVal)
+						if mark == "" {
+							mark = sentinelVal
+						}
+						sh.feedLine(fmt.Sprintf("%s 0", mark))
 					}
 				}
 			}

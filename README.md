@@ -183,10 +183,20 @@ Repeated `ssh_quick_setup` calls for the same `host+port+user` already dedup int
 
 | Tool | Description |
 |------|-------------|
-| `sftp_op` | Upload, download, mkdir, delete, move, copy, symlink, stat, realpath. |
+| `sftp_op` | Upload, download, mkdir, delete, move, copy, symlink, stat, realpath. Small payloads only (base64 / JSON-bounded — use the CLI commands below for large files). |
 | `sftp_list` | List a remote directory with metadata. |
 | `sftp_read` | Read a remote file with byte-offset support (tail / seek). |
 | `sftp_stat` | Stat a single remote path. |
+
+For **large files** and **server-to-server** transfers use the CLI (no
+size limit, streams directly via SFTP — no base64):
+
+| Command | Purpose |
+|---------|---------|
+| `ssh-mcp upload <server> <local> <remote>` | Local → server. |
+| `ssh-mcp download <server> <remote> <local>` | Server → local. |
+| `ssh-mcp cp <src_srv>:<path> <dst_srv>:<path>` | Server ↔ server via local pipe (no SSH inter-trust needed). |
+| `ssh-mcp fetch <server> <url> <remote>` | HTTP GET on the local host, stream to remote. Useful when the remote can't reach the URL (GFW, egress restrictions). |
 
 ### Persistent Shell Sessions
 
@@ -208,9 +218,9 @@ Sessions are stateful: run `cd`, set environment variables, activate virtualenvs
 
 | Tool | Description |
 |------|-------------|
-| `list_servers` | List configured servers with optional tag filter. |
+| `list_servers` | List configured servers with optional tag filter. Re-reads `config.toml` from disk by default (`refresh=true`) so manual edits are visible without restart; newly discovered entries are also injected into the SSH pool so `ssh_exec` / `session_start` can use them immediately. |
 | `ssh_quick_setup` | Register an ad-hoc server using inline credentials — stored in memory with a TTL (max 4 hours), never written to disk. Repeated calls for the same `host+port+user` reuse the existing registration. |
-| `ssh_persistent_setup` | Append a `[servers.<name>]` block to `config.toml` so the entry survives restart and has no TTL. Plaintext passwords require `settings.allow_config_plaintext_password = true`. |
+| `ssh_persistent_setup` | Append a `[servers.<name>]` block to `config.toml` so the entry survives restart and has no TTL. Passwords go to the OS keychain by default (`password_storage="keychain"`); set `"plaintext"` (with `settings.allow_config_plaintext_password=true`) to store the literal value instead. |
 
 ### Audit
 
@@ -305,6 +315,7 @@ Full example: [`examples/config.toml`](examples/config.toml)
 ## CLI Reference
 
 ```sh
+# Config & server management
 ssh-mcp config init
 ssh-mcp config validate
 ssh-mcp config add-server <name> --host H --user U --auth agent|key|password
@@ -312,6 +323,14 @@ ssh-mcp trust <name>
 ssh-mcp auth set ssh-password:<name>
 ssh-mcp server list
 ssh-mcp server test <name>
+
+# File transfers (stream via SFTP, no size limit)
+ssh-mcp upload   <server> <local_path> <remote_path>
+ssh-mcp download <server> <remote_path> <local_path>
+ssh-mcp cp       <src_srv>:<src_path> <dst_srv>:<dst_path>
+ssh-mcp fetch    <server> <url> <remote_path>
+
+# Audit & updates
 ssh-mcp audit query --tool ssh_exec --since 24h
 ssh-mcp update
 ssh-mcp install claude-code     # print claude mcp add command

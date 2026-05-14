@@ -4,7 +4,9 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"time"
 
+	"github.com/xjoker/ssh-mcp/internal/config"
 	"github.com/xjoker/ssh-mcp/internal/envelope"
 )
 
@@ -18,6 +20,10 @@ func init() {
 
 type listServersInput struct {
 	Tag string `json:"tag,omitempty"`
+	// Refresh, when true (default), re-reads config.toml from disk so the
+	// returned list reflects manual edits made since process start. Set to
+	// false to skip the disk reload and report the in-memory snapshot only.
+	Refresh *bool `json:"refresh,omitempty"`
 }
 
 // serverInfo is the safe, credential-free server record sent to callers.
@@ -50,6 +56,10 @@ var listServersSchema = json.RawMessage(`{
     "tag": {
       "type": "string",
       "description": "Filter by tag. If omitted all servers are returned."
+    },
+    "refresh": {
+      "type": "boolean",
+      "description": "When true (default) reload config.toml from disk so manual edits since process start are picked up; newly-discovered servers are also injected into the in-memory pool so subsequent ssh_exec / session_start calls can use them without a restart. Set to false to skip the reload."
     }
   }
 }`)
@@ -61,7 +71,7 @@ var listServersSchema = json.RawMessage(`{
 func toolListServers() Tool {
 	return Tool{
 		Name:        "list_servers",
-		Description: "Return all configured SSH servers (without secrets). Optionally filter by tag.",
+		Description: "Return all configured SSH servers (without secrets). Optionally filter by tag. By default re-reads config.toml from disk so manual edits since process start are visible without restarting the MCP server.",
 		InputSchema: listServersSchema,
 		Handle:      handleListServers,
 	}
@@ -79,8 +89,50 @@ func handleListServers(_ context.Context, deps *Deps, args json.RawMessage) enve
 		}
 	}
 
-	servers := make([]serverInfo, 0, len(deps.Cfg.Servers))
-	for _, srv := range deps.Cfg.Servers {
+	// Default refresh=true so the AI sees the truth on disk after manual
+	// config edits. Skipping the reload is opt-in (refresh:false) for the
+	// rare case the caller wants the original in-memory snapshot.
+	refresh := true
+	if input.Refresh != nil {
+		refresh = *input.Refresh
+	}
+
+	// Effective server map: starts as deps.Cfg.Servers, optionally rebuilt
+	// from disk. We never mutate deps.Cfg.Servers in place — the freshly
+	// loaded entries are also injected into the SSH pool's temp-server map
+	// (zero expiry) so subsequent ssh_exec / session_start can resolve them
+	// without an MCP restart. Pool temp-server entries shadow static ones,
+	// so edits and additions both flow through.
+	effective := deps.Cfg.Servers
+	if refresh && deps.Cfg != nil && deps.Cfg.Path != "" {
+		if reloaded, err := config.Load(deps.Cfg.Path); err == nil && reloaded != nil {
+			effective = reloaded.Servers
+			if deps.Pool != nil {
+				for name, srv := range reloaded.Servers {
+					// Inject every fresh on-disk entry as a temp-server with
+					// zero expiry. This makes hand-edited additions and
+					// modifications immediately resolvable.
+					deps.Pool.AddTempServer(name, srv, time.Time{})
+				}
+			}
+		}
+		// If reload fails (file gone, invalid syntax) we silently fall back
+		// to the in-memory snapshot. list_servers must remain readable even
+		// when the user has corrupted their config — they need this signal
+		// to debug.
+	}
+
+	// Track which names came from on-disk config so we don't double-list
+	// them when iterating the pool's temp-server map below (after a refresh
+	// they're injected there too, by design — but for display they should
+	// appear once with Source="config").
+	configNames := make(map[string]struct{}, len(effective))
+	for name := range effective {
+		configNames[name] = struct{}{}
+	}
+
+	servers := make([]serverInfo, 0, len(effective))
+	for _, srv := range effective {
 		// Tag filter: if requested, skip servers whose Tags slice doesn't contain it.
 		if input.Tag != "" {
 			found := false
@@ -117,6 +169,11 @@ func handleListServers(_ context.Context, deps *Deps, args json.RawMessage) enve
 	if input.Tag == "" && deps.Pool != nil {
 		for _, tmp := range deps.Pool.ListTempServers() {
 			srv := tmp.Server
+			// Skip entries that mirror an on-disk config server (avoid
+			// duplicate rows when refresh injected them as temp shadows).
+			if _, fromConfig := configNames[srv.Name]; fromConfig && tmp.ExpiresAt.IsZero() {
+				continue
+			}
 			port := srv.Port
 			if port == 0 {
 				port = 22

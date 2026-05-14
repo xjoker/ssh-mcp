@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/xjoker/ssh-mcp/internal/auth"
 	"github.com/xjoker/ssh-mcp/internal/config"
 	"github.com/xjoker/ssh-mcp/internal/envelope"
 	"github.com/xjoker/ssh-mcp/internal/ssh"
@@ -79,7 +80,9 @@ func TestPersistentSetup_AgentAuth_Success(t *testing.T) {
 	}
 }
 
-func TestPersistentSetup_PasswordPlaintextDisabled_Refuses(t *testing.T) {
+// TestPersistentSetup_PasswordPlaintextExplicit_Disabled_Refuses verifies that
+// explicit password_storage="plaintext" requires the plaintext gate.
+func TestPersistentSetup_PasswordPlaintextExplicit_Disabled_Refuses(t *testing.T) {
 	deps, cfgPath := makePersistentDeps(t, false)
 
 	args := json.RawMessage(`{
@@ -87,31 +90,29 @@ func TestPersistentSetup_PasswordPlaintextDisabled_Refuses(t *testing.T) {
 		"host": "10.0.0.1",
 		"user": "root",
 		"auth": "password",
-		"password": "secret"
+		"password": "secret",
+		"password_storage": "plaintext"
 	}`)
 	resp := handleSSHPersistentSetup(context.Background(), deps, args)
 	if resp.OK {
-		t.Fatal("expected error when allow_config_plaintext_password=false")
+		t.Fatal("expected error when allow_config_plaintext_password=false and password_storage=plaintext")
 	}
 	if resp.Error == nil || resp.Error.Code != envelope.CodeInvalidArgument {
 		t.Errorf("expected INVALID_ARGUMENT, got %+v", resp.Error)
 	}
-	// Hint should mention the setting name.
 	if !strings.Contains(resp.Error.Hint, "allow_config_plaintext_password") {
 		t.Errorf("expected hint to mention allow_config_plaintext_password, got %q", resp.Error.Hint)
 	}
-	// File must not have been created.
 	if _, err := os.Stat(cfgPath); !os.IsNotExist(err) {
 		t.Errorf("config file should not exist after refusal, stat err=%v", err)
 	}
 }
 
-func TestPersistentSetup_PasswordPlaintextEnabled_Persists(t *testing.T) {
+// TestPersistentSetup_PasswordPlaintextExplicit_Enabled_Persists verifies that
+// password_storage="plaintext" + gate=true writes the literal password to disk.
+func TestPersistentSetup_PasswordPlaintextExplicit_Enabled_Persists(t *testing.T) {
 	deps, cfgPath := makePersistentDeps(t, true)
 
-	// Realistic flow: the operator has already enabled the plaintext gate in
-	// config.toml before invoking the tool. Pre-populate so that
-	// config.Load on the rewritten file passes validation.
 	preexisting := `[settings]
 allow_config_plaintext_password = true
 `
@@ -124,7 +125,8 @@ allow_config_plaintext_password = true
 		"host": "10.0.0.1",
 		"user": "root",
 		"auth": "password",
-		"password": "s3cret-pw!"
+		"password": "s3cret-pw!",
+		"password_storage": "plaintext"
 	}`)
 	resp := handleSSHPersistentSetup(context.Background(), deps, args)
 	if !resp.OK {
@@ -137,6 +139,97 @@ allow_config_plaintext_password = true
 	}
 	if _, err := config.Load(cfgPath); err != nil {
 		t.Errorf("written config does not validate: %v", err)
+	}
+}
+
+// TestPersistentSetup_PasswordKeychainDefault_Persists verifies that with the
+// default (omitted) password_storage and no plaintext gate, the secret lands
+// in the OS keychain and the TOML stores only a reference. Skipped when the
+// keychain backend is unavailable (e.g. headless Linux CI).
+func TestPersistentSetup_PasswordKeychainDefault_Persists(t *testing.T) {
+	// Probe keychain availability — match the strategy used by cli_migrate_test.go.
+	if err := auth.SetKeychain("ssh-mcp", "ssh-password:_probe-persistent", []byte("x")); err != nil {
+		t.Skipf("keychain unavailable on this host: %v", err)
+	}
+	defer func() {
+		_ = auth.DeleteKeychain("ssh-mcp", "ssh-password:_probe-persistent")
+		_ = auth.DeleteKeychain("ssh-mcp", "ssh-password:db-kc")
+	}()
+
+	// Note: gate=false intentionally — keychain path must not require it.
+	deps, cfgPath := makePersistentDeps(t, false)
+
+	args := json.RawMessage(`{
+		"name": "db-kc",
+		"host": "10.0.0.2",
+		"user": "root",
+		"auth": "password",
+		"password": "k3ych@in-pw"
+	}`)
+	resp := handleSSHPersistentSetup(context.Background(), deps, args)
+	if !resp.OK {
+		t.Fatalf("expected OK, got %+v", resp.Error)
+	}
+
+	body, _ := os.ReadFile(cfgPath)
+	wantRef := `password = "keychain:ssh-mcp:ssh-password:db-kc"`
+	if !strings.Contains(string(body), wantRef) {
+		t.Errorf("expected keychain reference in config; got:\n%s", body)
+	}
+	// Literal password must NOT appear on disk.
+	if strings.Contains(string(body), "k3ych@in-pw") {
+		t.Errorf("plaintext password leaked to disk; got:\n%s", body)
+	}
+	if _, err := config.Load(cfgPath); err != nil {
+		t.Errorf("written config does not validate: %v", err)
+	}
+
+	// Keychain entry should be readable.
+	ref := config.CredRef{Kind: config.CredRefKeychain, Service: "ssh-mcp", Account: "ssh-password:db-kc"}
+	sec, err := auth.Resolve(context.Background(), ref, false)
+	if err != nil {
+		t.Fatalf("auth.Resolve on stored ref: %v", err)
+	}
+	defer sec.Close()
+	if got := string(sec.Bytes()); got != "k3ych@in-pw" {
+		t.Errorf("keychain content mismatch: got %q want %q", got, "k3ych@in-pw")
+	}
+}
+
+// TestPersistentSetup_StorageWithoutSecret_Refuses verifies that supplying
+// password_storage without a corresponding secret returns a validation error
+// so the caller notices the contradiction.
+func TestPersistentSetup_StorageWithoutSecret_Refuses(t *testing.T) {
+	deps, _ := makePersistentDeps(t, false)
+
+	args := json.RawMessage(`{
+		"name": "n2",
+		"host": "1.2.3.4",
+		"user": "x",
+		"auth": "agent",
+		"password_storage": "keychain"
+	}`)
+	resp := handleSSHPersistentSetup(context.Background(), deps, args)
+	if resp.OK {
+		t.Fatal("expected error: password_storage requires a password / key_passphrase")
+	}
+}
+
+// TestPersistentSetup_InvalidStorageValue_Refuses verifies the enum.
+func TestPersistentSetup_InvalidStorageValue_Refuses(t *testing.T) {
+	deps, _ := makePersistentDeps(t, true)
+
+	args := json.RawMessage(`{
+		"name": "n3",
+		"host": "1.2.3.4",
+		"user": "x",
+		"auth": "password",
+		"password": "pw",
+		"password_storage": "vault"
+	}`)
+	resp := handleSSHPersistentSetup(context.Background(), deps, args)
+	if resp.OK {
+		t.Fatal("expected error for unknown password_storage value")
 	}
 }
 

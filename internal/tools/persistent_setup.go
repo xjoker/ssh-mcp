@@ -18,8 +18,18 @@ import (
 	"strings"
 	"time"
 
+	"github.com/xjoker/ssh-mcp/internal/auth"
 	"github.com/xjoker/ssh-mcp/internal/config"
 	"github.com/xjoker/ssh-mcp/internal/envelope"
+)
+
+// Keychain service / account naming. Kept in sync with cmd/ssh-mcp/cli_migrate.go
+// so that the CLI-imported entries and tool-created entries share the same
+// keychain namespace. Duplicated rather than imported because internal/tools
+// must not depend on the cmd/ binary package.
+const (
+	persistentKeychainService       = "ssh-mcp"
+	persistentKeychainAccountPrefix = "ssh-password:"
 )
 
 func init() {
@@ -39,11 +49,21 @@ type persistentSetupInput struct {
 	KeyPath       string   `json:"key_path,omitempty"`
 	KeyPassphrase string   `json:"key_passphrase,omitempty"`
 	Password      string   `json:"password,omitempty"`
-	AcceptNewHost bool     `json:"accept_new_host,omitempty"`
-	Description   string   `json:"description,omitempty"`
-	Tags          []string `json:"tags,omitempty"`
-	DefaultDir    string   `json:"default_dir,omitempty"`
-	ProxyJump     string   `json:"proxy_jump,omitempty"`
+	// PasswordStorage controls how plaintext password / key_passphrase is
+	// persisted. Values:
+	//   "keychain"  — (default for auth=password / non-empty key_passphrase)
+	//                 secret is written to the OS keychain via auth.SetKeychain
+	//                 and the config receives a "keychain:<service>:<account>"
+	//                 reference. No plaintext on disk.
+	//   "plaintext" — secret is written verbatim into config.toml. Requires
+	//                 settings.allow_config_plaintext_password=true; fails
+	//                 closed otherwise.
+	PasswordStorage string   `json:"password_storage,omitempty"`
+	AcceptNewHost   bool     `json:"accept_new_host,omitempty"`
+	Description     string   `json:"description,omitempty"`
+	Tags            []string `json:"tags,omitempty"`
+	DefaultDir      string   `json:"default_dir,omitempty"`
+	ProxyJump       string   `json:"proxy_jump,omitempty"`
 }
 
 type persistentSetupOutput struct {
@@ -58,6 +78,12 @@ type persistentSetupOutput struct {
 	// SessionLive indicates the entry is also active in the current MCP session
 	// without requiring a restart.
 	SessionLive bool `json:"session_live"`
+	// PasswordStorage echoes the effective storage mode actually applied
+	// ("keychain" / "plaintext" / "" when no secret was supplied).
+	PasswordStorage string `json:"password_storage,omitempty"`
+	// KeychainRef is set when password_storage="keychain" and a secret was
+	// written. Format: "keychain:<service>:<account>".
+	KeychainRef string `json:"keychain_ref,omitempty"`
 }
 
 // --------------------------------------------------------------------------
@@ -74,8 +100,9 @@ var persistentSetupSchema = json.RawMessage(`{
     "user":            { "type": "string", "description": "SSH username" },
     "auth":            { "type": "string", "enum": ["agent", "key", "password"], "description": "Authentication mode" },
     "key_path":        { "type": "string", "description": "Path to private key file (auth=key)" },
-    "key_passphrase":  { "type": "string", "description": "Plaintext passphrase for encrypted key (auth=key, optional). Stored as plaintext in config — gated by settings.allow_config_plaintext_password." },
-    "password":        { "type": "string", "description": "Plaintext password (auth=password). Stored as plaintext in config — gated by settings.allow_config_plaintext_password." },
+    "key_passphrase":  { "type": "string", "description": "Plaintext passphrase for encrypted key (auth=key, optional). Stored according to password_storage." },
+    "password":        { "type": "string", "description": "Plaintext password (auth=password). Stored according to password_storage." },
+    "password_storage": { "type": "string", "enum": ["keychain", "plaintext"], "description": "How to persist password / key_passphrase. 'keychain' (default) writes the secret to the OS keychain and stores only a 'keychain:<service>:<account>' reference in config.toml. 'plaintext' stores the literal secret in config.toml and requires settings.allow_config_plaintext_password=true." },
     "accept_new_host": { "type": "boolean", "default": false, "description": "Auto-append unknown host key to known_hosts on first dial in this session" },
     "description":     { "type": "string" },
     "tags":            { "type": "array", "items": { "type": "string" } },
@@ -91,7 +118,7 @@ var persistentSetupSchema = json.RawMessage(`{
 func toolSSHPersistentSetup() Tool {
 	return Tool{
 		Name:        "ssh_persistent_setup",
-		Description: "Permanently register an SSH server by appending [servers.<name>] to the user's config.toml. Unlike ssh_quick_setup, the entry survives restarts and has no TTL. Plaintext password storage requires settings.allow_config_plaintext_password=true.",
+		Description: "Permanently register an SSH server by appending [servers.<name>] to the user's config.toml. Unlike ssh_quick_setup, the entry survives restarts and has no TTL. For auth=password (or auth=key with key_passphrase), the secret is stored in the OS keychain by default (password_storage='keychain'); only the reference is written to config.toml. Set password_storage='plaintext' (with settings.allow_config_plaintext_password=true) to store the literal value in config.toml instead.",
 		InputSchema: persistentSetupSchema,
 		Handle:      handleSSHPersistentSetup,
 	}
@@ -176,20 +203,34 @@ func handleSSHPersistentSetup(ctx context.Context, deps *Deps, args json.RawMess
 		}
 	}
 
-	// Plaintext password gate. This is the only place where plaintext
-	// secrets land on disk via this tool, so the check is fail-closed: if
-	// the operator has not explicitly opted in, refuse and tell the caller
-	// exactly how to enable it.
-	if (input.Auth == "password" && input.Password != "") ||
-		(input.Auth == "key" && input.KeyPassphrase != "") {
-		if !deps.Cfg.Settings.AllowConfigPlaintextPassword {
+	// Resolve effective password_storage. Default = "keychain" — i.e. the
+	// tool can complete the round trip without manual `security
+	// add-generic-password` invocations and without exposing the gate.
+	storage := input.PasswordStorage
+	hasSecret := (input.Auth == "password" && input.Password != "") ||
+		(input.Auth == "key" && input.KeyPassphrase != "")
+	if hasSecret {
+		if storage == "" {
+			storage = "keychain"
+		}
+		if storage != "keychain" && storage != "plaintext" {
+			return envelope.Err(envelope.CodeInvalidArgument,
+				fmt.Sprintf("password_storage must be one of: keychain, plaintext (got %q)", storage), false)
+		}
+		if storage == "plaintext" && !deps.Cfg.Settings.AllowConfigPlaintextPassword {
 			return envelope.ErrWithHint(
 				envelope.CodeInvalidArgument,
 				"plaintext password/passphrase persistence is disabled",
-				"Set 'allow_config_plaintext_password = true' under [settings] in your config.toml, or use 'ssh-mcp config add-server --auth password --password-keychain' to store the password in your OS keychain instead.",
+				"Either set password_storage=\"keychain\" (default) to store the secret in the OS keychain, or set 'allow_config_plaintext_password = true' under [settings] in your config.toml to opt into plaintext storage.",
 				false,
 			)
 		}
+	} else if storage != "" {
+		// Storage specified without a secret to store — surface as a
+		// validation error so the caller notices their input contradicts the
+		// chosen mode.
+		return envelope.Err(envelope.CodeInvalidArgument,
+			"password_storage is only meaningful when a password or key_passphrase is provided", false)
 	}
 
 	// Resolve config path.
@@ -243,8 +284,29 @@ func handleSSHPersistentSetup(ctx context.Context, deps *Deps, args json.RawMess
 		}
 	}
 
+	// Materialise the effective on-disk fields. For keychain storage we replace
+	// the literal secret with a "keychain:<service>:<account>" reference; the
+	// real secret is written to the keychain *after* config validation
+	// succeeds, so a validation failure leaves no orphan keychain entries.
+	effective := input
+	keychainRef := ""
+	if hasSecret && storage == "keychain" {
+		ref := fmt.Sprintf("keychain:%s:%s%s",
+			persistentKeychainService, persistentKeychainAccountPrefix, input.Name)
+		keychainRef = ref
+		if input.Auth == "password" {
+			effective.Password = ref
+		}
+		// key_passphrase: same scheme. Encrypted-key passphrase can also live
+		// in keychain alongside the password namespace; the reference itself
+		// makes the kind explicit at resolve time.
+		if input.KeyPassphrase != "" {
+			effective.KeyPassphrase = ref
+		}
+	}
+
 	// Build the new [servers.<name>] block.
-	block := buildPersistentBlock(input, port)
+	block := buildPersistentBlock(effective, port)
 
 	var sb strings.Builder
 	sb.Write(original)
@@ -278,6 +340,36 @@ func handleSSHPersistentSetup(ctx context.Context, deps *Deps, args json.RawMess
 			fmt.Sprintf("rename %s → %s: %v", tmp, cfgPath, err), false)
 	}
 
+	// Keychain write happens AFTER atomic config rename so a failed config
+	// validation never produces an orphan keychain entry. If the keychain
+	// write itself fails we roll back the config to its pre-rename state.
+	if hasSecret && storage == "keychain" {
+		account := persistentKeychainAccountPrefix + input.Name
+		var secretBytes []byte
+		switch input.Auth {
+		case "password":
+			secretBytes = []byte(input.Password)
+		case "key":
+			secretBytes = []byte(input.KeyPassphrase)
+		}
+		if err := auth.SetKeychain(persistentKeychainService, account, secretBytes); err != nil {
+			// Roll back the config file.
+			if rbErr := os.WriteFile(cfgPath, original, 0o600); rbErr != nil && len(original) > 0 {
+				return envelope.Err(envelope.CodeInternalError,
+					fmt.Sprintf("keychain write failed (%v) and rollback also failed (%v); config may be in an inconsistent state at %s", err, rbErr, cfgPath), false)
+			}
+			if len(original) == 0 {
+				_ = os.Remove(cfgPath)
+			}
+			return envelope.ErrWithHint(
+				envelope.CodeInternalError,
+				fmt.Sprintf("keychain write failed: %v", err),
+				"OS keychain may be locked or unavailable. Retry, or set password_storage=\"plaintext\" together with settings.allow_config_plaintext_password=true if keychain is not an option on this host.",
+				false,
+			)
+		}
+	}
+
 	// Make the entry live in the current session without a restart by
 	// registering it through the SSH pool's temp-server map (zero expiry =
 	// no TTL eviction). The credResolver path for auth=agent/key/password
@@ -292,7 +384,7 @@ func handleSSHPersistentSetup(ctx context.Context, deps *Deps, args json.RawMess
 		}
 	}
 
-	return envelope.OK(persistentSetupOutput{
+	out := persistentSetupOutput{
 		Name:        input.Name,
 		Host:        input.Host,
 		User:        input.User,
@@ -300,7 +392,14 @@ func handleSSHPersistentSetup(ctx context.Context, deps *Deps, args json.RawMess
 		ConfigPath:  cfgPath,
 		Persisted:   true,
 		SessionLive: sessionLive,
-	})
+	}
+	if hasSecret {
+		out.PasswordStorage = storage
+		if keychainRef != "" {
+			out.KeychainRef = keychainRef
+		}
+	}
+	return envelope.OK(out)
 }
 
 // buildPersistentBlock renders a [servers.<name>] TOML block from the

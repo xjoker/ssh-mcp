@@ -80,9 +80,23 @@ type sessionState int
 const (
 	stateReady  sessionState = iota
 	stateBusy                // executing a Send
-	stateError               // timed-out or sentinel error; next Send returns SESSION_DEAD
+	stateError               // hard error (write/EOF); next Send returns SESSION_DEAD
 	stateClosed              // Close() called
 )
+
+// staleDrainBudget caps how long a new Send will wait while draining the
+// tail output of a prior timed-out command before giving up. The session
+// remains alive when the budget is exhausted, but the caller receives
+// SESSION_BUSY so it can choose to wait longer (retry) or session_close.
+const staleDrainBudget = 5 * time.Second
+
+// lineChCap is the buffered capacity of the stdout-line channel populated
+// by the persistent pump goroutine. When the channel is full the pump
+// drops the oldest line; this keeps the remote shell from blocking on a
+// stuck consumer (e.g. a Send that timed out and never returned) and is
+// bounded to keep memory predictable. 256 lines × 64 KiB max per line is
+// the worst case ≈ 16 MiB which is well under sessionOutputMaxBytes per Send.
+const lineChCap = 256
 
 // session holds the live state for one persistent shell.
 type session struct {
@@ -96,10 +110,25 @@ type session struct {
 
 	sentinel string // "msb-sentinel-<hex>"
 
+	// staleNonces collects per-command nonces from prior timed-out Sends
+	// whose completion sentinels have not yet been observed. The next Send
+	// drains lineCh until each stale completion line has flushed, ensuring
+	// the prior command's lingering output doesn't bleed into a new command.
+	staleNonces []string
+
 	stdin      io.WriteCloser
 	stdout     *bufio.Reader
 	stderr     *bufio.Reader
 	closeShell func() error
+
+	// Persistent stdout pump: a single goroutine reads lines from stdout
+	// and pushes them to lineCh. Send drains lineCh while scanning for its
+	// completion sentinel; outside a Send the channel buffers up to lineChCap
+	// lines (oldest dropped on overflow) so a stuck or slow consumer never
+	// blocks the remote shell.
+	lineCh   chan pumpedLine
+	pumpDone chan struct{}
+	pumpStop chan struct{}
 
 	// stderrBuf accumulates stderr lines read by the background stderr pump.
 	// stderrBytes counts bytes held in stderrBuf; once the combined output
@@ -113,6 +142,56 @@ type session struct {
 	isPTY     bool
 	ptyStop   chan struct{} // closed by Close() to signal ptyReadLoop exit
 	ptyChunks chan []byte  // raw output chunks from ptyReadLoop; closed on loop exit
+}
+
+// pumpedLine carries one stdout line plus a flag indicating whether the
+// physical line exceeded sessionLineMaxBytes and was force-truncated by
+// readBoundedLine. The truncation flag is essential so SendResult.Truncated
+// reflects per-line caps (not just the cumulative byte cap).
+type pumpedLine struct {
+	text      string
+	truncated bool
+}
+
+// stdoutPumpLoop reads logical lines from the session's stdout reader and
+// pushes them to lineCh. When lineCh is full the OLDEST line is dropped to
+// make room — this prevents the pump from blocking when no Send is actively
+// consuming. Exits cleanly when pumpStop is closed (Close path) or the
+// reader returns an error (remote disconnect).
+func (s *session) stdoutPumpLoop() {
+	defer close(s.pumpDone)
+	defer close(s.lineCh)
+	for {
+		select {
+		case <-s.pumpStop:
+			return
+		default:
+		}
+		raw, lineTrunc, err := readBoundedLine(s.stdout, sessionLineMaxBytes)
+		if len(raw) > 0 {
+			pl := pumpedLine{
+				text:      strings.TrimRight(string(raw), "\r\n"),
+				truncated: lineTrunc,
+			}
+			// Try non-blocking push first. If full, drop oldest then push.
+			select {
+			case s.lineCh <- pl:
+			default:
+				select {
+				case <-s.lineCh: // discard oldest
+				default:
+				}
+				select {
+				case s.lineCh <- pl:
+				case <-s.pumpStop:
+					return
+				}
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
 }
 
 // appendStderr is called by the background stderr goroutine for each
@@ -348,6 +427,16 @@ func (m *Manager) Start(ctx context.Context, server string) (string, error) {
 		return "", fmt.Errorf("session: Start: shell init timeout: %w", err)
 	}
 
+	// The init probe has been consumed off s.stdout. Start the persistent
+	// stdout pump from this point onwards. All subsequent Sends read lines
+	// from s.lineCh rather than reading the bufio.Reader directly; this
+	// decouples sentinel-scanning from the underlying reader so a Send can
+	// time out without leaking the read goroutine or killing the shell.
+	s.lineCh = make(chan pumpedLine, lineChCap)
+	s.pumpDone = make(chan struct{})
+	s.pumpStop = make(chan struct{})
+	go s.stdoutPumpLoop()
+
 	m.mu.Lock()
 	if m.maxSessions > 0 && len(m.sessions) >= m.maxSessions {
 		m.mu.Unlock()
@@ -362,6 +451,15 @@ func (m *Manager) Start(ctx context.Context, server string) (string, error) {
 
 // Send writes a command to the session, waits for sentinel-based completion,
 // and returns the result. SDD §5.7. Each Send on a session is serialised.
+//
+// Timeout semantics: when a Send hits its deadline the session is NOT torn
+// down. The current command's nonce is stashed on staleNonces; the persistent
+// pump keeps reading the remote's tail output. A subsequent Send will first
+// drain those tail lines (bounded by staleDrainBudget) before issuing its own
+// command. This means a timed-out Send returns TIMEOUT but the next Send no
+// longer fails with SESSION_DEAD — it either succeeds, or returns SESSION_BUSY
+// when the prior command's output is still flowing past the drain budget
+// (giving the caller a chance to retry or call Close).
 func (m *Manager) Send(ctx context.Context, id, command string, timeout time.Duration) (*SendResult, error) {
 	m.mu.RLock()
 	s, ok := m.sessions[id]
@@ -380,6 +478,27 @@ func (m *Manager) Send(ctx context.Context, id, command string, timeout time.Dur
 		return nil, fmt.Errorf("session: Send: SESSION_DEAD (session in error state)")
 	}
 
+	// Drain any stale completion sentinels from prior timed-out commands so
+	// their lingering output doesn't bleed into this Send's stdout. If the
+	// drain budget elapses with stale nonces still outstanding, return
+	// SESSION_BUSY — the session is healthy but the previous command is
+	// still running on the remote.
+	if len(s.staleNonces) > 0 {
+		if !s.drainStaleSentinels(ctx, staleDrainBudget) {
+			return nil, fmt.Errorf("session: Send: SESSION_BUSY (previous command still running; call session_close to abort, or retry)")
+		}
+	}
+
+	// Per-command nonce. The completion line embeds the nonce so we can
+	// distinguish this command's sentinel from any lingering sentinels of
+	// prior timed-out commands.
+	nonceBytes := make([]byte, 6)
+	if _, err := rand.Read(nonceBytes); err != nil {
+		return nil, fmt.Errorf("session: Send: rand: %w", err)
+	}
+	nonce := hex.EncodeToString(nonceBytes)
+	completionMark := s.sentinel + "-" + nonce
+
 	// Apply per-Send timeout on top of the caller's context.
 	sendCtx := ctx
 	if timeout > 0 {
@@ -389,8 +508,19 @@ func (m *Manager) Send(ctx context.Context, id, command string, timeout time.Dur
 	}
 
 	// Wrap the command with sentinel-based completion detection.
-	// { <cmd> ; } ; __rc=$? ; printf '\n%s %s\n' "$__MSB_SENTINEL" "$__rc"
-	wrapped := fmt.Sprintf("{ %s ; } ; __rc=$? ; printf '\\n%s %%s\\n' \"$__rc\"\n", command, s.sentinel)
+	//
+	// The closing brace lives on its own line (preceded by '\n' rather than
+	// '; '). This is necessary for heredoc commands: a heredoc terminator
+	// (e.g. EOF) must appear on a line by itself. The previous single-line
+	// wrapper "{ <cmd> ; } ; ..." merged "EOF" with " ; } ; ..." on one line
+	// so the heredoc never closed and the shell hung waiting for more input.
+	//
+	//   { <cmd>
+	//   } ; __rc=$? ; printf '\n<sentinel>-<nonce> %s\n' "$__rc"
+	//
+	// This form works for both single-line commands and multi-line scripts
+	// (heredocs, multi-statement blocks, here-strings, etc.).
+	wrapped := fmt.Sprintf("{ %s\n} ; __rc=$? ; printf '\\n%s %%s\\n' \"$__rc\"\n", command, completionMark)
 
 	// Clear any accumulated stderr before this command.
 	_ = s.consumeStderr()
@@ -403,34 +533,91 @@ func (m *Manager) Send(ctx context.Context, id, command string, timeout time.Dur
 		return nil, fmt.Errorf("session: Send: write: %w", err)
 	}
 
-	// Read stdout lines until we see the sentinel line.
+	// Read lines from the persistent pump until we see our completion mark
+	// (or any other stale completion — those are recorded and discarded).
 	var outputLines []string
-	exitCode, truncated, err := scanSentinel(sendCtx, s.stdout, s.sentinel, &outputLines, sessionOutputMaxBytes)
+	var bytesAccum int64
+	var truncated bool
+	var exitCode int
+	staleSentinelPrefix := s.sentinel + "-" // any line starting with this is a sentinel
+
+	completed := false
+	hardErr := error(nil)
+scanLoop:
+	for {
+		select {
+		case <-sendCtx.Done():
+			// TIMEOUT: keep the shell alive, stash our nonce as "still
+			// outstanding", and let the next Send drain it.
+			s.staleNonces = append(s.staleNonces, nonce)
+			s.state = stateReady
+			s.lastActivity = time.Now()
+			return nil, fmt.Errorf("session: Send: TIMEOUT (session preserved; next send will drain tail output): %w", sendCtx.Err())
+		case pl, ok := <-s.lineCh:
+			if !ok {
+				// Pump exited — shell is gone.
+				s.state = stateError
+				hardErr = fmt.Errorf("session: Send: shell stdout closed: EOF")
+				break scanLoop
+			}
+			line := pl.text
+			if pl.truncated {
+				truncated = true
+			}
+			// A truncated physical line is by definition NOT a sentinel
+			// (sentinels are short). Skip the prefix check to keep matching robust.
+			if !pl.truncated && strings.HasPrefix(line, staleSentinelPrefix) {
+				rest := line[len(staleSentinelPrefix):]
+				// rest is "<nonce> <rc>" (or junk if malformed).
+				spaceIdx := strings.IndexByte(rest, ' ')
+				if spaceIdx > 0 {
+					gotNonce := rest[:spaceIdx]
+					rcStr := rest[spaceIdx+1:]
+					if gotNonce == nonce {
+						var rc int
+						if _, scanErr := fmt.Sscanf(rcStr, "%d", &rc); scanErr == nil {
+							// Strip leading empty from the printf '\n...' newline.
+							if len(outputLines) > 0 && outputLines[0] == "" {
+								outputLines = outputLines[1:]
+							}
+							for len(outputLines) > 0 && outputLines[len(outputLines)-1] == "" {
+								outputLines = outputLines[:len(outputLines)-1]
+							}
+							exitCode = rc
+							completed = true
+							break scanLoop
+						}
+						// Malformed RC → fall through and treat as output.
+					} else {
+						// Stale completion from a prior command. Remove from
+						// staleNonces if present; otherwise just discard.
+						s.removeStaleNonce(gotNonce)
+						continue
+					}
+				}
+				// Malformed sentinel — treat as plain output.
+			}
+			// Accumulate output with cap enforcement.
+			lineBytes := int64(len(line) + 1)
+			bytesAccum += lineBytes
+			if bytesAccum <= sessionOutputMaxBytes {
+				outputLines = append(outputLines, line)
+			} else {
+				truncated = true
+			}
+		}
+	}
 	duration := time.Since(start)
 
-	if err != nil {
-		s.state = stateError
-		if isContextErr(err) {
-			// On timeout: close the transport immediately so the scanSentinel
-			// goroutine's blocking ReadString receives an EOF and exits cleanly,
-			// preventing goroutine and memory leaks.
-			// We deliberately do NOT delete from m.sessions here to avoid a
-			// lock-order inversion (Send holds s.mu; Close/ReapIdle hold m.mu
-			// first then s.mu). The stateError flag is enough to make any
-			// subsequent Send return SESSION_DEAD. The entry will be cleaned up
-			// by the next Close(id) or ReapIdle cycle.
-			if s.closeShell != nil {
-				_ = s.closeShell()
-				s.closeShell = nil
-			}
-			return nil, fmt.Errorf("session: Send: TIMEOUT: %w", err)
-		}
-		return nil, fmt.Errorf("session: Send: %w", err)
+	if hardErr != nil {
+		return nil, hardErr
+	}
+	if !completed {
+		// Defensive: should not reach here unless scanLoop logic changed.
+		return nil, fmt.Errorf("session: Send: internal: scan loop exited without completion")
 	}
 
-	// Snapshot stderr (best-effort: whatever arrived by now).
 	stderrOut := s.consumeStderr()
-
 	s.state = stateReady
 	s.lastActivity = time.Now()
 	s.commandCount++
@@ -442,6 +629,53 @@ func (m *Manager) Send(ctx context.Context, id, command string, timeout time.Dur
 		Duration:  duration,
 		Truncated: truncated,
 	}, nil
+}
+
+// drainStaleSentinels consumes lines from lineCh until every nonce in
+// staleNonces has been observed (and removed) or the per-call budget is
+// exhausted. Caller must hold s.mu. Returns true if all stale nonces were
+// drained; false if the budget elapsed (caller should report SESSION_BUSY).
+func (s *session) drainStaleSentinels(ctx context.Context, budget time.Duration) bool {
+	if len(s.staleNonces) == 0 {
+		return true
+	}
+	staleSentinelPrefix := s.sentinel + "-"
+	deadline := time.NewTimer(budget)
+	defer deadline.Stop()
+	for len(s.staleNonces) > 0 {
+		select {
+		case <-deadline.C:
+			return false
+		case <-ctx.Done():
+			return false
+		case pl, ok := <-s.lineCh:
+			if !ok {
+				// Pump exited; the shell is dead. Treat as drained so the
+				// caller falls through to the EOF path on its own scan.
+				return true
+			}
+			if !pl.truncated && strings.HasPrefix(pl.text, staleSentinelPrefix) {
+				rest := pl.text[len(staleSentinelPrefix):]
+				spaceIdx := strings.IndexByte(rest, ' ')
+				if spaceIdx > 0 {
+					s.removeStaleNonce(rest[:spaceIdx])
+				}
+			}
+			// Discard everything else (stale command's stdout).
+		}
+	}
+	return true
+}
+
+// removeStaleNonce strips a nonce from staleNonces if present. Caller must
+// hold s.mu.
+func (s *session) removeStaleNonce(nonce string) {
+	for i, n := range s.staleNonces {
+		if n == nonce {
+			s.staleNonces = append(s.staleNonces[:i], s.staleNonces[i+1:]...)
+			return
+		}
+	}
 }
 
 // Close shuts down the session identified by id. Idempotent.
@@ -471,6 +705,18 @@ func (m *Manager) Close(id string) error {
 		case <-s.ptyStop:
 		default:
 			close(s.ptyStop)
+		}
+	}
+
+	// Signal the non-PTY stdout pump to exit. Closing the shell below makes
+	// the pump's bufio.Reader.ReadByte return EOF, which also exits the
+	// pump; pumpStop is closed first for the case where the underlying
+	// connection is still flowing but we want a fast shutdown.
+	if s.pumpStop != nil {
+		select {
+		case <-s.pumpStop:
+		default:
+			close(s.pumpStop)
 		}
 	}
 

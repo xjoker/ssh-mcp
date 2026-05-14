@@ -12,6 +12,65 @@ Branch / version convention:
 
 ## [Unreleased]
 
+## [0.0.3] — 2026-05-14
+
+### Added
+- **CLI file-transfer commands** (`cmd/ssh-mcp/cli_transfer.go`): four new
+  subcommands that stream bytes directly via SFTP, bypassing the base64
+  envelope `sftp_op` uses (so size is no longer bounded by JSON payload
+  limits):
+  - `ssh-mcp upload <server> <local> <remote>` — local → remote.
+  - `ssh-mcp download <server> <remote> <local>` — remote → local.
+  - `ssh-mcp cp <src_srv>:<path> <dst_srv>:<path>` — server-to-server via
+    local pipe; **no SSH inter-trust required** between the two remotes.
+  - `ssh-mcp fetch <server> <url> <remote>` — HTTP GET on the local host,
+    stream the response into a remote file. Useful when the remote machine
+    cannot reach the URL (GFW, egress restrictions) but the local can.
+  All four reuse the existing `cliCredResolver` (config.toml + keychain /
+  agent / key paths), so any server that works for `ssh_exec` works here
+  too. A `progressWriter` prints throttled progress to stderr; `--mkdirs`
+  (default true) auto-creates missing parent directories.
+- `ssh_persistent_setup` now accepts `password_storage`: `"keychain"`
+  (default) writes the password to the OS keychain and stores only a
+  `keychain:<svc>:<acct>` reference in `config.toml`; `"plaintext"` is
+  opt-in and still requires `settings.allow_config_plaintext_password=true`.
+  The keychain write happens **after** the config rename succeeds, with
+  rollback on failure, so a failed write never leaves an orphan keychain
+  entry or partial config.
+- `list_servers` now accepts `refresh` (default `true`): re-reads
+  `config.toml` from disk so manual edits since process start are visible
+  without restart, and injects new entries into the SSH pool as zero-expiry
+  temp servers so subsequent `ssh_exec` / `session_start` resolves them
+  immediately.
+
+### Fixed
+- **`ssh_persistent_setup` password mode**: previously refused every
+  password registration with `"plaintext password/passphrase persistence
+  is disabled"` and had no working keychain path, forcing manual
+  `security add-generic-password` + hand-edited `config.toml`. With the
+  new keychain-default flow above, the tool now fully owns the round-trip
+  in one call.
+- **`session_send` no longer poisons the session on command timeout**.
+  Previously a per-Send timeout transitioned the session to error and
+  closed the shell, so the next send returned `SESSION_DEAD` — forcing a
+  new `session_start` for every long command. The session module now runs
+  a persistent stdout pump and tags each command with a unique nonce;
+  on timeout the nonce is stashed as "stale" and the next send drains the
+  prior command's tail output before issuing its own. A bounded drain
+  budget (5 s) returns `SESSION_BUSY` (not `SESSION_DEAD`) when the prior
+  command is still running, so the caller can choose to wait or
+  `session_close`. `SESSION_DEAD` is now reserved for actual shell EOF.
+- **`session_send` supports heredoc commands**. The sentinel wrapper used
+  to put the closing brace on the same line as the user's command, which
+  collided with heredoc terminators (`EOF`) — the heredoc never closed
+  and the shell hung. The wrapper now places the closing brace on its
+  own line so `<<'EOF' ... EOF` and other multi-line constructs work
+  cleanly.
+- **`list_servers` reflects manual `config.toml` edits**. Previously the
+  server map was a startup-time snapshot; new entries added by a text
+  editor remained invisible until the MCP process restarted. See the
+  `refresh` parameter above.
+
 ## [0.0.2] — 2026-05-08
 
 ### Added

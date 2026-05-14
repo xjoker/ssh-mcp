@@ -182,10 +182,19 @@ Claude Code 默认对每次 MCP 工具调用弹出确认提示。将以下内容
 
 | 工具 | 说明 |
 |------|------|
-| `sftp_op` | 上传、下载、创建目录、删除、移动、复制、创建软链接、stat、realpath。 |
+| `sftp_op` | 上传、下载、创建目录、删除、移动、复制、创建软链接、stat、realpath。仅适合小文件（base64 / JSON 包大小限制 —— 大文件请用下方 CLI 命令）。 |
 | `sftp_list` | 列出远程目录内容（含元数据）。 |
 | `sftp_read` | 读取远程文件，支持字节偏移（tail / seek）。 |
 | `sftp_stat` | 查询单个远程路径的元数据。 |
+
+**大文件**和**服务器间互传**请用 CLI（直接 SFTP 流式传输，无大小限制）：
+
+| 命令 | 用途 |
+|------|------|
+| `ssh-mcp upload <服务器> <本地> <远程>` | 本地 → 服务器。 |
+| `ssh-mcp download <服务器> <远程> <本地>` | 服务器 → 本地。 |
+| `ssh-mcp cp <源:路径> <目标:路径>` | 服务器 ↔ 服务器（本地中转，不需要服务器间 SSH 互信）。 |
+| `ssh-mcp fetch <服务器> <url> <远程>` | 本地代下载推送到服务器。远端被 GFW 挡或无出网时使用。 |
 
 ### 持久 Shell 会话
 
@@ -207,9 +216,9 @@ Claude Code 默认对每次 MCP 工具调用弹出确认提示。将以下内容
 
 | 工具 | 说明 |
 |------|------|
-| `list_servers` | 列出已配置的服务器，支持标签过滤。 |
+| `list_servers` | 列出已配置的服务器，支持标签过滤。默认 `refresh=true` 重读 `config.toml` —— 手动编辑后无需重启即可看到；新条目同时注入 SSH pool，`ssh_exec` / `session_start` 立即可用。 |
 | `ssh_quick_setup` | 使用内联凭据注册临时服务器 —— 存储在内存中，有 TTL（最长 4 小时），不写入磁盘。同 `host+port+user` 重复调用复用既有注册。 |
-| `ssh_persistent_setup` | 把 `[servers.<name>]` 块追加到 `config.toml`，重启后仍存在且无 TTL。明文密码需 `settings.allow_config_plaintext_password = true`。 |
+| `ssh_persistent_setup` | 把 `[servers.<name>]` 块追加到 `config.toml`，重启后仍存在且无 TTL。密码默认存 OS keychain（`password_storage="keychain"`）—— config.toml 里只留引用；设为 `"plaintext"`（并开 `settings.allow_config_plaintext_password = true`）才直接写明文。 |
 
 ### 审计
 
@@ -304,6 +313,7 @@ proxy_jump = "bastion"
 ## CLI 速查
 
 ```sh
+# 配置与服务器管理
 ssh-mcp config init
 ssh-mcp config validate
 ssh-mcp config add-server <名称> --host H --user U --auth agent|key|password
@@ -311,6 +321,14 @@ ssh-mcp trust <名称>
 ssh-mcp auth set ssh-password:<名称>
 ssh-mcp server list
 ssh-mcp server test <名称>
+
+# 文件传输（SFTP 流式，无大小限制）
+ssh-mcp upload   <服务器> <本地路径> <远程路径>
+ssh-mcp download <服务器> <远程路径> <本地路径>
+ssh-mcp cp       <源服务器>:<源路径> <目标服务器>:<目标路径>
+ssh-mcp fetch    <服务器> <url> <远程路径>
+
+# 审计与更新
 ssh-mcp audit query --tool ssh_exec --since 24h
 ssh-mcp update
 ssh-mcp install claude-code     # 输出 claude mcp add 命令
