@@ -2,6 +2,8 @@ module github.com/xjoker/ssh-mcp
 
 go 1.25.0
 
+toolchain go1.26.5
+
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.6.0

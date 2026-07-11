@@ -160,17 +160,27 @@ func (s *Server) Serve(ctx context.Context) error {
 	return s.mcpSrv.Run(ctx, &mcp.StdioTransport{})
 }
 
-// runConnReaper ticks every 60 seconds and closes pool entries that have been
-// idle for longer than ConnIdleSeconds. The goroutine exits when ctx is done.
+// runConnReaper periodically closes pool entries that have been idle for
+// longer than ConnIdleSeconds. The tick is capped at the idle threshold so a
+// user-configured threshold below 60s is actually honoured (a fixed 60s tick
+// would let connections outlive a 30s threshold by up to a minute). The
+// goroutine exits when ctx is done.
 func (s *Server) runConnReaper(ctx context.Context) {
-	ticker := time.NewTicker(60 * time.Second)
-	defer ticker.Stop()
-
 	idleSecs := s.cfg.Settings.ConnIdleSeconds
 	if idleSecs <= 0 {
 		idleSecs = 600 // fallback to 10 minutes if not configured
 	}
 	threshold := time.Duration(idleSecs) * time.Second
+
+	tick := 60 * time.Second
+	if threshold < tick {
+		tick = threshold
+		if tick < time.Second {
+			tick = time.Second
+		}
+	}
+	ticker := time.NewTicker(tick)
+	defer ticker.Stop()
 
 	for {
 		select {

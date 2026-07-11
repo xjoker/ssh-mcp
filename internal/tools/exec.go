@@ -458,27 +458,10 @@ func buildStreamingEnvelope(
 	signal := ""
 
 	if streamErr != nil {
+		// ExecStreaming wraps the exit error with fmt.Errorf; errors.As
+		// walks the wrap chain.
 		var exitErr *gossh.ExitError
-		if e, ok := streamErr.(*gossh.ExitError); ok {
-			exitErr = e
-		}
-		// ExecStreaming wraps the exit error with fmt.Errorf, so also unwrap.
-		if exitErr == nil {
-			cause := streamErr
-			for cause != nil {
-				if e, ok := cause.(*gossh.ExitError); ok {
-					exitErr = e
-					break
-				}
-				// unwrap one level
-				type unwrapper interface{ Unwrap() error }
-				if uw, ok := cause.(unwrapper); ok {
-					cause = uw.Unwrap()
-				} else {
-					break
-				}
-			}
-		}
+		errors.As(streamErr, &exitErr)
 		if exitErr != nil {
 			exitCode = exitErr.ExitStatus()
 			if exitErr.Signal() != "" {

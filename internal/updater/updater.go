@@ -246,7 +246,8 @@ func fetchSHA256(ctx context.Context, url, binName string) (string, error) {
 	}
 	for _, line := range strings.Split(string(body), "\n") {
 		parts := strings.Fields(line)
-		if len(parts) == 2 && parts[1] == binName {
+		// sha256sum binary mode prefixes the filename with '*'.
+		if len(parts) == 2 && strings.TrimPrefix(parts[1], "*") == binName {
 			return parts[0], nil
 		}
 	}

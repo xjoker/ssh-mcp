@@ -131,23 +131,34 @@ func parseSince(s string) (time.Time, error) {
 		return time.Time{}, nil
 	}
 
-	// Try relative duration suffixes: Nh / Nd / Nm
+	// Try relative duration suffixes: Nh / Nd / Nm. Negative values would
+	// place the cutoff in the future and make the query silently return
+	// nothing — reject them instead.
 	lower := strings.ToLower(strings.TrimSpace(s))
 	if strings.HasSuffix(lower, "h") {
 		n, err := strconv.Atoi(strings.TrimSuffix(lower, "h"))
 		if err == nil {
+			if n < 0 {
+				return time.Time{}, fmt.Errorf("negative duration %q", s)
+			}
 			return time.Now().UTC().Add(-time.Duration(n) * time.Hour), nil
 		}
 	}
 	if strings.HasSuffix(lower, "d") {
 		n, err := strconv.Atoi(strings.TrimSuffix(lower, "d"))
 		if err == nil {
+			if n < 0 {
+				return time.Time{}, fmt.Errorf("negative duration %q", s)
+			}
 			return time.Now().UTC().AddDate(0, 0, -n), nil
 		}
 	}
 	if strings.HasSuffix(lower, "m") {
 		n, err := strconv.Atoi(strings.TrimSuffix(lower, "m"))
 		if err == nil {
+			if n < 0 {
+				return time.Time{}, fmt.Errorf("negative duration %q", s)
+			}
 			return time.Now().UTC().Add(-time.Duration(n) * time.Minute), nil
 		}
 	}
