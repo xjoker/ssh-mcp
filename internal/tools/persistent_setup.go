@@ -11,6 +11,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -251,8 +252,7 @@ func handleSSHPersistentSetup(ctx context.Context, deps *Deps, args json.RawMess
 	original, readErr := os.ReadFile(cfgPath)
 	switch {
 	case readErr == nil:
-		marker := "[servers." + input.Name + "]"
-		if strings.Contains(string(original), marker) {
+		if config.HasServerBlock(original, input.Name) {
 			return envelope.ErrWithHint(
 				envelope.CodeInvalidArgument,
 				fmt.Sprintf("server %q already exists in %s", input.Name, cfgPath),
@@ -277,8 +277,7 @@ func handleSSHPersistentSetup(ctx context.Context, deps *Deps, args json.RawMess
 	// holds a name that isn't in the file we just read, e.g. test setups).
 	if deps.Cfg != nil && deps.Cfg.Servers != nil {
 		if _, exists := deps.Cfg.Servers[input.Name]; exists && len(original) > 0 {
-			marker := "[servers." + input.Name + "]"
-			if !strings.Contains(string(original), marker) {
+			if !config.HasServerBlock(original, input.Name) {
 				return envelope.Err(envelope.CodeInvalidArgument,
 					fmt.Sprintf("server %q already registered in current session", input.Name),
 					false)
@@ -320,10 +319,18 @@ func handleSSHPersistentSetup(ctx context.Context, deps *Deps, args json.RawMess
 	// Atomic write to a temp file, validate, then rename. This way a
 	// validation failure (e.g. proxy_jump cycle, unknown referenced server)
 	// leaves the original file untouched.
-	tmp := cfgPath + ".persistent-setup.tmp"
-	if err := os.WriteFile(tmp, []byte(sb.String()), 0o600); err != nil {
+	tmpF, tmpErr := os.CreateTemp(filepath.Dir(cfgPath), filepath.Base(cfgPath)+".persistent-setup.*.tmp")
+	if tmpErr != nil {
 		return envelope.Err(envelope.CodeInternalError,
-			fmt.Sprintf("write temp file %s: %v", tmp, err), false)
+			fmt.Sprintf("create temp file: %v", tmpErr), false)
+	}
+	tmp := tmpF.Name()
+	_, werr := tmpF.WriteString(sb.String())
+	cerr := tmpF.Close()
+	if werr != nil || cerr != nil {
+		_ = os.Remove(tmp)
+		return envelope.Err(envelope.CodeInternalError,
+			fmt.Sprintf("write temp file %s: %v", tmp, errors.Join(werr, cerr)), false)
 	}
 
 	loaded, loadErr := config.Load(tmp)

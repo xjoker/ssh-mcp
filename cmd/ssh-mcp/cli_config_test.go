@@ -287,3 +287,53 @@ func TestConfigValidateMissingFile(t *testing.T) {
 		t.Error("expected non-zero exit when config file does not exist")
 	}
 }
+
+// TestConfigAddServer_NameOnlyInCommentIsNotDuplicate: the default template
+// contains "# [servers.example]" — a commented-out header must not block
+// adding a real server named "example".
+func TestConfigAddServer_NameOnlyInCommentIsNotDuplicate(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	t.Setenv("MCP_SSH_BRIDGE_CONFIG", cfgPath)
+
+	if code := configCmd([]string{"init"}); code != 0 {
+		t.Fatalf("config init: %d", code)
+	}
+	_, errOut := captureOutput(func() {
+		code := configCmd([]string{
+			"add-server", "--name", "example",
+			"--host", "example.com", "--user", "u", "--auth", "agent",
+		})
+		if code != 0 {
+			t.Errorf("add-server --name example exit = %d, want 0", code)
+		}
+	})
+	if strings.Contains(errOut, "already exists") {
+		t.Errorf("commented template header misdetected as duplicate: %q", errOut)
+	}
+}
+
+// TestConfigAddServer_PrefixNameIsNotDuplicate: existing [servers.web1] must
+// not block adding "web" (substring in the other direction is exercised by
+// the anchored ] terminator).
+func TestConfigAddServer_PrefixNameIsNotDuplicate(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	t.Setenv("MCP_SSH_BRIDGE_CONFIG", cfgPath)
+
+	if code := configCmd([]string{"init"}); code != 0 {
+		t.Fatalf("config init: %d", code)
+	}
+	if code := configCmd([]string{
+		"add-server", "--name", "web1",
+		"--host", "h", "--user", "u", "--auth", "agent",
+	}); code != 0 {
+		t.Fatalf("add-server web1: %d", code)
+	}
+	if code := configCmd([]string{
+		"add-server", "--name", "web",
+		"--host", "h2", "--user", "u", "--auth", "agent",
+	}); code != 0 {
+		t.Errorf("add-server web after web1 exit = %d, want 0", code)
+	}
+}

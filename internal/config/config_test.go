@@ -1067,3 +1067,27 @@ key_path = "~/.ssh/id_ed25519"
 		t.Errorf("key_path: got %q, want %q", got, want)
 	}
 }
+
+func TestHasServerBlock(t *testing.T) {
+	content := []byte(`# [servers.example]
+[settings]
+# nothing
+
+  [servers.web1]   # primary
+host = "h"
+`)
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"example", false}, // commented out
+		{"web1", true},     // indented, trailing comment
+		{"web", false},     // prefix of web1
+		{"web12", false},   // superstring
+	}
+	for _, c := range cases {
+		if got := config.HasServerBlock(content, c.name); got != c.want {
+			t.Errorf("HasServerBlock(%q) = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

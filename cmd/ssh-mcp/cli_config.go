@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -222,8 +223,7 @@ func configAddServerCmd(args []string) int {
 	original, err := os.ReadFile(cfgPath)
 	switch {
 	case err == nil:
-		marker := "[servers." + *name + "]"
-		if strings.Contains(string(original), marker) {
+		if config.HasServerBlock(original, *name) {
 			fmt.Fprintf(os.Stderr, "config add-server: server %q already exists in %s\n", *name, cfgPath)
 			fmt.Fprintln(os.Stderr, "  Edit the file manually or remove the existing block first.")
 			return 1
@@ -287,11 +287,19 @@ func configAddServerCmd(args []string) int {
 	}
 
 	// Atomic write so a validation failure mid-flight does not corrupt the
-	// config file. Permissions match the rest of the codebase (0600 for
-	// secrets-adjacent files).
-	tmp := cfgPath + ".tmp"
-	if err := os.WriteFile(tmp, []byte(sb.String()), 0600); err != nil {
-		fmt.Fprintf(os.Stderr, "config add-server: write %s: %v\n", tmp, err)
+	// config file. A random temp name (os.CreateTemp, mode 0600) keeps two
+	// concurrent writers from clobbering each other's staging file.
+	tmpF, err := os.CreateTemp(filepath.Dir(cfgPath), filepath.Base(cfgPath)+".*.tmp")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config add-server: create temp file: %v\n", err)
+		return 1
+	}
+	tmp := tmpF.Name()
+	_, werr := tmpF.WriteString(sb.String())
+	cerr := tmpF.Close()
+	if werr != nil || cerr != nil {
+		_ = os.Remove(tmp)
+		fmt.Fprintf(os.Stderr, "config add-server: write %s: %v\n", tmp, errors.Join(werr, cerr))
 		return 1
 	}
 	if _, err := config.Load(tmp); err != nil {
