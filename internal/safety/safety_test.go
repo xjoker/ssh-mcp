@@ -649,3 +649,22 @@ func TestRedactSecret_CLIFlagSpaceSeparatedPassword(t *testing.T) {
 		t.Errorf("glued -p value leaked: %q", out2)
 	}
 }
+
+// TestRedactSecret_SpaceFormPasswordWithEquals: a space-separated password
+// value containing '=' (base64 padding) must be redacted wholesale — the old
+// callback split at the value's '=' and leaked the prefix.
+func TestRedactSecret_SpaceFormPasswordWithEquals(t *testing.T) {
+	out := string(RedactSecret([]byte("mysql --password aGVjZGVm== db")))
+	if strings.Contains(out, "aGVjZGVm") {
+		t.Errorf("base64 password prefix leaked: %q", out)
+	}
+	if !strings.Contains(out, "--password ") {
+		t.Errorf("flag name mangled: %q", out)
+	}
+	// Newline must terminate the space form — the next line's token is not
+	// a password value.
+	out2 := string(RedactSecret([]byte("usage: --password\nnextline-token here")))
+	if !strings.Contains(out2, "nextline-token") {
+		t.Errorf("redaction crossed a newline: %q", out2)
+	}
+}

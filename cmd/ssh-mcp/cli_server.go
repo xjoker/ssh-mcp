@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -276,19 +277,39 @@ func serverAppendToConfig(cfgPath string, name string, srv config.ServerConfig) 
 	if err != nil {
 		return fmt.Errorf("cannot read config: %w", err)
 	}
-	needle := fmt.Sprintf("[servers.%s]", name)
-	if bytes.Contains(existing, []byte(needle)) {
+	if config.HasServerBlock(existing, name) {
 		return fmt.Errorf("server %q already exists in config", name)
 	}
 
-	f, err := os.OpenFile(cfgPath, os.O_APPEND|os.O_WRONLY, 0600)
-	if err != nil {
-		return fmt.Errorf("cannot open config for append: %w", err)
+	// Stage the appended content through a random temp file, validate, then
+	// atomically rename — same contract as `config add-server` and
+	// ssh_persistent_setup (a malformed entry must not corrupt the file, and
+	// two concurrent writers must not interleave appends).
+	content := make([]byte, 0, len(existing)+sb.Len()+1)
+	content = append(content, existing...)
+	if len(existing) > 0 && existing[len(existing)-1] != '\n' {
+		content = append(content, '\n')
 	}
-	defer f.Close()
+	content = append(content, sb.String()...)
 
-	if _, err := f.WriteString(sb.String()); err != nil {
-		return fmt.Errorf("cannot write server entry: %w", err)
+	tmpF, err := os.CreateTemp(filepath.Dir(cfgPath), filepath.Base(cfgPath)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("cannot create temp file: %w", err)
+	}
+	tmp := tmpF.Name()
+	_, werr := tmpF.Write(content)
+	cerr := tmpF.Close()
+	if werr != nil || cerr != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("cannot write server entry: %w", errors.Join(werr, cerr))
+	}
+	if _, err := config.Load(tmp); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("validation failed (config NOT modified): %w", err)
+	}
+	if err := os.Rename(tmp, cfgPath); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("cannot replace config: %w", err)
 	}
 	return nil
 }

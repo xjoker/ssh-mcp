@@ -94,8 +94,8 @@ const staleDrainBudget = 5 * time.Second
 // by the persistent pump goroutine. When the channel is full the pump
 // drops the oldest line; this keeps the remote shell from blocking on a
 // stuck consumer (e.g. a Send that timed out and never returned) and is
-// bounded to keep memory predictable. 256 lines × 64 KiB max per line is
-// the worst case ≈ 16 MiB which is well under sessionOutputMaxBytes per Send.
+// bounded to keep memory predictable: worst case lineChCap ×
+// sessionLineMaxBytes = 256 × 256 KiB = 64 MiB, transient, drop-oldest.
 const lineChCap = 256
 
 // session holds the live state for one persistent shell.

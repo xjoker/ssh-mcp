@@ -134,7 +134,12 @@ var (
 	// (--password=x) and space-separated (--password x) values; short form
 	// only glued (-px / -p=x) — `-p value` is ambiguous (mysql -p dbname
 	// prompts and treats the operand as a database name, not a password).
-	reCLIFlagPwd = regexp.MustCompile(`(?:^|\s)(--password(?:=|\s+)|-p=?)\S+`)
+	// Group 1 = leading separator, group 2 = flag incl. '='/space separator;
+	// the value is everything after group 2 and is replaced wholesale (no
+	// splitting on characters inside the value — '=' in a base64 password
+	// must not become the boundary). [ \t]+ (not \s+) so the space form
+	// cannot swallow a token on the following line.
+	reCLIFlagPwd = regexp.MustCompile(`(^|\s)(--password(?:=|[ \t]+)|-p=?)\S+`)
 
 	// `sshpass -p VALUE` (space form, separate from above which also covers it).
 	reSshpass = regexp.MustCompile(`(?i)\bsshpass\s+-p\s+\S+`)
@@ -349,21 +354,11 @@ func redactBytes(b []byte) []byte {
 	})
 	out = reURL.ReplaceAll(out, []byte("${1}***:***@"))
 	out = reAWSKey.ReplaceAll(out, []byte(redactedPlaceholder))
-	out = reCLIFlagPwd.ReplaceAllFunc(out, func(m []byte) []byte {
-		// preserve leading whitespace + flag, replace the value portion.
-		s := string(m)
-		// find where flag ends: "--password=" or "-p=" or "-p"
-		flagEnd := strings.IndexAny(s, "=")
-		if flagEnd >= 0 {
-			return []byte(s[:flagEnd+1] + redactedPlaceholder)
-		}
-		// "-p" glued form (no '=' separator): keep through "-p"
-		idx := strings.Index(s, "-p")
-		if idx < 0 {
-			return []byte(redactedPlaceholder)
-		}
-		return []byte(s[:idx+2] + redactedPlaceholder)
-	})
+	// Template replacement: keep separator + flag, drop the whole value.
+	// (An earlier callback split at the first '=' in the match, which for a
+	// space-form value containing '=' — e.g. base64 padding — leaked the
+	// value prefix into the audit log.)
+	out = reCLIFlagPwd.ReplaceAll(out, []byte("${1}${2}"+redactedPlaceholder))
 	out = reSshpass.ReplaceAll(out, []byte("sshpass -p "+redactedPlaceholder))
 
 	// Header / token forms commonly seen in stdout/stderr of curl, HTTP
