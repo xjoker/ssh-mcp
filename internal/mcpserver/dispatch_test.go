@@ -186,6 +186,59 @@ func TestMiddlewareChain_AuditMetaEnrichment(t *testing.T) {
 	}
 }
 
+// TestMiddlewareChain_AuditMetaContentSHA256 verifies that AuditMeta.ContentSHA256
+// (populated by sftp_upload) is copied through to the persisted audit entry.
+// SDD design §3.4 / review Fix 2.
+func TestMiddlewareChain_AuditMetaContentSHA256(t *testing.T) {
+	auditDir := t.TempDir()
+	auditLog, err := audit.New(auditDir, 90)
+	if err != nil {
+		t.Fatalf("audit.New: %v", err)
+	}
+	defer auditLog.Close()
+
+	cfg := &config.Config{
+		Settings: config.Settings{},
+		Servers:  map[string]config.ServerConfig{},
+	}
+	deps := &tools.Deps{
+		Cfg:   cfg,
+		Audit: auditLog,
+	}
+
+	const wantSHA = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85"
+	fakeHandler := func(_ context.Context, _ *tools.Deps, _ json.RawMessage) envelope.Response {
+		return envelope.OK("result").WithAudit(envelope.AuditMeta{
+			BytesIn:       0,
+			AuthMode:      "key",
+			ContentSHA256: wantSHA,
+		})
+	}
+
+	req := &mcp.CallToolRequest{
+		Params: &mcp.CallToolParamsRaw{
+			Arguments: json.RawMessage(`{"server":"test-server"}`),
+		},
+	}
+
+	if _, middlewareErr := middlewareChain(context.Background(), req, "sftp_upload", fakeHandler, deps); middlewareErr != nil {
+		t.Fatalf("middlewareChain: %v", middlewareErr)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+
+	entries, qErr := auditLog.Query(audit.Filter{Tool: "sftp_upload", Limit: 10})
+	if qErr != nil {
+		t.Fatalf("Query: %v", qErr)
+	}
+	if len(entries) == 0 {
+		t.Fatal("no audit entry found after middlewareChain")
+	}
+	if entries[0].ContentSHA256 != wantSHA {
+		t.Errorf("ContentSHA256: got %q, want %q", entries[0].ContentSHA256, wantSHA)
+	}
+}
+
 // TestMiddlewareChain_RecordsStdoutStderr verifies the new
 // settings.audit_record_output=true (default) path: when a handler attaches
 // Stdout/Stderr to AuditMeta, the dispatcher persists them on the audit entry

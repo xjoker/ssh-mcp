@@ -205,18 +205,21 @@ func validate(cfg *Config) error {
 		errs = append(errs, "settings.audit_retention_days must be positive")
 	}
 
-	// settings.upload_local_allowed_paths gates sftp_upload — same Rule 11
-	// shape as ServerConfig.AllowedPaths (absolute, no "..", clean).
+	// settings.upload_local_allowed_paths gates sftp_upload and names paths
+	// on the *local* filesystem the MCP process runs on — unlike the remote
+	// Rule 11 check below (which always targets a POSIX-shaped sshd), this
+	// one must accept whatever the local OS considers absolute (Windows
+	// drive letters, UNC shares, or POSIX paths). filepath.IsAbs/Clean are
+	// OS-aware for exactly that reason. The ".." check from Rule 11 is
+	// deliberately dropped here: filepath.Clean(p) == p already rejects any
+	// path containing a real ".." traversal component, and a substring
+	// check would also reject legitimate names like "/home/..cfg".
 	for _, p := range cfg.Settings.UploadLocalAllowedPaths {
-		if !strings.HasPrefix(p, "/") {
+		if !filepath.IsAbs(p) {
 			errs = append(errs, fmt.Sprintf("settings.upload_local_allowed_paths entry %q must be an absolute path", p))
 			continue
 		}
-		if strings.Contains(p, "..") {
-			errs = append(errs, fmt.Sprintf("settings.upload_local_allowed_paths entry %q must not contain '..'", p))
-			continue
-		}
-		if cleaned := path.Clean(p); cleaned != p {
+		if cleaned := filepath.Clean(p); cleaned != p {
 			errs = append(errs, fmt.Sprintf("settings.upload_local_allowed_paths entry %q is not clean (expected %q)", p, cleaned))
 		}
 	}

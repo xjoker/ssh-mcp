@@ -164,18 +164,28 @@ func handleSftpUpload(ctx context.Context, deps *Deps, args json.RawMessage) env
 		return mapSFTPErr(statErr)
 	}
 	if remoteEntry.Size != localSize {
+		// NOT COVERED BY A TEST (review Fix 3): this branch runs after
+		// resolveClient/WriteFrom against a live *pkgsftp.Client, and
+		// internalsftp.New only wraps that unexported concrete type — this
+		// package (see file header) has no fake SFTP backend reachable from
+		// here to force a post-write size mismatch. internal/sftp's own
+		// fakeBackend (ops_writefrom_test.go) exercises WriteFrom's byte-exact
+		// transfer at that lower layer instead.
 		return envelope.Err(envelope.CodeSftpError,
 			fmt.Sprintf("upload size mismatch: wrote %d bytes locally, remote reports %d bytes", localSize, remoteEntry.Size),
 			true)
 	}
 
+	sha256Hex := hex.EncodeToString(hasher.Sum(nil))
+
 	return envelope.OK(map[string]any{
 		"bytes_written": localSize,
-		"sha256":        hex.EncodeToString(hasher.Sum(nil)),
+		"sha256":        sha256Hex,
 		"remote_path":   rp.String(),
 	}).WithAudit(envelope.AuditMeta{
-		BytesIn:  localSize,
-		AuthMode: client.AuthMode(),
+		BytesIn:       localSize,
+		AuthMode:      client.AuthMode(),
+		ContentSHA256: sha256Hex,
 	})
 }
 

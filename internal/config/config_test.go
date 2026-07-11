@@ -1135,16 +1135,28 @@ auth = "agent"
 	}
 }
 
+// uploadAllowedPathsFixture returns two OS-appropriate absolute paths for
+// upload_local_allowed_paths: filepath.IsAbs (Fix 1, OS-aware validation)
+// rejects POSIX-style "/srv/staging" on Windows, so this fixture switches to
+// drive-letter paths there.
+func uploadAllowedPathsFixture() (string, string) {
+	if runtime.GOOS == "windows" {
+		return `C:\Users\deploy\uploads`, `C:\srv\staging`
+	}
+	return "/Users/deploy/uploads", "/srv/staging"
+}
+
 func TestLoad_UploadLocalAllowedPaths_Absolute_OK(t *testing.T) {
-	cfg := mustLoad(t, `
+	p1, p2 := uploadAllowedPathsFixture()
+	cfg := mustLoad(t, fmt.Sprintf(`
 [settings]
-upload_local_allowed_paths = ["/Users/deploy/uploads", "/srv/staging"]
+upload_local_allowed_paths = [%q, %q]
 
 [servers.myserver]
 host = "example.com"
 user = "deploy"
 auth = "agent"
-`)
+`, p1, p2))
 	if len(cfg.Settings.UploadLocalAllowedPaths) != 2 {
 		t.Errorf("expected 2 upload_local_allowed_paths, got %d", len(cfg.Settings.UploadLocalAllowedPaths))
 	}
@@ -1163,25 +1175,33 @@ auth = "agent"
 }
 
 func TestLoad_UploadLocalAllowedPaths_DotDot_Error(t *testing.T) {
-	mustFail(t, `
+	dotdot := "/srv/../etc"
+	if runtime.GOOS == "windows" {
+		dotdot = `C:\srv\..\etc`
+	}
+	mustFail(t, fmt.Sprintf(`
 [settings]
-upload_local_allowed_paths = ["/srv/../etc"]
+upload_local_allowed_paths = [%q]
 
 [servers.myserver]
 host = "example.com"
 user = "deploy"
 auth = "agent"
-`, "must not contain '..'")
+`, dotdot), "is not clean")
 }
 
 func TestLoad_UploadLocalAllowedPaths_NotClean_Error(t *testing.T) {
-	mustFail(t, `
+	notClean := "/srv/uploads/"
+	if runtime.GOOS == "windows" {
+		notClean = `C:\srv\uploads\`
+	}
+	mustFail(t, fmt.Sprintf(`
 [settings]
-upload_local_allowed_paths = ["/srv/uploads/"]
+upload_local_allowed_paths = [%q]
 
 [servers.myserver]
 host = "example.com"
 user = "deploy"
 auth = "agent"
-`, "is not clean")
+`, notClean), "is not clean")
 }

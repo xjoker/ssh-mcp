@@ -56,6 +56,10 @@ type Entry struct {
 	Status        string    `json:"status,omitempty"`
 	CorrelationID string    `json:"correlation_id,omitempty"`
 
+	// ContentSHA256 is the hex-encoded sha256 of the file content transferred
+	// by the operation (e.g. sftp_upload's local source). SDD design §3.4.
+	ContentSHA256 string `json:"content_sha256,omitempty"`
+
 	// Stdout / Stderr capture the remote command's output for forensic
 	// replay. Populated by ssh_exec / ssh_group_exec / session_send. The
 	// dispatcher applies redaction and the configured per-entry size cap

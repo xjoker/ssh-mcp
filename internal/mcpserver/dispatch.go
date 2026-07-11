@@ -240,6 +240,9 @@ func buildAuditEntry(start time.Time, toolName, sessionID, serverName, argsRedac
 		if resp.Audit.AuthMode != "" {
 			auditEntry.AuthMode = resp.Audit.AuthMode
 		}
+		if resp.Audit.ContentSHA256 != "" {
+			auditEntry.ContentSHA256 = resp.Audit.ContentSHA256
+		}
 		if recordOutput {
 			if resp.Audit.Stdout != "" {
 				auditEntry.Stdout = capAndRedactOutput(resp.Audit.Stdout, outputCap)

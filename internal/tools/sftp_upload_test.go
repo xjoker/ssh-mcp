@@ -281,6 +281,26 @@ func TestSftpUpload_SymlinkInsideAllowlistOK(t *testing.T) {
 	}
 }
 
+// TestIsUnderLocalAllowedPrefix_ComponentBoundary verifies that a sibling
+// directory whose name merely starts with the allowed prefix as a string
+// (e.g. "foobar" vs allowed "foo") is not treated as a descendant — the
+// prefix match must land on a path-separator boundary. Review Fix 3.
+func TestIsUnderLocalAllowedPrefix_ComponentBoundary(t *testing.T) {
+	tmp := t.TempDir()
+	allowed := filepath.Join(tmp, "foo")
+	sibling := filepath.Join(tmp, "foobar", "x")
+
+	if isUnderLocalAllowedPrefix(sibling, []string{allowed}) {
+		t.Errorf("sibling path %q must not match allowed prefix %q", sibling, allowed)
+	}
+
+	// Sanity: a genuine descendant of the allowed prefix is still permitted.
+	descendant := filepath.Join(allowed, "x")
+	if !isUnderLocalAllowedPrefix(descendant, []string{allowed}) {
+		t.Errorf("descendant path %q must match allowed prefix %q", descendant, allowed)
+	}
+}
+
 // --------------------------------------------------------------------------
 // Schema registration
 // --------------------------------------------------------------------------

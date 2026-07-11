@@ -33,6 +33,11 @@ type AuditMeta struct {
 	// not pre-truncate.
 	Stdout string
 	Stderr string
+
+	// ContentSHA256 is the hex-encoded sha256 of the file content transferred
+	// by the operation (e.g. sftp_upload's local source). Empty string means
+	// "not computed / not applicable". SDD design §3.4.
+	ContentSHA256 string
 }
 
 // Response is encoded as JSON inside a single MCP TextContent.
