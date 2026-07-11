@@ -137,6 +137,11 @@ func Load(path string) (*Config, error) {
 	servers := make(map[string]ServerConfig, len(raw.Servers))
 	for k, v := range raw.Servers {
 		lk := strings.ToLower(k)
+		// Case-folding two distinct TOML tables onto one key would silently
+		// drop one of them (map iteration order decides which) — fail loudly.
+		if _, dup := servers[lk]; dup {
+			return nil, fmt.Errorf("config: servers %q: duplicate name after case-folding (server names are case-insensitive)", lk)
+		}
 		v.Name = lk
 		v.ProxyJump = strings.ToLower(v.ProxyJump)
 		v.KeyPath = expandKeyPath(v.KeyPath, configDir)
@@ -147,6 +152,9 @@ func Load(path string) (*Config, error) {
 	proxies := make(map[string]ProxyConfig, len(raw.Proxies))
 	for k, v := range raw.Proxies {
 		lk := strings.ToLower(k)
+		if _, dup := proxies[lk]; dup {
+			return nil, fmt.Errorf("config: proxies %q: duplicate name after case-folding (proxy names are case-insensitive)", lk)
+		}
 		v.Name = lk
 		v.Server = strings.ToLower(v.Server)
 		proxies[lk] = v

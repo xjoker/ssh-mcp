@@ -1091,3 +1091,28 @@ host = "h"
 		}
 	}
 }
+
+// TestLoad_CaseFoldDuplicateServerRejected: [servers.WEB] + [servers.web]
+// case-fold to the same key; loading must fail instead of silently keeping
+// whichever the map iteration happened to visit last.
+func TestLoad_CaseFoldDuplicateServerRejected(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.toml")
+	content := `
+[servers.web]
+host = "h1"
+user = "u"
+auth = "agent"
+
+[servers.WEB]
+host = "h2"
+user = "u"
+auth = "agent"
+`
+	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(p); err == nil {
+		t.Fatal("want duplicate-after-case-folding error, got nil")
+	}
+}
