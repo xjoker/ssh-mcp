@@ -6,8 +6,8 @@ Only the latest tagged release on `main` is supported. Reported vulnerabilities 
 
 | Version | Status |
 |---------|--------|
-| `0.0.6` | Current — security fixes land here |
-| `< 0.0.6` | Use `ssh-mcp update` to upgrade; older binaries are not patched |
+| `0.0.7` | Current — security fixes land here |
+| `< 0.0.7` | Use `ssh-mcp update` to upgrade; older binaries are not patched |
 
 Each release tag (`vX.Y.Z`) is built by GitHub Actions from `main` and ships SHA-256 checksums alongside the binaries. The installer (`scripts/install.sh`) verifies the SHA-256 automatically.
 

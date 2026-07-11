@@ -18,6 +18,65 @@ Branch / version convention:
 
 ## [Unreleased]
 
+## [0.0.7] — 2026-07-11
+
+### Added
+- **`sftp_upload` MCP tool — large-file upload without a size limit.** The AI
+  passes `(server, local_path, remote_path)`; the ssh-mcp process opens the
+  local file itself and streams it to the remote over SFTP, so file bytes
+  never transit the model context (unlike `sftp_op`'s base64 path with its
+  16 MiB cap). Works transparently with `ssh_quick_setup` temporary servers.
+  Fail-closed by design: the new `settings.upload_local_allowed_paths`
+  allowlist defaults to empty (tool disabled) and must be enabled by hand in
+  `config.toml`; local paths are symlink-resolved before the prefix check and
+  must be regular files; the remote path goes through the same
+  realpath + `allowed_paths` check as `sftp_op`. Uploads are audited as
+  destructive operations with size and streaming SHA-256 recorded
+  (`content_sha256`), and the remote size is verified after the atomic write.
+- `list_servers refresh=true` now also hot-reloads `[proxies.<name>]`
+  tables, closing the v0.0.6 known limitation (new proxies previously
+  required an MCP restart).
+- `HOST_KEY_UNKNOWN` errors now carry an actionable hint pointing at
+  `ssh-mcp trust <host>[:port]`.
+- Windows added to the CI test matrix; community files
+  (issue/PR templates, CODEOWNERS) and the pre-1.0 versioning policy.
+
+### Fixed
+- **Connection pool races:** `CloseIdle` no longer blocks unrelated servers
+  while a dial is in flight, no longer evicts entries created moments
+  earlier, and `Get` retries instead of returning a connection that a
+  concurrent eviction just closed.
+- **Proxy chain:** direct-mode `ssh` proxies no longer leak the throwaway
+  SSH client; chain-lookup failures suggest a config refresh.
+- **Tunnel:** TCP half-close (`CloseWrite`) now propagates in both
+  directions instead of tearing the stream down early, and forward dials
+  time out after 30s instead of hanging.
+- **Safety:** `allowed_paths = ["/"]` now allows everything instead of
+  denying everything; space-separated `--password <value>` redaction no
+  longer leaks a prefix of the secret into audit logs.
+- **Audit:** per-line reads are bounded (8 MiB; oversized lines skipped like
+  malformed ones), `--limit` keeps the newest entries in a sliding window
+  instead of growing without bound, retention is enforced at startup and on
+  daily rotation, and `audit query --since` rejects negative durations.
+- **Config:** `[servers.<name>]` duplicate detection is line-anchored (a
+  name mentioned in a comment no longer blocks registration), server/proxy
+  names that collide after case-folding are rejected at load, and all three
+  config writers (`config add-server`, `ssh_persistent_setup`, `server add`)
+  stage writes through create-temp → validate → atomic rename.
+- Session output lines are capped at 256 KiB; the session reaper survives a
+  double `CloseAll`; the connection reaper tick honours idle thresholds
+  below 60s.
+
+### Security
+- Bumped `golang.org/x/crypto` and `golang.org/x/net`, closing all 14
+  Dependabot alerts (7 critical, including SSH auth-bypass and DoS issues);
+  pinned Go toolchain 1.26.5 for the crypto/tls fix (GO-2026-5856). Routine
+  follow-up bump to x/crypto 0.54.0 / x/net 0.57.0 / go-sdk 1.6.1.
+- Self-updater: the downloaded binary is created `0600` with `O_EXCL` and
+  only marked executable after its SHA-256 checksum verifies (closes a
+  TOCTOU window where a half-written binary was briefly executable).
+- SAST pass (govulncheck / gosec / staticcheck) with real findings fixed.
+
 ## [0.0.6] — 2026-05-14
 
 ### Added
