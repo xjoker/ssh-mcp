@@ -15,6 +15,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	gossh "golang.org/x/crypto/ssh"
@@ -177,34 +178,50 @@ func (p *Pool) buildSOCKS5Wrapper(ctx context.Context, pc config.ProxyConfig, al
 func (p *Pool) buildSSHWrapper(pc config.ProxyConfig, visited map[string]struct{}) proxy.Wrapper {
 	return func(parent proxy.Dialer) proxy.Dialer {
 		return proxy.DialerFunc(func(ctx context.Context, network, target string) (net.Conn, error) {
-			var jumpClient *gossh.Client
-
 			if pc.Server != "" {
 				cli, err := p.getInternal(ctx, pc.Server, visited)
 				if err != nil {
 					return nil, fmt.Errorf("ssh proxy via server %q: %w", pc.Server, err)
 				}
-				jumpClient = cli.inner
-			} else {
-				cli, err := p.dialDirectSSHProxy(ctx, pc, parent)
+				// Pooled jump client: the channel conn is returned as-is;
+				// the pool owns the SSH connection's lifecycle.
+				tcpConn, err := cli.inner.Dial("tcp", target)
 				if err != nil {
-					return nil, err
+					return nil, fmt.Errorf("ssh proxy %q channel to %s: %w", pc.Name, target, err)
 				}
-				jumpClient = cli
+				return tcpConn, nil
 			}
 
-			// Open a "direct-tcpip" channel through the jump host to the
-			// next leg's target. The returned net.Conn is a multiplexed
-			// channel — closing it tears down only this channel, not the
-			// underlying SSH connection (which remains in the pool / leaks
-			// as an ad-hoc client per dialDirectSSHProxy's caller policy).
-			tcpConn, err := jumpClient.Dial("tcp", target)
+			// Direct mode: the SSH client exists only for this chained dial
+			// and is not pooled. Tie its lifetime to the returned conn —
+			// closing only the multiplexed channel would leave the client's
+			// mux goroutines and TCP connection alive forever (leak).
+			cli, err := p.dialDirectSSHProxy(ctx, pc, parent)
 			if err != nil {
+				return nil, err
+			}
+			tcpConn, err := cli.Dial("tcp", target)
+			if err != nil {
+				_ = cli.Close()
 				return nil, fmt.Errorf("ssh proxy %q channel to %s: %w", pc.Name, target, err)
 			}
-			return tcpConn, nil
+			return &connWithCloser{Conn: tcpConn, closer: cli}, nil
 		})
 	}
+}
+
+// connWithCloser is a net.Conn whose Close also closes an owning resource
+// (e.g. the throwaway SSH client a proxy channel is multiplexed over).
+type connWithCloser struct {
+	net.Conn
+	closer interface{ Close() error }
+	once   sync.Once
+}
+
+func (c *connWithCloser) Close() error {
+	err := c.Conn.Close()
+	c.once.Do(func() { _ = c.closer.Close() })
+	return err
 }
 
 // dialDirectSSHProxy connects to pc.Host:pc.Port via parent and performs an

@@ -300,8 +300,9 @@ type Manager struct {
 	mu       sync.RWMutex
 	sessions map[string]*session
 
-	stopReaper chan struct{}
-	reaperDone chan struct{}
+	stopReaper     chan struct{}
+	stopReaperOnce sync.Once
+	reaperDone     chan struct{}
 }
 
 const reaperInterval = 60 * time.Second
@@ -314,10 +315,16 @@ const sessionOutputMaxBytes = 1 << 20 // 1 MiB
 
 // sessionLineMaxBytes is the per-line cap used by readBoundedLine. Once a
 // logical line exceeds this size the reader forcibly flushes the buffer and
-// discards the remainder of the physical line. This prevents a remote process
-// that never emits a newline from growing an unbounded in-memory buffer
-// (memory DoS via a single huge line).
-const sessionLineMaxBytes = 64 * 1024 // 64 KiB per logical line
+// discards the remainder of the physical line (SendResult.Truncated is set).
+// This prevents a remote process that never emits a newline from growing an
+// unbounded in-memory buffer (memory DoS via a single huge line).
+//
+// 256 KiB accommodates single-line JSON blobs that commonly exceed the old
+// 64 KiB cap while keeping the worst-case buffered-channel memory bounded
+// (lineChCap × sessionLineMaxBytes = 64 MiB, transient, drop-oldest).
+// Larger payloads should use ssh_exec (1 MiB budget) or sftp instead of an
+// interactive session.
+const sessionLineMaxBytes = 256 * 1024 // 256 KiB per logical line
 
 // NewManager creates a Manager and starts the idle-session reaper goroutine.
 // Call CloseAll to shut down cleanly.
@@ -788,13 +795,9 @@ func (m *Manager) List() []SessionInfo {
 
 // CloseAll closes all sessions and stops the reaper goroutine.
 func (m *Manager) CloseAll() {
-	// Stop the reaper first.
-	select {
-	case <-m.stopReaper:
-		// already stopped
-	default:
-		close(m.stopReaper)
-	}
+	// Stop the reaper first. sync.Once: two concurrent CloseAll calls must
+	// not both close the channel (panic: close of closed channel).
+	m.stopReaperOnce.Do(func() { close(m.stopReaper) })
 	<-m.reaperDone
 
 	m.mu.Lock()

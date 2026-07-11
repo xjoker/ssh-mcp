@@ -226,11 +226,29 @@ func (m *Manager) localAcceptLoop(ctx context.Context, e *tunnelEntry, dstHost s
 	}
 }
 
+// tunnelDialTimeout bounds the per-connection dial when forwarding. The
+// tunnel's own context lives for the tunnel lifetime, so without this a
+// black-holed target would hang each forward goroutine for minutes.
+const tunnelDialTimeout = 30 * time.Second
+
+// closeWrite half-closes the write side of c so the peer sees EOF while the
+// reverse direction keeps flowing (TCP conns and SSH channels both support
+// it). Falls back to a full Close for conns without CloseWrite.
+func closeWrite(c net.Conn) {
+	if cw, ok := c.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+		return
+	}
+	_ = c.Close()
+}
+
 func (m *Manager) localForward(ctx context.Context, e *tunnelEntry, local net.Conn, dstHost string, dstPort int) {
 	defer local.Close()
 
 	remoteAddr := net.JoinHostPort(dstHost, strconv.Itoa(dstPort))
-	remote, err := m.dialer.SSHDial(ctx, e.server, "tcp", remoteAddr)
+	dialCtx, cancelDial := context.WithTimeout(ctx, tunnelDialTimeout)
+	remote, err := m.dialer.SSHDial(dialCtx, e.server, "tcp", remoteAddr)
+	cancelDial()
 	if err != nil {
 		return
 	}
@@ -246,12 +264,14 @@ func (m *Manager) localForward(ctx context.Context, e *tunnelEntry, local net.Co
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	// local → remote (bytesOut: bytes leaving the local side toward remote)
+	// local → remote (bytesOut: bytes leaving the local side toward remote).
+	// Half-close only: a client that shuts down its write side (e.g. HTTP
+	// request then EOF) must still be able to read the response.
 	go func() {
 		defer wg.Done()
 		n, _ := io.Copy(remote, local)
 		e.bytesOut.Add(n)
-		_ = remote.Close()
+		closeWrite(remote)
 	}()
 
 	// remote → local (bytesIn: bytes arriving from remote to local)
@@ -259,7 +279,7 @@ func (m *Manager) localForward(ctx context.Context, e *tunnelEntry, local net.Co
 		defer wg.Done()
 		n, _ := io.Copy(local, remote)
 		e.bytesIn.Add(n)
-		_ = local.Close()
+		closeWrite(local)
 	}()
 
 	wg.Wait()
@@ -368,7 +388,9 @@ func (m *Manager) remoteForward(ctx context.Context, e *tunnelEntry, remote net.
 	// promptly instead of waiting for the OS-level connect timeout.
 	localAddr := net.JoinHostPort(localHost, strconv.Itoa(localPort))
 	var d net.Dialer
-	local, err := d.DialContext(ctx, "tcp", localAddr)
+	dialCtx, cancelDial := context.WithTimeout(ctx, tunnelDialTimeout)
+	local, err := d.DialContext(dialCtx, "tcp", localAddr)
+	cancelDial()
 	if err != nil {
 		return
 	}
@@ -389,7 +411,7 @@ func (m *Manager) remoteForward(ctx context.Context, e *tunnelEntry, remote net.
 		defer wg.Done()
 		n, _ := io.Copy(local, remote)
 		e.bytesIn.Add(n)
-		_ = local.Close()
+		closeWrite(local)
 	}()
 
 	// local → remote (bytesOut: bytes going back to remote)
@@ -397,7 +419,7 @@ func (m *Manager) remoteForward(ctx context.Context, e *tunnelEntry, remote net.
 		defer wg.Done()
 		n, _ := io.Copy(remote, local)
 		e.bytesOut.Add(n)
-		_ = remote.Close()
+		closeWrite(remote)
 	}()
 
 	wg.Wait()
