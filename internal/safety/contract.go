@@ -96,6 +96,12 @@ func CheckAllowed(rp RemotePath, allowedPrefixes []string) error {
 	cleanedPath := path.Clean(rp.p)
 	for _, prefix := range allowedPrefixes {
 		cleanedPrefix := path.Clean(prefix)
+		// "/" allows everything. Without this special case the generic
+		// check below would test HasPrefix(path, "//"), which never matches,
+		// so explicitly allowing the root would instead deny every path.
+		if cleanedPrefix == "/" {
+			return nil
+		}
 		if cleanedPath == cleanedPrefix {
 			return nil
 		}
@@ -124,9 +130,11 @@ var (
 	reAWSKey = regexp.MustCompile(`(?:AKIA|ASIA)[0-9A-Z]{16}`)
 
 	// CLI flag forms that embed a password inline. SDD §5.9 calls these
-	// out specifically (mysql -p, sshpass -p). Match the flag + glued or
-	// space-separated value, capture flag with the equals/space.
-	reCLIFlagPwd = regexp.MustCompile(`(?:^|\s)(--password=|-p=?)\S+`)
+	// out specifically (mysql -p, sshpass -p). Long form matches glued
+	// (--password=x) and space-separated (--password x) values; short form
+	// only glued (-px / -p=x) — `-p value` is ambiguous (mysql -p dbname
+	// prompts and treats the operand as a database name, not a password).
+	reCLIFlagPwd = regexp.MustCompile(`(?:^|\s)(--password(?:=|\s+)|-p=?)\S+`)
 
 	// `sshpass -p VALUE` (space form, separate from above which also covers it).
 	reSshpass = regexp.MustCompile(`(?i)\bsshpass\s+-p\s+\S+`)

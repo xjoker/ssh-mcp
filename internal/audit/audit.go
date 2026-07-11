@@ -6,8 +6,10 @@ package audit
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -126,11 +128,33 @@ func New(dir string, retentionDays int) (*Logger, error) {
 		return nil, fmt.Errorf("audit: cannot chmod dir %s: %w", dir, err)
 	}
 
+	l := &Logger{
+		dir:           dir,
+		retentionDays: retentionDays,
+	}
+
 	// Retention: remove files older than retentionDays. SDD §9.5.
-	cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays)
-	entries, err := os.ReadDir(dir)
+	if err := l.enforceRetention(); err != nil {
+		return nil, err
+	}
+
+	if err := l.openCurrentFile(); err != nil {
+		return nil, err
+	}
+	return l, nil
+}
+
+// enforceRetention deletes audit files older than retentionDays. Runs at New
+// and again on each daily rotation so a long-running daemon keeps pruning
+// (previously cleanup only happened at startup and the directory grew
+// without bound). The cutoff is truncated to date granularity: a file from
+// exactly retentionDays ago is kept for the whole day, not deleted at the
+// wall-clock minute the daemon happened to start.
+func (l *Logger) enforceRetention() error {
+	cutoff := time.Now().UTC().AddDate(0, 0, -l.retentionDays).Truncate(24 * time.Hour)
+	entries, err := os.ReadDir(l.dir)
 	if err != nil {
-		return nil, fmt.Errorf("audit: cannot read dir %s: %w", dir, err)
+		return fmt.Errorf("audit: cannot read dir %s: %w", l.dir, err)
 	}
 	for _, de := range entries {
 		name := de.Name()
@@ -143,19 +167,10 @@ func New(dir string, retentionDays int) (*Logger, error) {
 			continue
 		}
 		if t.UTC().Before(cutoff) {
-			_ = os.Remove(filepath.Join(dir, name))
+			_ = os.Remove(filepath.Join(l.dir, name))
 		}
 	}
-
-	l := &Logger{
-		dir:           dir,
-		retentionDays: retentionDays,
-	}
-
-	if err := l.openCurrentFile(); err != nil {
-		return nil, err
-	}
-	return l, nil
+	return nil
 }
 
 // openCurrentFile opens (or creates) today's JSONL file.
@@ -208,11 +223,19 @@ func (l *Logger) Record(e Entry) error {
 		return fmt.Errorf("audit: logger is closed")
 	}
 
-	// Lazy date rotation: if UTC date changed, open a new file. SDD §9.5.
+	// Lazy date rotation: if UTC date changed, open a new file and prune
+	// expired files. SDD §9.5. Retention runs at most once per day here;
+	// a sweep failure must not block the write (fail-closed applies to
+	// recording, not pruning).
 	today := time.Now().UTC().Format(dateLayout)
 	if today != l.currentDate {
 		if err := l.openCurrentFile(); err != nil {
 			return fmt.Errorf("audit: rotate failed: %w", err)
+		}
+		if l.retentionDays > 0 {
+			if err := l.enforceRetention(); err != nil {
+				fmt.Fprintf(os.Stderr, "audit: retention sweep failed: %v\n", err)
+			}
 		}
 	}
 
@@ -336,7 +359,7 @@ func (l *Logger) Query(f Filter) ([]Entry, error) {
 			break
 		}
 		path := l.auditFilePath(date)
-		fileEntries, err := readFile(path, f)
+		fileEntries, err := readFile(path, f, limit)
 		if err != nil {
 			// File may not exist (e.g. no activity that day) — skip silently.
 			if os.IsNotExist(err) {
@@ -360,45 +383,89 @@ func (l *Logger) Query(f Filter) ([]Entry, error) {
 	return results, nil
 }
 
-// readFile reads every entry from a single JSONL file that matches the filter.
-// Entries are returned in file order (ascending timestamp).
-func readFile(path string, f Filter) ([]Entry, error) {
+// maxAuditLineBytes bounds a single JSONL line during Query. Lines beyond
+// this are skipped like malformed rows instead of aborting the whole query
+// (bufio.Scanner's ErrTooLong previously made one oversized row poison every
+// query forever). 8 MiB comfortably exceeds any configurable per-entry
+// output cap.
+const maxAuditLineBytes = 8 << 20
+
+// readFile reads entries from a single JSONL file that match the filter,
+// keeping only the LAST limit matches (entries are appended in ascending
+// time order, and Query wants the most recent). The sliding window bounds
+// memory on huge single-day files instead of loading every match. Entries
+// are returned in file order (ascending timestamp). limit <= 0 keeps all.
+func readFile(path string, f Filter, limit int) ([]Entry, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
 
-	scanner := bufio.NewScanner(file)
-	// 1 MiB buffer per SDD §9.6.
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
-
+	r := bufio.NewReaderSize(file, 64*1024)
 	var results []Entry
 	lineNo := 0
-	for scanner.Scan() {
-		lineNo++
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
+	for {
+		line, tooLong, rerr := readLineBounded(r, maxAuditLineBytes)
+		if rerr != nil && rerr != io.EOF {
+			return nil, rerr
 		}
-		var e Entry
-		if err := json.Unmarshal(line, &e); err != nil {
-			// Skip malformed lines (e.g. truncation from a kill -9) so a
-			// single bad row does not poison the entire query. Log to
-			// stderr for diagnostics.
-			fmt.Fprintf(os.Stderr, "audit: skip malformed JSONL at %s:%d: %v\n",
-				filepath.Base(path), lineNo, err)
-			continue
+		if len(line) > 0 || tooLong {
+			lineNo++
 		}
-		if !matchFilter(e, f) {
-			continue
+		switch {
+		case tooLong:
+			fmt.Fprintf(os.Stderr, "audit: skip oversized JSONL line at %s:%d (> %d bytes)\n",
+				filepath.Base(path), lineNo, maxAuditLineBytes)
+		case len(line) > 0:
+			var e Entry
+			if err := json.Unmarshal(line, &e); err != nil {
+				// Skip malformed lines (e.g. truncation from a kill -9) so a
+				// single bad row does not poison the entire query. Log to
+				// stderr for diagnostics.
+				fmt.Fprintf(os.Stderr, "audit: skip malformed JSONL at %s:%d: %v\n",
+					filepath.Base(path), lineNo, err)
+			} else if matchFilter(e, f) {
+				if limit > 0 && len(results) >= limit {
+					results = results[1:] // drop oldest; window stays bounded
+				}
+				results = append(results, e)
+			}
 		}
-		results = append(results, e)
+		if rerr == io.EOF {
+			return results, nil
+		}
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
+}
+
+// readLineBounded reads one newline-terminated line (without the newline)
+// from r. Lines longer than max are consumed to their end and reported as
+// tooLong with a nil payload. err is io.EOF at end of input.
+func readLineBounded(r *bufio.Reader, max int) (line []byte, tooLong bool, err error) {
+	for {
+		chunk, cerr := r.ReadSlice('\n')
+		if !tooLong {
+			line = append(line, chunk...)
+			if len(line) > max {
+				tooLong = true
+				line = nil
+			}
+		}
+		switch cerr {
+		case bufio.ErrBufferFull:
+			continue // keep consuming the same line
+		case nil:
+			if !tooLong {
+				line = bytes.TrimRight(line, "\r\n")
+			}
+			return line, tooLong, nil
+		default:
+			if !tooLong {
+				line = bytes.TrimRight(line, "\r\n")
+			}
+			return line, tooLong, cerr
+		}
 	}
-	return results, nil
 }
 
 // matchFilter returns true if e satisfies all predicates in f.

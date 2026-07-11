@@ -619,3 +619,33 @@ func TestRedactSecret_JWT(t *testing.T) {
 		t.Errorf("JWT not redacted: %q", got)
 	}
 }
+
+// TestCheckAllowed_RootPrefixAllowsEverything: explicitly allowing "/" must
+// permit all absolute paths (the generic prefix+"/" check tests for "//"
+// which never matches, so without the special case root-allow denied all).
+func TestCheckAllowed_RootPrefixAllowsEverything(t *testing.T) {
+	for _, p := range []string{"/", "/etc", "/var/log/syslog"} {
+		rp, err := ValidateRemotePath(p)
+		if err != nil {
+			t.Fatalf("ValidateRemotePath(%q): %v", p, err)
+		}
+		if err := CheckAllowed(rp, []string{"/"}); err != nil {
+			t.Errorf("CheckAllowed(%q, [\"/\"]) = %v, want nil", p, err)
+		}
+	}
+}
+
+// TestRedactSecret_CLIFlagSpaceSeparatedPassword: `--password secret` (space
+// form) must be redacted, not just `--password=secret`.
+func TestRedactSecret_CLIFlagSpaceSeparatedPassword(t *testing.T) {
+	in := "mysqldump --user root --password hunter2 mydb"
+	out := string(RedactSecret([]byte(in)))
+	if strings.Contains(out, "hunter2") {
+		t.Errorf("space-separated --password value leaked: %q", out)
+	}
+	// Glued short form still covered.
+	out2 := string(RedactSecret([]byte("mysql -phunter2 db")))
+	if strings.Contains(out2, "hunter2") {
+		t.Errorf("glued -p value leaked: %q", out2)
+	}
+}

@@ -1,6 +1,8 @@
 package audit
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -495,5 +497,88 @@ func TestRetention(t *testing.T) {
 
 	if _, statErr := os.Stat(oldFile); !os.IsNotExist(statErr) {
 		t.Errorf("old audit file was not deleted by retention cleanup")
+	}
+}
+
+// TestQuery_OversizedLineIsSkippedNotFatal: a single line larger than the
+// scanner budget must be skipped like a malformed row, not abort the query.
+func TestQuery_OversizedLineIsSkippedNotFatal(t *testing.T) {
+	dir := t.TempDir()
+	l, err := New(dir, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Record(Entry{Timestamp: time.Now().UTC(), SessionID: "s", Tool: "ssh_exec"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Append a >8MiB garbage line plus one more valid entry by hand.
+	path := filepath.Join(dir, filePrefix+time.Now().UTC().Format(dateLayout)+fileSuffix)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	huge := bytes.Repeat([]byte("x"), maxAuditLineBytes+1024)
+	if _, err := f.Write(append(huge, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	valid, _ := json.Marshal(Entry{Timestamp: time.Now().UTC(), SessionID: "s2", Tool: "ssh_exec"})
+	if _, err := f.Write(append(valid, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+
+	reader, err := NewReader(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := reader.Query(Filter{})
+	if err != nil {
+		t.Fatalf("Query with oversized line: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("got %d entries, want 2 (oversized line skipped, neighbours kept)", len(got))
+	}
+}
+
+// TestReadFile_LimitBoundsMemoryKeepsNewest: with many matches in one file,
+// readFile must return only the newest `limit` entries.
+func TestReadFile_LimitBoundsMemoryKeepsNewest(t *testing.T) {
+	dir := t.TempDir()
+	l, err := New(dir, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now().UTC().Add(-time.Hour)
+	for i := 0; i < 50; i++ {
+		if err := l.Record(Entry{
+			Timestamp: base.Add(time.Duration(i) * time.Second),
+			SessionID: "s", Tool: "ssh_exec",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reader, err := NewReader(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := reader.Query(Filter{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 10 {
+		t.Fatalf("got %d entries, want 10", len(got))
+	}
+	// Most recent first: the newest of the 50 must be present.
+	want := base.Add(49 * time.Second)
+	if !got[0].Timestamp.Equal(want) {
+		t.Errorf("newest entry = %v, want %v (window must keep the tail, not the head)", got[0].Timestamp, want)
 	}
 }
