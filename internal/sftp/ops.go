@@ -1,6 +1,7 @@
 package sftp
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -152,16 +153,33 @@ func (c *Client) Read(p safety.RemotePath, offset, length int64,
 // If atomic is true, data is written to a temp file in the same directory
 // and then renamed over the target. On rename failure the temp file is removed.
 // If progressCb is non-nil it is called periodically with (written, total).
+//
+// Write is a thin wrapper over WriteFrom for the common in-memory-buffer
+// case (e.g. sftp_op action=write, whose content arrives already decoded
+// in the MCP request). Streamed sources (e.g. sftp_upload reading a local
+// file) should call WriteFrom directly to avoid buffering the whole file.
 func (c *Client) Write(p safety.RemotePath, data []byte, mode os.FileMode,
 	atomic bool, progressCb func(written, total int64)) error {
 
-	if atomic {
-		return c.writeAtomic(p, data, mode, progressCb)
-	}
-	return c.writeDirect(p, data, mode, progressCb)
+	return c.WriteFrom(p, bytes.NewReader(data), int64(len(data)), mode, atomic, progressCb)
 }
 
-func (c *Client) writeDirect(p safety.RemotePath, data []byte, mode os.FileMode,
+// WriteFrom streams size bytes from r to path with the given mode.
+// If atomic is true, data is written to a temp file in the same directory
+// and then renamed over the target. On rename failure the temp file is removed.
+// If progressCb is non-nil it is called periodically with (written, total).
+// total in the progressCb callback is always size, mirroring Write's
+// len(data) total.
+func (c *Client) WriteFrom(p safety.RemotePath, r io.Reader, size int64, mode os.FileMode,
+	atomic bool, progressCb func(written, total int64)) error {
+
+	if atomic {
+		return c.writeAtomicFrom(p, r, size, mode, progressCb)
+	}
+	return c.writeDirectFrom(p, r, size, mode, progressCb)
+}
+
+func (c *Client) writeDirectFrom(p safety.RemotePath, r io.Reader, size int64, mode os.FileMode,
 	progressCb func(written, total int64)) error {
 
 	f, err := c.b.OpenFile(p.String(), os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
@@ -169,7 +187,7 @@ func (c *Client) writeDirect(p safety.RemotePath, data []byte, mode os.FileMode,
 		return fmt.Errorf("sftp: Write: open %q: %w", p, err)
 	}
 
-	werr := writeWithProgress(f, data, progressCb)
+	_, werr := copyWithProgress(f, r, size, progressCb)
 	cerr := f.Close()
 	if werr != nil {
 		return fmt.Errorf("sftp: Write: %w", werr)
@@ -198,7 +216,7 @@ func randHex8() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
-func (c *Client) writeAtomic(p safety.RemotePath, data []byte, mode os.FileMode,
+func (c *Client) writeAtomicFrom(p safety.RemotePath, r io.Reader, size int64, mode os.FileMode,
 	progressCb func(written, total int64)) error {
 
 	dir := path.Dir(p.String())
@@ -235,7 +253,7 @@ func (c *Client) writeAtomic(p safety.RemotePath, data []byte, mode os.FileMode,
 		// Otherwise retry with a different random name.
 	}
 
-	werr := writeWithProgress(f, data, progressCb)
+	_, werr := copyWithProgress(f, r, size, progressCb)
 	cerr := f.Close()
 	if werr != nil {
 		_ = c.b.Remove(tmpPath)
@@ -262,35 +280,51 @@ func (c *Client) writeAtomic(p safety.RemotePath, data []byte, mode os.FileMode,
 	return nil
 }
 
-// writeWithProgress writes data to f, calling progressCb every progressChunkSize bytes.
-func writeWithProgress(f sftpFile, data []byte, progressCb func(written, total int64)) error {
-	total := int64(len(data))
+// copyWithProgress streams r into f in readChunkSize-sized reads, calling
+// progressCb every progressChunkSize bytes written. It preserves the
+// resume-after-short-write semantics of the old slice-based loop: a partial
+// f.Write is retried with the remainder of the current read chunk before the
+// next Read call, rather than re-reading from r (which could reorder or
+// duplicate bytes for a non-seekable source).
+func copyWithProgress(f sftpFile, r io.Reader, total int64, progressCb func(written, total int64)) (int64, error) {
+	buf := make([]byte, readChunkSize)
 	var written int64
 	var sinceLastProgress int64
 
-	for len(data) > 0 {
-		chunk := data
-		if int64(len(chunk)) > readChunkSize {
-			chunk = data[:readChunkSize]
-		}
-		n, err := f.Write(chunk)
-		written += int64(n)
-		sinceLastProgress += int64(n)
-		data = data[n:]
+	for {
+		n, rerr := r.Read(buf)
+		if n > 0 {
+			chunk := buf[:n]
+			for len(chunk) > 0 {
+				wn, werr := f.Write(chunk)
+				written += int64(wn)
+				sinceLastProgress += int64(wn)
+				chunk = chunk[wn:]
 
-		if progressCb != nil && sinceLastProgress >= progressChunkSize {
-			progressCb(written, total)
-			sinceLastProgress = 0
+				if progressCb != nil && sinceLastProgress >= progressChunkSize {
+					progressCb(written, total)
+					sinceLastProgress = 0
+				}
+				if werr != nil {
+					return written, werr
+				}
+				if wn == 0 {
+					return written, io.ErrNoProgress
+				}
+			}
 		}
-		if err != nil {
-			return err
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return written, rerr
 		}
 	}
 
 	if progressCb != nil && written > 0 {
 		progressCb(written, total)
 	}
-	return nil
+	return written, nil
 }
 
 // Mkdir creates a directory at path with the given mode.
