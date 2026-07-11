@@ -24,7 +24,7 @@ Tools fall into two operational classes:
 | Class | Tools | Behavior contract |
 |-------|-------|-------------------|
 | **Read-only** | `list_servers`, `sftp_list`, `sftp_read`, `sftp_stat`, `audit_query` | Free to call without preface. Cheap, idempotent, no audit pre-record. |
-| **Destructive** (have remote effects) | `ssh_exec`, `ssh_group_exec`, `sftp_op`, `tunnel`, `session_*`, `ssh_quick_setup`, `ssh_persistent_setup` | **Always state the intended effect in plain language and wait for the user's MCP-level confirmation** (the host UI handles this — do not auto-approve). Each call is fail-closed audit-pre-recorded, so a mid-flight crash leaves a trail. |
+| **Destructive** (have remote effects) | `ssh_exec`, `ssh_group_exec`, `sftp_op`, `sftp_upload`, `tunnel`, `session_*`, `ssh_quick_setup`, `ssh_persistent_setup` | **Always state the intended effect in plain language and wait for the user's MCP-level confirmation** (the host UI handles this — do not auto-approve). Each call is fail-closed audit-pre-recorded, so a mid-flight crash leaves a trail. |
 | **Self-management** | `self_update` | Replaces the running binary atomically. After a successful update, inform the user that the MCP server process must be restarted. Use `check_only: true` first to inspect availability. |
 
 You will *not* see an `autoApprove` flag for these tools. The user's setup
@@ -50,9 +50,16 @@ Decision order (top wins):
    `session_close`. **Always close the session** even on failure.
 5. **File transfer / mkdir / rename / chmod**? → `sftp_op` for **small**
    payloads (mkdir, rename, chmod, tiny configs). Don't shell out for
-   these. For **large files** or **server-to-server** transfers, ask the
-   user to run one of the CLI commands instead (no JSON / base64 size
-   limit): `ssh-mcp upload <srv> <local> <remote>`, `ssh-mcp download`,
+   these. For **uploading a local file** of any size, prefer `sftp_upload`
+   over `sftp_op` — it streams straight from disk to the remote server
+   inside the MCP process (no base64/JSON size limit, bytes never enter
+   your context). It is disabled by default (`UPLOAD_DISABLED`) until the
+   user configures `settings.upload_local_allowed_paths` in `config.toml`
+   — this cannot be enabled through any tool call, so if you hit
+   `UPLOAD_DISABLED`, tell the user what to add and ask them to restart
+   `ssh-mcp`. For **server-to-server** transfers, or downloading a remote
+   file to the local machine, ask the user to run one of the CLI commands
+   instead: `ssh-mcp download <srv> <remote> <local>`,
    `ssh-mcp cp <src>:<path> <dst>:<path>` (no inter-server SSH trust
    needed), `ssh-mcp fetch <srv> <url> <remote>` (proxy through local
    when the remote can't reach the URL).
@@ -313,7 +320,7 @@ That paragraph is more useful than three more retries.
 
 ```
 SAFE-FIRST   list_servers, sftp_list, sftp_stat, sftp_read, audit_query
-DESTRUCTIVE  ssh_exec, ssh_group_exec, sftp_op, tunnel, session_*, ssh_quick_setup, ssh_persistent_setup
+DESTRUCTIVE  ssh_exec, ssh_group_exec, sftp_op, sftp_upload, tunnel, session_*, ssh_quick_setup, ssh_persistent_setup
 SELF-MGMT    self_update {check_only:true} to inspect; omit flag to install; restart required after
 PREFLIGHT    state intent → wait for confirm → summarize result
 DISCOVER     list_servers before guessing names

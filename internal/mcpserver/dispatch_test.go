@@ -75,7 +75,7 @@ func TestIsDestructive(t *testing.T) {
 	// ssh_persistent_setup writes credentials to disk that survive restart.
 	// Both MUST emit a pending audit record before the handler runs.
 	for _, name := range []string{
-		"ssh_exec", "ssh_group_exec", "sftp_op",
+		"ssh_exec", "ssh_group_exec", "sftp_op", "sftp_upload",
 		"session_send", "session_start", "session_close",
 		"tunnel", "ssh_quick_setup", "ssh_persistent_setup",
 		"self_update",

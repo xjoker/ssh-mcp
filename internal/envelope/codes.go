@@ -3,29 +3,35 @@ package envelope
 // Error codes — SDD §10.1. The complete authoritative set.
 // All packages MUST reference these constants rather than literal strings.
 const (
-	CodeInvalidArgument         = "INVALID_ARGUMENT"
-	CodeAuthFailed              = "AUTH_FAILED"
-	CodePermissionDenied        = "PERMISSION_DENIED"
-	CodeNotFound                = "NOT_FOUND"
-	CodeTimeout                 = "TIMEOUT"
-	CodeConflict                = "CONFLICT"
-	CodeRateLimited             = "RATE_LIMITED"
-	CodeInternalError           = "INTERNAL_ERROR"
-	CodeConnFailed              = "CONN_FAILED"
-	CodeSessionDead             = "SESSION_DEAD"
+	CodeInvalidArgument  = "INVALID_ARGUMENT"
+	CodeAuthFailed       = "AUTH_FAILED"
+	CodePermissionDenied = "PERMISSION_DENIED"
+	CodeNotFound         = "NOT_FOUND"
+	CodeTimeout          = "TIMEOUT"
+	CodeConflict         = "CONFLICT"
+	CodeRateLimited      = "RATE_LIMITED"
+	CodeInternalError    = "INTERNAL_ERROR"
+	CodeConnFailed       = "CONN_FAILED"
+	CodeSessionDead      = "SESSION_DEAD"
 	// CodeSessionBusy signals that a session_send arrived while the prior
 	// command's tail output was still draining. The session is still
 	// healthy — the caller may wait briefly and retry, or call session_close
 	// to abort the stuck command. Distinct from SESSION_DEAD (genuine shell
 	// EOF) so AIs and tooling can take different actions.
-	CodeSessionBusy             = "SESSION_BUSY"
-	CodeHostKeyUnknown          = "HOST_KEY_UNKNOWN"
-	CodeHostKeyMismatch         = "HOST_KEY_MISMATCH"
-	CodeSftpError               = "SFTP_ERROR"
-	CodeInlineCredsDisabled       = "INLINE_CREDS_DISABLED"     // #nosec G101 -- error code constant, not a credential
+	CodeSessionBusy               = "SESSION_BUSY"
+	CodeHostKeyUnknown            = "HOST_KEY_UNKNOWN"
+	CodeHostKeyMismatch           = "HOST_KEY_MISMATCH"
+	CodeSftpError                 = "SFTP_ERROR"
+	CodeInlineCredsDisabled       = "INLINE_CREDS_DISABLED"       // #nosec G101 -- error code constant, not a credential
 	CodePlaintextPasswordDisabled = "PLAINTEXT_PASSWORD_DISABLED" // #nosec G101 -- error code constant, not a credential
-	CodeUserDeclined            = "USER_DECLINED"
-	CodeAuditFailed             = "AUDIT_FAILED"
-	CodePartialFailure          = "PARTIAL_FAILURE"
-	CodeSessionLimit            = "SESSION_LIMIT"
+	CodeUserDeclined              = "USER_DECLINED"
+	CodeAuditFailed               = "AUDIT_FAILED"
+	CodePartialFailure            = "PARTIAL_FAILURE"
+	CodeSessionLimit              = "SESSION_LIMIT"
+	// CodeUploadDisabled signals that sftp_upload was called while
+	// settings.upload_local_allowed_paths is empty (the fail-closed
+	// default). Distinct from CodePermissionDenied (used once a
+	// local_path is rejected against a *non-empty* allow-list) so callers
+	// can tell "feature off" from "path not allowed" apart.
+	CodeUploadDisabled = "UPLOAD_DISABLED"
 )

@@ -130,6 +130,7 @@ func TestCodeConstants(t *testing.T) {
 		"CodeAuditFailed":               "AUDIT_FAILED",
 		"CodePartialFailure":            "PARTIAL_FAILURE",
 		"CodeSessionLimit":              "SESSION_LIMIT",
+		"CodeUploadDisabled":            "UPLOAD_DISABLED",
 	}
 
 	actual := map[string]string{
@@ -152,6 +153,7 @@ func TestCodeConstants(t *testing.T) {
 		"CodeAuditFailed":               CodeAuditFailed,
 		"CodePartialFailure":            CodePartialFailure,
 		"CodeSessionLimit":              CodeSessionLimit,
+		"CodeUploadDisabled":            CodeUploadDisabled,
 	}
 
 	if len(actual) != len(expected) {

@@ -1116,3 +1116,72 @@ auth = "agent"
 		t.Fatal("want duplicate-after-case-folding error, got nil")
 	}
 }
+
+// ---- Load: settings.upload_local_allowed_paths (sftp_upload, SDD design
+// docs/design/sftp-upload-tool.md §3.1) -------------------------------------
+
+// TestLoad_UploadLocalAllowedPaths_DefaultEmpty: absent from TOML → empty
+// slice, which is the fail-closed default that makes sftp_upload return
+// UPLOAD_DISABLED until an operator opts in by hand-editing config.toml.
+func TestLoad_UploadLocalAllowedPaths_DefaultEmpty(t *testing.T) {
+	cfg := mustLoad(t, `
+[servers.myserver]
+host = "example.com"
+user = "deploy"
+auth = "agent"
+`)
+	if len(cfg.Settings.UploadLocalAllowedPaths) != 0 {
+		t.Errorf("expected empty default, got %v", cfg.Settings.UploadLocalAllowedPaths)
+	}
+}
+
+func TestLoad_UploadLocalAllowedPaths_Absolute_OK(t *testing.T) {
+	cfg := mustLoad(t, `
+[settings]
+upload_local_allowed_paths = ["/Users/deploy/uploads", "/srv/staging"]
+
+[servers.myserver]
+host = "example.com"
+user = "deploy"
+auth = "agent"
+`)
+	if len(cfg.Settings.UploadLocalAllowedPaths) != 2 {
+		t.Errorf("expected 2 upload_local_allowed_paths, got %d", len(cfg.Settings.UploadLocalAllowedPaths))
+	}
+}
+
+func TestLoad_UploadLocalAllowedPaths_Relative_Error(t *testing.T) {
+	mustFail(t, `
+[settings]
+upload_local_allowed_paths = ["relative/path"]
+
+[servers.myserver]
+host = "example.com"
+user = "deploy"
+auth = "agent"
+`, "upload_local_allowed_paths")
+}
+
+func TestLoad_UploadLocalAllowedPaths_DotDot_Error(t *testing.T) {
+	mustFail(t, `
+[settings]
+upload_local_allowed_paths = ["/srv/../etc"]
+
+[servers.myserver]
+host = "example.com"
+user = "deploy"
+auth = "agent"
+`, "must not contain '..'")
+}
+
+func TestLoad_UploadLocalAllowedPaths_NotClean_Error(t *testing.T) {
+	mustFail(t, `
+[settings]
+upload_local_allowed_paths = ["/srv/uploads/"]
+
+[servers.myserver]
+host = "example.com"
+user = "deploy"
+auth = "agent"
+`, "is not clean")
+}

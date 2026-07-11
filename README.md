@@ -213,17 +213,19 @@ Repeated `ssh_quick_setup` calls for the same `host+port+user` already dedup int
 
 | Tool | Description |
 |------|-------------|
-| `sftp_op` | Upload, download, mkdir, delete, move, copy, symlink, stat, realpath. Small payloads only (base64 / JSON-bounded — use the CLI commands below for large files). The `realpath` operation is subject to `allowed_paths` enforcement — it cannot be used to probe paths outside the configured allow-list. |
+| `sftp_op` | Upload, download, mkdir, delete, move, copy, symlink, stat, realpath. Small payloads only (base64 / JSON-bounded — use `sftp_upload` or the CLI commands below for large files). The `realpath` operation is subject to `allowed_paths` enforcement — it cannot be used to probe paths outside the configured allow-list. |
+| `sftp_upload` ⚠️ | Upload a local file of **any size** to a remote server — streams straight from disk through the MCP process (no base64/JSON overhead, no size limit). **Disabled by default**: requires `settings.upload_local_allowed_paths` (absolute local directory prefixes) in `config.toml`; empty list → every call returns `UPLOAD_DISABLED`. Cannot be enabled via any MCP tool — hand-edit `config.toml` and restart. See [SECURITY.md](SECURITY.md) for the full threat model. Tier 3 — never wildcard-allow. |
 | `sftp_list` | List a remote directory with metadata. |
 | `sftp_read` | Read a remote file with byte-offset support (tail / seek). |
 | `sftp_stat` | Stat a single remote path. |
 
-For **large files** and **server-to-server** transfers use the CLI (no
-size limit, streams directly via SFTP — no base64):
+For **server-to-server** transfers, downloading a remote file locally, or
+fetching a URL through the remote host, use the CLI (no size limit, streams
+directly via SFTP — no base64):
 
 | Command | Purpose |
 |---------|---------|
-| `ssh-mcp upload <server> <local> <remote>` | Local → server. |
+| `ssh-mcp upload <server> <local> <remote>` | Local → server (also available as the `sftp_upload` MCP tool above). |
 | `ssh-mcp download <server> <remote> <local>` | Server → local. |
 | `ssh-mcp cp <src_srv>:<path> <dst_srv>:<path>` | Server ↔ server via local pipe (no SSH inter-trust needed). |
 | `ssh-mcp fetch <server> <url> <remote>` | HTTP GET on the local host, stream to remote. Useful when the remote can't reach the URL (GFW, egress restrictions). |
@@ -411,6 +413,13 @@ key_path = "~/.ssh/id_ed25519"
 proxy_jump = "bastion"
 ```
 
+Enable `sftp_upload` (disabled by default — see [SECURITY.md](SECURITY.md)):
+
+```toml
+[settings]
+upload_local_allowed_paths = ["/Users/alice/deploy-artifacts"]  # absolute paths only; not $HOME
+```
+
 Full example: [`examples/config.toml`](examples/config.toml)
 
 ---
@@ -452,6 +461,7 @@ ssh-mcp install claude-desktop  # print JSON snippet
 | `HOST_KEY_UNKNOWN` | `ssh-mcp trust <name>` |
 | `unable to authenticate` (password) | `ssh-mcp auth set ssh-password:<name>` |
 | `SESSION_LIMIT` | Close idle sessions or raise `settings.max_sessions` in config |
+| `UPLOAD_DISABLED` (from `sftp_upload`) | Set `settings.upload_local_allowed_paths` in `config.toml` and restart `ssh-mcp` |
 | Bridge not appearing in AI client | Restart the AI client after `mcp add` |
 | `config: no such file` | `ssh-mcp config init` |
 

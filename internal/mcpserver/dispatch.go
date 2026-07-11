@@ -28,6 +28,7 @@ var destructiveTools = map[string]struct{}{
 	"ssh_exec":             {},
 	"ssh_group_exec":       {},
 	"sftp_op":              {},
+	"sftp_upload":          {},
 	"session_send":         {},
 	"session_start":        {},
 	"session_close":        {},

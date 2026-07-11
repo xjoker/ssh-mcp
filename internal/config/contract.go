@@ -6,16 +6,16 @@ package config
 
 // Settings holds global configuration options. SDD §5.2.
 type Settings struct {
-	AllowConfigPlaintextPassword bool     `toml:"allow_config_plaintext_password"`
-	AllowInlineCredentials       bool     `toml:"allow_inline_credentials"`
-	DefaultTimeoutMs             int      `toml:"default_timeout_ms"`
-	MaxTimeoutMs                 int      `toml:"max_timeout_ms"`
-	OutputMaxBytes               int      `toml:"output_max_bytes"`
-	SftpProgressThresholdBytes   int      `toml:"sftp_progress_threshold_bytes"`
-	SessionIdleSeconds           int      `toml:"session_idle_seconds"`
-	MaxSessions                  int      `toml:"max_sessions"`
-	ConnIdleSeconds              int      `toml:"conn_idle_seconds"`
-	AuditRetentionDays           int      `toml:"audit_retention_days"`
+	AllowConfigPlaintextPassword bool `toml:"allow_config_plaintext_password"`
+	AllowInlineCredentials       bool `toml:"allow_inline_credentials"`
+	DefaultTimeoutMs             int  `toml:"default_timeout_ms"`
+	MaxTimeoutMs                 int  `toml:"max_timeout_ms"`
+	OutputMaxBytes               int  `toml:"output_max_bytes"`
+	SftpProgressThresholdBytes   int  `toml:"sftp_progress_threshold_bytes"`
+	SessionIdleSeconds           int  `toml:"session_idle_seconds"`
+	MaxSessions                  int  `toml:"max_sessions"`
+	ConnIdleSeconds              int  `toml:"conn_idle_seconds"`
+	AuditRetentionDays           int  `toml:"audit_retention_days"`
 	// AuditRecordOutput controls whether stdout/stderr of executed commands
 	// is written to audit log entries. Default true. Disable to keep audit
 	// payloads minimal (metadata only).
@@ -26,6 +26,15 @@ type Settings struct {
 	// 32 KiB.
 	AuditOutputMaxBytes int      `toml:"audit_output_max_bytes"`
 	WeakAlgorithmsOptIn []string `toml:"weak_algorithms_opt_in"`
+	// UploadLocalAllowedPaths gates the sftp_upload tool (SDD design
+	// docs/design/sftp-upload-tool.md §3.1): absolute local filesystem path
+	// prefixes an AI is allowed to read from disk and stream to a remote
+	// server. Fail-closed default: empty, meaning sftp_upload is registered
+	// but every call returns UPLOAD_DISABLED until an operator hand-edits
+	// config.toml to opt in (this list cannot be populated via any MCP
+	// tool). Same Rule 11 validation as ServerConfig.AllowedPaths (absolute,
+	// no "..", clean).
+	UploadLocalAllowedPaths []string `toml:"upload_local_allowed_paths"`
 }
 
 // CredRef is a parsed credential reference. See SDD §5.2 / §7.4.
@@ -49,7 +58,7 @@ type CredRef struct {
 type CredRefKind int
 
 const (
-	CredRefNone      CredRefKind = iota
+	CredRefNone CredRefKind = iota
 	CredRefKeychain
 	CredRefEnv
 	CredRefPlaintext
@@ -61,16 +70,16 @@ func (c CredRef) IsZero() bool { return c.Kind == CredRefNone }
 // ServerConfig holds per-server configuration. SDD §5.2.
 type ServerConfig struct {
 	Name          string
-	Host          string   `toml:"host"`
-	Port          int      `toml:"port"`
-	User          string   `toml:"user"`
-	Auth          string   `toml:"auth"`
-	KeyPath       string   `toml:"key_path"`
-	KeyPassphrase CredRef  `toml:"key_passphrase"`
-	Password      CredRef  `toml:"password"`
-	DefaultDir    string   `toml:"default_dir"`
-	Description   string   `toml:"description"`
-	ProxyJump     string   `toml:"proxy_jump"`
+	Host          string  `toml:"host"`
+	Port          int     `toml:"port"`
+	User          string  `toml:"user"`
+	Auth          string  `toml:"auth"`
+	KeyPath       string  `toml:"key_path"`
+	KeyPassphrase CredRef `toml:"key_passphrase"`
+	Password      CredRef `toml:"password"`
+	DefaultDir    string  `toml:"default_dir"`
+	Description   string  `toml:"description"`
+	ProxyJump     string  `toml:"proxy_jump"`
 	// ProxyChain lists named proxy entries (from [proxies.<name>] tables) that
 	// form an ordered tunnel chain to reach this server. Mutually exclusive with
 	// ProxyJump. SDD §12.4-bis (proxy chain).

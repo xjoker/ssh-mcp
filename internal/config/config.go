@@ -66,6 +66,7 @@ type rawSettings struct {
 	AuditRecordOutput            *bool    `toml:"audit_record_output"`
 	AuditOutputMaxBytes          *int     `toml:"audit_output_max_bytes"`
 	WeakAlgorithmsOptIn          []string `toml:"weak_algorithms_opt_in"`
+	UploadLocalAllowedPaths      []string `toml:"upload_local_allowed_paths"`
 }
 
 type rawTopLevel struct {
@@ -123,6 +124,7 @@ func Load(path string) (*Config, error) {
 		AuditRecordOutput:            boolVal(rs.AuditRecordOutput, true),
 		AuditOutputMaxBytes:          intVal(rs.AuditOutputMaxBytes, 32*1024),
 		WeakAlgorithmsOptIn:          rs.WeakAlgorithmsOptIn,
+		UploadLocalAllowedPaths:      rs.UploadLocalAllowedPaths,
 	}
 
 	// configDir is the directory of the loaded config file; relative paths
@@ -201,6 +203,22 @@ func validate(cfg *Config) error {
 	}
 	if cfg.Settings.AuditRetentionDays <= 0 {
 		errs = append(errs, "settings.audit_retention_days must be positive")
+	}
+
+	// settings.upload_local_allowed_paths gates sftp_upload — same Rule 11
+	// shape as ServerConfig.AllowedPaths (absolute, no "..", clean).
+	for _, p := range cfg.Settings.UploadLocalAllowedPaths {
+		if !strings.HasPrefix(p, "/") {
+			errs = append(errs, fmt.Sprintf("settings.upload_local_allowed_paths entry %q must be an absolute path", p))
+			continue
+		}
+		if strings.Contains(p, "..") {
+			errs = append(errs, fmt.Sprintf("settings.upload_local_allowed_paths entry %q must not contain '..'", p))
+			continue
+		}
+		if cleaned := path.Clean(p); cleaned != p {
+			errs = append(errs, fmt.Sprintf("settings.upload_local_allowed_paths entry %q is not clean (expected %q)", p, cleaned))
+		}
 	}
 
 	for name, srv := range cfg.Servers {
