@@ -150,12 +150,10 @@ func Download(ctx context.Context, rel *Release, destPath string) error {
 	}
 	tmpPath := filepath.Join(dir, fmt.Sprintf(".ssh-mcp-update-%s-%x", rel.Version, rnd))
 
-	// Tighten file mode to 0700 (user rwx, group/other none). The binary will
-	// be executed by the user only; ssh-mcp installs are per-user (~/.local/bin
-	// on POSIX, %LOCALAPPDATA%\Programs on Windows), so granting read/execute
-	// to group/other has no legitimate need and widens the attack surface
-	// during the brief temp-file window before atomic rename.
-	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o700) // #nosec G302 -- 0700 is the tightened permission, not the wide one gosec assumes
+	// Create the temp file non-executable (0600). The execute bit is only
+	// granted after the SHA-256 check passes, so a partially-downloaded or
+	// tampered binary is never executable on disk (TOCTOU hardening).
+	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
 	if err != nil {
 		return fmt.Errorf("updater: create temp file: %w", err)
 	}
@@ -203,6 +201,12 @@ func Download(ctx context.Context, rel *Release, destPath string) error {
 	got := hex.EncodeToString(h.Sum(nil))
 	if got != rel.SHA256 {
 		return fmt.Errorf("updater: SHA-256 mismatch (want %s, got %s)", rel.SHA256, got)
+	}
+
+	// Checksum verified — now grant execute (user-only; installs are per-user,
+	// group/other have no legitimate need).
+	if err := os.Chmod(tmpPath, 0o700); err != nil { // #nosec G302 -- 0700 is the tightened permission, not the wide one gosec assumes
+		return fmt.Errorf("updater: chmod verified binary: %w", err)
 	}
 
 	// Atomic rename — after this point the temp file is "owned" by the rename.

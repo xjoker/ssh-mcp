@@ -18,6 +18,12 @@ import (
 type pooledEntry struct {
 	client   *Client
 	lastUsed time.Time
+	// evicted marks an entry that has been (or is being) removed from
+	// Pool.entries. A goroutine that acquires mu and finds evicted=true must
+	// not reuse the entry — it re-fetches from the map instead. This prevents
+	// a Get racing with eviction from storing a fresh connection into an
+	// orphaned entry, which would leak the connection.
+	evicted bool
 	// mu serialises concurrent dials for the same server.
 	mu sync.Mutex
 }
@@ -204,6 +210,7 @@ func (p *Pool) evictByName(name string) {
 		entry.mu.Lock()
 		client := entry.client
 		entry.client = nil
+		entry.evicted = true
 		entry.mu.Unlock()
 		if client != nil {
 			_ = client.Close()
@@ -253,17 +260,9 @@ func (p *Pool) getInternal(ctx context.Context, name string, visited map[string]
 		return nil, fmt.Errorf("ssh: server %q not found in config", name)
 	}
 
-	// Fetch or create the pool entry (without locking the inner mutex yet).
-	p.mu.Lock()
-	entry, exists := p.entries[name]
-	if !exists {
-		entry = &pooledEntry{}
-		p.entries[name] = entry
-	}
-	p.mu.Unlock()
-
-	// Serialise dials for this specific server.
-	entry.mu.Lock()
+	// Fetch (or create) the pool entry and lock it. Serialises dials for this
+	// specific server; skips entries that were evicted while we waited.
+	entry := p.lockLiveEntry(name)
 	defer entry.mu.Unlock()
 
 	// Check again under the per-entry lock (another goroutine may have dialled).
@@ -323,33 +322,73 @@ func (p *Pool) GetAdHoc(ctx context.Context, params AdHocParams) (*Client, error
 	return newClient(inner, label), nil
 }
 
+// lockLiveEntry returns the pooled entry for name with entry.mu held,
+// creating it if absent. If the fetched entry was evicted while we waited on
+// its lock, it is discarded and the map is consulted again, so the caller
+// always operates on an entry that is (still) reachable from p.entries.
+// The caller must release entry.mu.
+//
+// Lock discipline: p.mu and entry.mu are never held at the same time by any
+// code path in this file. lastUsed is initialised at creation time so a
+// concurrent CloseIdle never mistakes a brand-new entry for an idle one.
+func (p *Pool) lockLiveEntry(name string) *pooledEntry {
+	for {
+		p.mu.Lock()
+		entry, exists := p.entries[name]
+		if !exists {
+			entry = &pooledEntry{lastUsed: time.Now()}
+			p.entries[name] = entry
+		}
+		p.mu.Unlock()
+
+		entry.mu.Lock()
+		if !entry.evicted {
+			return entry
+		}
+		entry.mu.Unlock()
+	}
+}
+
 // CloseIdle closes and removes pool entries whose lastUsed time is older than threshold.
 //
-// Lock order: p.mu MUST be acquired before entry.mu. All call sites that take
-// both locks (CloseIdle, Close) follow this order; getInternal releases p.mu
-// before taking entry.mu. Reversing the order risks deadlock.
+// It never blocks on a busy entry: entries whose mu is held (mid-dial or
+// being handed out by Get) are by definition not idle and are skipped via
+// TryLock. p.mu is only held for the map snapshot/delete, never across
+// entry.mu, so a slow dial cannot stall Get calls for other servers.
 func (p *Pool) CloseIdle(threshold time.Duration) {
 	cutoff := time.Now().Add(-threshold)
 
 	p.mu.Lock()
-	var toClose []*Client
+	snapshot := make(map[string]*pooledEntry, len(p.entries))
 	for name, entry := range p.entries {
-		// Lock the entry to read lastUsed safely (lock order: p.mu → entry.mu).
-		entry.mu.Lock()
-		if entry.lastUsed.Before(cutoff) {
-			client := entry.client
-			entry.client = nil
-			delete(p.entries, name)
-			if client != nil {
-				toClose = append(toClose, client)
-			}
-		}
-		entry.mu.Unlock()
+		snapshot[name] = entry
 	}
 	p.mu.Unlock()
 
-	for _, client := range toClose {
-		_ = client.Close()
+	for name, entry := range snapshot {
+		if !entry.mu.TryLock() {
+			continue // in use right now — not idle
+		}
+		if entry.evicted || !entry.lastUsed.Before(cutoff) {
+			entry.mu.Unlock()
+			continue
+		}
+		client := entry.client
+		entry.client = nil
+		entry.evicted = true
+		entry.mu.Unlock()
+
+		p.mu.Lock()
+		// Only delete if the map still points at the entry we marked; it may
+		// have been replaced by a concurrent evict+Get cycle.
+		if p.entries[name] == entry {
+			delete(p.entries, name)
+		}
+		p.mu.Unlock()
+
+		if client != nil {
+			_ = client.Close()
+		}
 	}
 }
 
@@ -365,6 +404,7 @@ func (p *Pool) Close() error {
 		entry.mu.Lock()
 		client := entry.client
 		entry.client = nil
+		entry.evicted = true
 		entry.mu.Unlock()
 		if client != nil {
 			if err := client.Close(); err != nil {
