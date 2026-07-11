@@ -86,9 +86,9 @@ func (p *Pool) buildChainWrappers(
 	wrappers := make([]proxy.Wrapper, 0, len(srv.ProxyChain))
 	for _, name := range srv.ProxyChain {
 		lk := strings.ToLower(name)
-		pc, ok := p.cfg.Proxies[lk]
+		pc, ok := p.lookupProxy(lk)
 		if !ok {
-			return nil, fmt.Errorf("server %q: unknown proxy %q in proxy_chain (no matching [proxies.%s] table)", srv.Name, name, lk)
+			return nil, fmt.Errorf("server %q: unknown proxy %q in proxy_chain (no matching [proxies.%s] table); if it was just added to config.toml, run list_servers with refresh=true", srv.Name, name, lk)
 		}
 		w, err := p.buildProxyWrapper(ctx, pc, allowPlain, visited)
 		if err != nil {

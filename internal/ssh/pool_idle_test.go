@@ -122,3 +122,34 @@ func TestGet_RetriesWhenEntryEvictedWhileWaiting(t *testing.T) {
 		entry.mu.Unlock()
 	}
 }
+
+// TestReloadProxies_MakesNewProxyResolvable: a [proxies.X] table added after
+// pool construction must become resolvable via ReloadProxies without an MCP
+// restart (previously cfg.Proxies was a boot-time snapshot forever).
+func TestReloadProxies_MakesNewProxyResolvable(t *testing.T) {
+	srv := config.ServerConfig{
+		Name: "srv", Host: "1.1.1.1", Port: 22, User: "u",
+		Auth: "password", ProxyChain: []string{"hop"},
+	}
+	p := NewPool(&config.Config{
+		Settings: config.Settings{},
+		Servers:  map[string]config.ServerConfig{"srv": srv},
+		Proxies:  map[string]config.ProxyConfig{}, // boot-time: no proxies
+	}, &fakeResolver{})
+
+	if _, err := p.buildChainWrappers(context.Background(), srv, nil); err == nil {
+		t.Fatal("want unknown-proxy error before reload, got nil")
+	}
+
+	p.ReloadProxies(map[string]config.ProxyConfig{
+		"hop": {Name: "hop", Type: "http", Host: "127.0.0.1", Port: 8080},
+	})
+
+	wrappers, err := p.buildChainWrappers(context.Background(), srv, nil)
+	if err != nil {
+		t.Fatalf("after ReloadProxies: %v", err)
+	}
+	if len(wrappers) != 1 {
+		t.Fatalf("wrappers = %d, want 1", len(wrappers))
+	}
+}

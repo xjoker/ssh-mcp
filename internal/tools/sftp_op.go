@@ -329,38 +329,48 @@ func sftpOpMkdir(a sftpOpArgs, rp safety.RemotePath, sc *internalsftp.Client) en
 // action: remove
 // --------------------------------------------------------------------------
 
+// sftpRemoveEnumMax caps the reporting enumeration for remove/dry-run,
+// aligned with sftp_list's hard ceiling. The actual deletion streams through
+// pkg/sftp RemoveAll and is unaffected; only the returned path list is
+// clipped — without a cap, dry-running (or removing) a huge tree such as
+// node_modules would buffer every path in memory and in the MCP response.
+const sftpRemoveEnumMax = 10000
+
 func sftpOpRemove(a sftpOpArgs, rp safety.RemotePath, sc *internalsftp.Client) envelope.Response {
 	if a.DryRun {
 		// Enumerate what would be removed without actually removing anything.
-		removed, enumErr := enumerateForRemove(sc, rp, a.Recursive)
+		removed, truncated, enumErr := enumerateForRemove(sc, rp, a.Recursive)
 		if enumErr != nil {
 			return mapSFTPErr(enumErr)
 		}
 		return envelope.OK(map[string]any{
-			"removed": removed,
-			"dry_run": true,
+			"removed":           removed,
+			"removed_truncated": truncated,
+			"dry_run":           true,
 		})
 	}
 
 	// Collect paths before removal for reporting.
-	removed, _ := enumerateForRemove(sc, rp, a.Recursive)
+	removed, truncated, _ := enumerateForRemove(sc, rp, a.Recursive)
 
 	if err := sc.Remove(rp, a.Recursive); err != nil {
 		return mapSFTPErr(err)
 	}
 	return envelope.OK(map[string]any{
-		"removed": removed,
-		"dry_run": false,
+		"removed":           removed,
+		"removed_truncated": truncated,
+		"dry_run":           false,
 	})
 }
 
-// enumerateForRemove returns the list of paths that would be affected.
-func enumerateForRemove(sc *internalsftp.Client, rp safety.RemotePath, recursive bool) ([]string, error) {
+// enumerateForRemove returns the list of paths that would be affected,
+// clipped at sftpRemoveEnumMax entries (truncated=true when clipped).
+func enumerateForRemove(sc *internalsftp.Client, rp safety.RemotePath, recursive bool) ([]string, bool, error) {
 	// Start with the root path.
 	paths := []string{rp.String()}
 
 	if !recursive {
-		return paths, nil
+		return paths, false, nil
 	}
 
 	// BFS to collect all children.
@@ -375,6 +385,9 @@ func enumerateForRemove(sc *internalsftp.Client, rp safety.RemotePath, recursive
 			continue
 		}
 		for _, e := range entries {
+			if len(paths) >= sftpRemoveEnumMax {
+				return paths, true, nil
+			}
 			paths = append(paths, e.Path)
 			if e.IsDir {
 				childRP, pathErr := safety.ValidateRemotePath(e.Path)
@@ -384,7 +397,7 @@ func enumerateForRemove(sc *internalsftp.Client, rp safety.RemotePath, recursive
 			}
 		}
 	}
-	return paths, nil
+	return paths, false, nil
 }
 
 // --------------------------------------------------------------------------

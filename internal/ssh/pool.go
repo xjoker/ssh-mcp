@@ -62,6 +62,15 @@ type Pool struct {
 	tempMu      sync.RWMutex
 	tempServers map[string]tempEntry
 
+	// proxyMu guards proxies, the hot-reloaded snapshot of [proxies.*]
+	// tables installed by ReloadProxies (list_servers refresh). When non-nil
+	// it replaces cfg.Proxies for proxy-chain lookups, so editing
+	// config.toml to add a proxy no longer requires an MCP restart. The
+	// static cfg.Proxies map itself is never mutated (it is read without a
+	// lock elsewhere).
+	proxyMu sync.RWMutex
+	proxies map[string]config.ProxyConfig
+
 	// dialer is an internal hook for testing: it replaces the real SSH dial.
 	dialer dialerFunc
 }
@@ -130,6 +139,33 @@ func NewPool(cfg *config.Config, resolver CredResolver) *Pool {
 		tempServers: make(map[string]tempEntry),
 		dialer:      realDialer,
 	}
+}
+
+// ReloadProxies installs a fresh snapshot of the [proxies.*] tables (keyed
+// by lowercase name, as produced by config.Load). Subsequent proxy-chain
+// dials resolve against this snapshot; proxies removed from the new map
+// disappear. Pass the Proxies map of a freshly-loaded config.
+func (p *Pool) ReloadProxies(proxies map[string]config.ProxyConfig) {
+	p.proxyMu.Lock()
+	p.proxies = proxies
+	p.proxyMu.Unlock()
+}
+
+// lookupProxy resolves a proxy name against the hot-reloaded snapshot when
+// one has been installed, falling back to the boot-time cfg.Proxies.
+func (p *Pool) lookupProxy(name string) (config.ProxyConfig, bool) {
+	p.proxyMu.RLock()
+	snap := p.proxies
+	p.proxyMu.RUnlock()
+	if snap != nil {
+		pc, ok := snap[name]
+		return pc, ok
+	}
+	if p.cfg == nil {
+		return config.ProxyConfig{}, false
+	}
+	pc, ok := p.cfg.Proxies[name]
+	return pc, ok
 }
 
 // LookupTempServer returns the ServerConfig for a previously-registered

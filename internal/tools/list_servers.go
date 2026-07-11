@@ -108,6 +108,9 @@ func handleListServers(_ context.Context, deps *Deps, args json.RawMessage) enve
 		if reloaded, err := config.Load(deps.Cfg.Path); err == nil && reloaded != nil {
 			effective = reloaded.Servers
 			if deps.Pool != nil {
+				// Hot-reload [proxies.*] too: newly added proxy tables become
+				// resolvable by proxy_chain dials without an MCP restart.
+				deps.Pool.ReloadProxies(reloaded.Proxies)
 				// Inject every fresh on-disk entry as a zero-expiry
 				// temp-server. Pool's temp-server map shadows cfg.Servers,
 				// so this makes additions and edits immediately resolvable.

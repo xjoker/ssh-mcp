@@ -430,7 +430,12 @@ func mapSSHConnErr(err error) envelope.Response {
 	case strings.Contains(msg, "HOST_KEY_MISMATCH"):
 		return envelope.Err(envelope.CodeHostKeyMismatch, msg, false)
 	case strings.Contains(msg, "HOST_KEY_UNKNOWN"):
-		return envelope.Err(envelope.CodeHostKeyUnknown, msg, false)
+		// First contact with a new host always lands here (there is no TOFU
+		// flag on the MCP tool path by design — v0.0.5 removed it). Give the
+		// operator the exact next step instead of a bare error.
+		return envelope.ErrWithHint(envelope.CodeHostKeyUnknown, msg,
+			"First connection to an unknown host. Ask the user to run `ssh-mcp trust <host>[:port]` on this machine to inspect and pin the host key fingerprint, then retry.",
+			false)
 	case strings.Contains(msg, "unable to authenticate"),
 		strings.Contains(msg, "Authentication failed"),
 		strings.Contains(msg, "auth failed"),
