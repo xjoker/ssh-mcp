@@ -12,9 +12,9 @@ import (
 func TestServerNew_AuditDirWritable(t *testing.T) {
 	cfg := &config.Config{
 		Settings: config.Settings{
-			AuditRetentionDays:  90,
-			SessionIdleSeconds:  3600,
-			ConnIdleSeconds:     600,
+			AuditRetentionDays:           90,
+			SessionIdleSeconds:           3600,
+			ConnIdleSeconds:              600,
 			AllowConfigPlaintextPassword: false,
 		},
 		Servers: map[string]config.ServerConfig{},

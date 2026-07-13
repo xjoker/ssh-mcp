@@ -600,7 +600,7 @@ func ModernHostKeyAlgorithms() []string {
 // Rules (SDD §5.5):
 //   - dir == "" → raw = cmd (no cd prefix)
 //   - dir != "" and not absolute → error
-//   - dir is single-quoted with internal ' escaped as '\''
+//   - dir is single-quoted with internal ' escaped as '\”
 //   - cmd is passed through verbatim (the LLM may write arbitrary shell pipelines)
 func NewRemoteCommand(cmd string, dir string) (RemoteCommand, error) {
 	if dir == "" {

@@ -220,7 +220,7 @@ func TestHandleSSHQuickSetup_AcceptNewHostIgnoredByPolicy(t *testing.T) {
 // accept_new_host results in AcceptNewHost=false (the safe default).
 func TestHandleSSHQuickSetup_AcceptNewHostDefaultFalse(t *testing.T) {
 	cfg := &config.Config{
-		Servers:  map[string]config.ServerConfig{},
+		Servers: map[string]config.ServerConfig{},
 	}
 	qs := &fakeQuickSetup{}
 	pool := ssh.NewPool(cfg, nil)
@@ -265,4 +265,3 @@ func TestHandleSSHQuickSetup_TTLBoundaryAllowed(t *testing.T) {
 		t.Errorf("expected TTLMinutes=240, got %d", qs.registered[0].spec.TTLMinutes)
 	}
 }
-

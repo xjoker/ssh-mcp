@@ -25,7 +25,7 @@ type fakeShell struct {
 	stderrR *io.PipeReader
 	stderrW *io.PipeWriter
 
-	closed bool
+	closed  bool
 	closeMu sync.Mutex
 }
 
@@ -685,7 +685,7 @@ func TestSendToClosedSession(t *testing.T) {
 // exceeding sessionOutputMaxBytes before writing the sentinel line.
 // This is used to verify the per-Send output cap.
 type bigOutputTransport struct {
-	sh        *fakeShell
+	sh         *fakeShell
 	extraBytes int // bytes of payload to write before the sentinel
 }
 
@@ -995,8 +995,8 @@ func TestReadBoundedLine_Cases(t *testing.T) {
 // (no newline until the very end, after the sentinel) to test that
 // readBoundedLine prevents OOM before the newline arrives.
 type longLineTransport struct {
-	sh         *fakeShell
-	lineBytes  int // how many bytes to write before the sentinel (no internal newlines)
+	sh        *fakeShell
+	lineBytes int // how many bytes to write before the sentinel (no internal newlines)
 }
 
 func (lt *longLineTransport) OpenShell(_ context.Context, _ string) (

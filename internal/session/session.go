@@ -42,10 +42,10 @@ type Transport interface {
 	// stderr is merged into stdout (standard PTY behaviour).
 	// cols and rows set the terminal dimensions (0 defaults to 220×50).
 	OpenShellPTY(ctx context.Context, server string, cols, rows uint32) (
-		stdin  io.WriteCloser,
+		stdin io.WriteCloser,
 		stdout io.Reader,
-		close  func() error,
-		err    error,
+		close func() error,
+		err error,
 	)
 }
 
@@ -141,7 +141,7 @@ type session struct {
 	// PTY mode — only set when opened via StartPTY.
 	isPTY     bool
 	ptyStop   chan struct{} // closed by Close() to signal ptyReadLoop exit
-	ptyChunks chan []byte  // raw output chunks from ptyReadLoop; closed on loop exit
+	ptyChunks chan []byte   // raw output chunks from ptyReadLoop; closed on loop exit
 }
 
 // pumpedLine carries one stdout line plus a flag indicating whether the

@@ -307,16 +307,16 @@ func migratePasswordsCmd(_ []string) int {
 
 	// Decode into the same rawTopLevel structure used by config.Load.
 	type rawServerCfg struct {
-		Host          string `toml:"host"`
-		Port          int    `toml:"port"`
-		User          string `toml:"user"`
-		Auth          string `toml:"auth"`
-		KeyPath       string `toml:"key_path"`
-		KeyPassphrase string `toml:"key_passphrase"`
-		Password      string `toml:"password"`
-		DefaultDir    string `toml:"default_dir"`
-		Description   string `toml:"description"`
-		ProxyJump     string `toml:"proxy_jump"`
+		Host          string   `toml:"host"`
+		Port          int      `toml:"port"`
+		User          string   `toml:"user"`
+		Auth          string   `toml:"auth"`
+		KeyPath       string   `toml:"key_path"`
+		KeyPassphrase string   `toml:"key_passphrase"`
+		Password      string   `toml:"password"`
+		DefaultDir    string   `toml:"default_dir"`
+		Description   string   `toml:"description"`
+		ProxyJump     string   `toml:"proxy_jump"`
 		AllowedPaths  []string `toml:"allowed_paths"`
 		Tags          []string `toml:"tags"`
 	}
@@ -420,7 +420,7 @@ func migratePasswordsCmd(_ []string) int {
 func writeRawConfig(path string, settings interface{}, servers interface{}) error {
 	// Build a unified map so the encoder emits [settings] and [servers.*].
 	type outTop struct {
-		Settings interface{}            `toml:"settings"`
+		Settings interface{} `toml:"settings"`
 		Servers  interface{} `toml:"servers"`
 	}
 	out := outTop{Settings: settings, Servers: servers}

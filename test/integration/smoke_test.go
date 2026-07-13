@@ -68,9 +68,9 @@ func decodeData(t *testing.T, res *mcp.CallToolResult) map[string]any {
 		t.Fatalf("expected text content, got %T", res.Content[0])
 	}
 	var env struct {
-		OK    bool                   `json:"ok"`
-		Data  map[string]any         `json:"data"`
-		Error map[string]any         `json:"error"`
+		OK    bool           `json:"ok"`
+		Data  map[string]any `json:"data"`
+		Error map[string]any `json:"error"`
 	}
 	if err := json.Unmarshal([]byte(tc.Text), &env); err != nil {
 		t.Fatalf("unmarshal: %v\nraw: %s", err, tc.Text)

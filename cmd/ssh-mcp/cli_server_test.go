@@ -199,10 +199,10 @@ func TestServerRemoveNotFound(t *testing.T) {
 // rejects names that do not match ^[a-z0-9][a-z0-9_-]*$ or exceed length limits.
 func TestServerName_ValidateRejectsBadInput(t *testing.T) {
 	bad := []string{
-		"Bad-Name",      // uppercase
-		"a*b",           // special char
-		"-leading",      // starts with dash
-		"",              // empty
+		"Bad-Name",              // uppercase
+		"a*b",                   // special char
+		"-leading",              // starts with dash
+		"",                      // empty
 		strings.Repeat("a", 65), // > 64 chars
 	}
 	for _, name := range bad {

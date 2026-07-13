@@ -162,15 +162,15 @@ func (p *Pool) buildSOCKS5Wrapper(ctx context.Context, pc config.ProxyConfig, al
 // buildSSHWrapper returns a Wrapper that opens a TCP channel through an SSH
 // proxy. Two modes:
 //
-//   1. Server-reference (pc.Server != ""): recursively obtain a *Client for
-//      that configured server via Pool.getInternal — this honours the
-//      referenced server's own auth, host-key policy, and (transitively)
-//      its own proxy_chain. This is the recommended mode.
+//  1. Server-reference (pc.Server != ""): recursively obtain a *Client for
+//     that configured server via Pool.getInternal — this honours the
+//     referenced server's own auth, host-key policy, and (transitively)
+//     its own proxy_chain. This is the recommended mode.
 //
-//   2. Direct (pc.Host != ""): dial pc.Host:pc.Port through the parent
-//      Dialer, then SSH-handshake with the credentials defined inline on
-//      [proxies.<name>]. The host-key check is strict (acceptNew=false);
-//      first-contact trust must be pre-established via `ssh-mcp trust`.
+//  2. Direct (pc.Host != ""): dial pc.Host:pc.Port through the parent
+//     Dialer, then SSH-handshake with the credentials defined inline on
+//     [proxies.<name>]. The host-key check is strict (acceptNew=false);
+//     first-contact trust must be pre-established via `ssh-mcp trust`.
 //
 // Note: the ctx passed to the inner DialContext is the per-dial context
 // from the chain caller (not closure-captured). ctx-cancellation propagates
