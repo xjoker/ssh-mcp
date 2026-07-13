@@ -24,8 +24,8 @@ $Tag = $env:VERSION
 if (-not $Tag) {
   Log 'fetching latest release...'
   try {
-    $releases = Invoke-RestMethod "https://api.github.com/repos/$Repo/releases"
-    $Tag = $releases[0].tag_name
+    $release = Invoke-RestMethod "https://api.github.com/repos/$Repo/releases/latest"
+    $Tag = $release.tag_name
   } catch {
     Fail "could not fetch release info: $_. Set `$env:VERSION=vX.Y.Z or visit https://github.com/$Repo/releases"
   }
@@ -39,13 +39,52 @@ $Url   = "https://github.com/$Repo/releases/download/$Tag/$Asset"
 # 3. Ensure prefix directory exists.
 New-Item -ItemType Directory -Force -Path $Prefix | Out-Null
 
-# 4. Download binary.
+# 4. Download to a same-directory temporary file, verify it, then atomically
+# replace the existing user-local installation. No administrator rights are
+# required for the default prefix.
 $Dest = Join-Path $Prefix 'ssh-mcp.exe'
+$Temp = Join-Path $Prefix ('.ssh-mcp-install-{0}.tmp' -f [Guid]::NewGuid().ToString('N'))
+$ChecksumFile = [System.IO.Path]::GetTempFileName()
 Log "downloading $Tag (windows/amd64)..."
 try {
-  Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing
+  Invoke-WebRequest -Uri $Url -OutFile $Temp -UseBasicParsing
+
+  Log 'verifying checksum...'
+  $ChecksumUrl = "https://github.com/$Repo/releases/download/$Tag/checksums.sha256"
+  Invoke-WebRequest -Uri $ChecksumUrl -OutFile $ChecksumFile -UseBasicParsing
+
+  $ExpectedSHA = $null
+  foreach ($Line in Get-Content -LiteralPath $ChecksumFile) {
+    $Parts = $Line.Trim() -split '\s+', 2
+    if ($Parts.Count -eq 2 -and $Parts[1].TrimStart([char]'*') -eq $Asset) {
+      $ExpectedSHA = $Parts[0].ToLowerInvariant()
+      break
+    }
+  }
+  if (-not $ExpectedSHA -or $ExpectedSHA -notmatch '^[0-9a-f]{64}$') {
+    throw "checksum not found for $Asset in checksums.sha256"
+  }
+
+  $ActualSHA = (Get-FileHash -Algorithm SHA256 -LiteralPath $Temp).Hash.ToLowerInvariant()
+  if ($ExpectedSHA -ne $ActualSHA) {
+    throw "checksum mismatch for $Asset (expected $ExpectedSHA, got $ActualSHA)"
+  }
+
+  if (Test-Path -LiteralPath $Dest) {
+    [System.IO.File]::Replace($Temp, $Dest, $null)
+  } else {
+    [System.IO.File]::Move($Temp, $Dest)
+  }
+  $Temp = $null
 } catch {
-  Fail "download failed from $Url : $_"
+  Fail "install failed: $_"
+} finally {
+  if ($Temp -and (Test-Path -LiteralPath $Temp)) {
+    Remove-Item -LiteralPath $Temp -Force
+  }
+  if (Test-Path -LiteralPath $ChecksumFile) {
+    Remove-Item -LiteralPath $ChecksumFile -Force
+  }
 }
 
 # 5. PATH hint.

@@ -60,13 +60,25 @@ URL="https://github.com/$REPO/releases/download/$TAG/$ASSET"
 mkdir -p "$PREFIX" 2>/dev/null || fail "cannot create $PREFIX — set PREFIX=... to a writable directory"
 [ -w "$PREFIX" ] || fail "$PREFIX is not writable — set PREFIX=... to a writable directory"
 
-# 6. Download binary.
+# 6. Download binary to the destination directory without touching the
+# existing installation. Keeping the temp file on the same filesystem makes
+# the final rename atomic.
 DEST="$PREFIX/ssh-mcp"
+TMP_BIN=""
+CHECKSUM_FILE=""
+cleanup() {
+  [ -z "${TMP_BIN:-}" ] || rm -f "$TMP_BIN"
+  [ -z "${CHECKSUM_FILE:-}" ] || rm -f "$CHECKSUM_FILE"
+}
+trap cleanup EXIT
+TMP_BIN="$(mktemp "$PREFIX/.ssh-mcp-install.XXXXXX")" || fail "failed to create temporary binary in $PREFIX"
+CHECKSUM_FILE="$(mktemp)" || fail "failed to create temporary file for checksums"
+
 log "downloading $TAG ($os/$arch)..."
 if command -v curl >/dev/null 2>&1; then
-  curl -fsSL "$URL" -o "$DEST" || fail "download failed: $URL"
+  curl -fsSL "$URL" -o "$TMP_BIN" || fail "download failed: $URL"
 elif command -v wget >/dev/null 2>&1; then
-  wget -qO "$DEST" "$URL" || fail "download failed: $URL"
+  wget -qO "$TMP_BIN" "$URL" || fail "download failed: $URL"
 else
   fail "curl or wget is required to download the binary"
 fi
@@ -74,8 +86,6 @@ fi
 # 7. Verify SHA256 checksum.
 log "verifying checksum..."
 CHECKSUM_URL="https://github.com/$REPO/releases/download/$TAG/checksums.sha256"
-CHECKSUM_FILE=$(mktemp) || fail "failed to create temporary file for checksums"
-trap "rm -f '$CHECKSUM_FILE'" EXIT
 
 if command -v curl >/dev/null 2>&1; then
   curl -fsSL "$CHECKSUM_URL" -o "$CHECKSUM_FILE" || fail "failed to download checksums from $CHECKSUM_URL"
@@ -90,22 +100,23 @@ EXPECTED_SHA=$(grep " $ASSET$" "$CHECKSUM_FILE" | awk '{print $1}') || true
 
 # Calculate actual SHA256 using shasum (macOS) or sha256sum (Linux).
 if command -v shasum >/dev/null 2>&1; then
-  ACTUAL_SHA=$(shasum -a 256 "$DEST" | awk '{print $1}')
+  ACTUAL_SHA=$(shasum -a 256 "$TMP_BIN" | awk '{print $1}')
 elif command -v sha256sum >/dev/null 2>&1; then
-  ACTUAL_SHA=$(sha256sum "$DEST" | awk '{print $1}')
+  ACTUAL_SHA=$(sha256sum "$TMP_BIN" | awk '{print $1}')
 else
   fail "shasum or sha256sum is required to verify checksums"
 fi
 
 if [ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]; then
-  rm -f "$DEST"
   fail "checksum mismatch for $ASSET
   expected: $EXPECTED_SHA
   actual:   $ACTUAL_SHA
   The binary may have been corrupted or tampered with. Please try again or visit https://github.com/$REPO/releases"
 fi
 
-chmod 0755 "$DEST"
+chmod 0700 "$TMP_BIN"
+mv -f "$TMP_BIN" "$DEST" || fail "cannot replace $DEST"
+TMP_BIN=""
 
 # 8. PATH hint when ~/.local/bin is not on PATH.
 case ":$PATH:" in

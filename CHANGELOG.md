@@ -21,6 +21,10 @@ Branch / version convention:
 ## [Unreleased]
 
 ### Changed
+- Installers now verify release checksums before atomically replacing an
+  existing user-local binary; the Windows installer also selects only the
+  latest stable release. Failed verification leaves the installed binary
+  untouched on macOS, Linux, and Windows without elevation.
 - The stale-command recovery test now blocks and releases the first response
   explicitly, removing a scheduling race that intermittently failed on Windows.
 - CI and release workflows now pin Go 1.26.5 exactly. The previous minor-only
