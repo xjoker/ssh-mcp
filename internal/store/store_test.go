@@ -7,6 +7,44 @@ import (
 	"time"
 )
 
+func TestSQLiteDSNWindowsAbsolutePathUsesFileURI(t *testing.T) {
+	const path = `C:\Users\alice\AppData\Roaming\ssh-mcp\ssh-mcp.db`
+
+	tests := []struct {
+		name     string
+		readOnly bool
+		want     string
+	}{
+		{
+			name:     "writable",
+			readOnly: false,
+			want:     "file:///C:/Users/alice/AppData/Roaming/ssh-mcp/ssh-mcp.db?_pragma=journal_mode%28WAL%29&_pragma=synchronous%28FULL%29&_pragma=busy_timeout%285000%29&_pragma=foreign_keys%28ON%29",
+		},
+		{
+			name:     "read-only",
+			readOnly: true,
+			want:     "file:///C:/Users/alice/AppData/Roaming/ssh-mcp/ssh-mcp.db?_pragma=query_only%28ON%29&mode=ro",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := sqliteDSN(path, test.readOnly); got != test.want {
+				t.Fatalf("sqliteDSN(%q, %t) = %q, want %q", path, test.readOnly, got, test.want)
+			}
+		})
+	}
+}
+
+func TestSQLiteDSNUnixAbsolutePathIsUnchanged(t *testing.T) {
+	const path = "/var/lib/ssh-mcp/ssh-mcp.db"
+	const want = "file:///var/lib/ssh-mcp/ssh-mcp.db?_pragma=query_only%28ON%29&mode=ro"
+
+	if got := sqliteDSN(path, true); got != want {
+		t.Fatalf("sqliteDSN(%q, true) = %q, want %q", path, got, want)
+	}
+}
+
 func TestOpen_ConfiguresWALAndPrivateFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ssh-mcp.db")
 	store, err := Open(path)

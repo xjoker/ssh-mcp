@@ -165,7 +165,10 @@ func TestHandleAuditQuery_Limit(t *testing.T) {
 
 func TestHandleAuditQuery_InvalidSince(t *testing.T) {
 	dir := t.TempDir()
-	logger, _ := audit.New(dir, 90)
+	logger, err := audit.New(dir, 90)
+	if err != nil {
+		t.Fatalf("audit.New: %v", err)
+	}
 	defer logger.Close()
 
 	deps := &Deps{Cfg: &config.Config{Settings: config.Settings{}}, Audit: logger}

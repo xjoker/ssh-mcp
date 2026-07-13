@@ -160,6 +160,10 @@ func OpenReadOnly(path string) (*Store, error) {
 }
 
 func sqliteDSN(path string, readOnly bool) string {
+	if len(path) >= 3 && path[1] == ':' && (path[2] == '\\' || path[2] == '/') &&
+		((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) {
+		path = "/" + strings.ReplaceAll(path, `\`, "/")
+	}
 	uri := url.URL{Scheme: "file", Path: path}
 	query := url.Values{}
 	if readOnly {
