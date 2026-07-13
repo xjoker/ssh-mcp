@@ -76,7 +76,7 @@ func TestHandleAuditQuery_FilterByTool(t *testing.T) {
 	}
 	defer logger.Close()
 
-	now := time.Now().UTC()
+	now := time.Now().UTC().Add(-time.Second)
 	logger.Record(audit.Entry{Timestamp: now, Tool: "ssh_exec", Server: "s1", DurationMs: 1})
 	logger.Record(audit.Entry{Timestamp: now.Add(time.Millisecond), Tool: "list_servers", Server: "s1", DurationMs: 1})
 
@@ -108,7 +108,7 @@ func TestHandleAuditQuery_ErrorsOnly(t *testing.T) {
 	}
 	defer logger.Close()
 
-	now := time.Now().UTC()
+	now := time.Now().UTC().Add(-time.Second)
 	logger.Record(audit.Entry{Timestamp: now, Tool: "ssh_exec", DurationMs: 1})
 	logger.Record(audit.Entry{Timestamp: now.Add(time.Millisecond), Tool: "ssh_exec", ErrorCode: "CONN_FAILED", DurationMs: 1})
 

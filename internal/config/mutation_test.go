@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -26,6 +27,36 @@ func TestAddServer_RejectsDuplicateAndSetsName(t *testing.T) {
 	}
 	if err := config.AddServer(cfg, "staging", server); err == nil {
 		t.Fatal("AddServer duplicate: expected error")
+	}
+}
+
+func TestBackup_CopiesConfigWithoutChangingSource(t *testing.T) {
+	path := writeToml(t, minimalAgent)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read source config: %v", err)
+	}
+
+	backupPath, err := config.Backup(path)
+	if err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+	if filepath.Dir(backupPath) != filepath.Dir(path) || !strings.HasPrefix(filepath.Base(backupPath), filepath.Base(path)+".backup-") {
+		t.Fatalf("backup path = %q, want sibling timestamped backup", backupPath)
+	}
+	backup, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatalf("read backup config: %v", err)
+	}
+	if string(backup) != string(before) {
+		t.Fatal("backup content differs from source")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read source after Backup: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("Backup changed source config")
 	}
 }
 

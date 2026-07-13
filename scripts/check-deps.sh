@@ -18,6 +18,7 @@ allowlist_for() {
     config)    echo "" ;;
     store)     echo "" ;;
     knownhosts) echo "safety" ;;
+    tui)       echo "config auth knownhosts audit store" ;;
     auth)      echo "safety config" ;;
     audit)     echo "safety store" ;;
     proxy)     echo "" ;;

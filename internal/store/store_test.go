@@ -127,3 +127,42 @@ func TestStore_QueryAuditZeroUntilExcludesFutureEntries(t *testing.T) {
 		t.Fatalf("zero Until entries = %+v, want only current entry", entries)
 	}
 }
+
+func TestStore_QueryAuditFiltersStatusAndPaginatesByCursor(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "ssh-mcp.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+
+	timestamp := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
+	for _, status := range []string{"completed", "failed", "completed"} {
+		if err := store.RecordAudit(AuditEntry{Timestamp: timestamp, Tool: "ssh_exec", Status: status}); err != nil {
+			t.Fatalf("RecordAudit: %v", err)
+		}
+	}
+
+	completed, err := store.QueryAudit(AuditFilter{Status: "completed", Until: timestamp.Add(time.Second), Limit: 10})
+	if err != nil {
+		t.Fatalf("QueryAudit completed: %v", err)
+	}
+	if len(completed) != 2 || completed[0].ID <= completed[1].ID {
+		t.Fatalf("completed entries = %+v, want two descending IDs", completed)
+	}
+
+	firstPage, err := store.QueryAudit(AuditFilter{Until: timestamp.Add(time.Second), Limit: 1})
+	if err != nil {
+		t.Fatalf("QueryAudit first page: %v", err)
+	}
+	secondPage, err := store.QueryAudit(AuditFilter{
+		Until:  timestamp.Add(time.Second),
+		Limit:  1,
+		Before: &AuditCursor{Timestamp: firstPage[0].Timestamp, ID: firstPage[0].ID},
+	})
+	if err != nil {
+		t.Fatalf("QueryAudit second page: %v", err)
+	}
+	if len(secondPage) != 1 || secondPage[0].ID >= firstPage[0].ID {
+		t.Fatalf("second page = %+v, want next older record", secondPage)
+	}
+}

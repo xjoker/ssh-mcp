@@ -45,6 +45,7 @@ const maxLimit = 1000
 // "pending" entry before invocation and a "completed" entry after,
 // both bearing the same CorrelationID for forensic matching.
 type Entry struct {
+	ID            int64     `json:"-"`
 	Timestamp     time.Time `json:"timestamp"`
 	SessionID     string    `json:"session_id"`
 	Tool          string    `json:"tool"`
@@ -74,14 +75,22 @@ type Entry struct {
 	Stderr string `json:"stderr,omitempty"`
 }
 
+// Cursor identifies an audit entry for stable descending pagination.
+type Cursor struct {
+	Timestamp time.Time
+	ID        int64
+}
+
 // Filter specifies predicates for Query. SDD §5.9.
 type Filter struct {
 	Server     string
 	Tool       string
+	Status     string
 	Since      time.Time
 	Until      time.Time
 	ExitCodeEq *int // nil = any
 	ErrorOnly  bool
+	Before     *Cursor
 	Limit      int // default 100, max 1000
 }
 
@@ -420,7 +429,7 @@ func (l *Logger) Query(f Filter) ([]Entry, error) {
 
 func toStoreEntry(entry Entry) store.AuditEntry {
 	return store.AuditEntry{
-		Timestamp: entry.Timestamp, SessionID: entry.SessionID, Tool: entry.Tool,
+		ID: entry.ID, Timestamp: entry.Timestamp, SessionID: entry.SessionID, Tool: entry.Tool,
 		Server: entry.Server, AuthMode: entry.AuthMode, ArgsRedacted: entry.ArgsRedacted,
 		ExitCode: entry.ExitCode, DurationMs: entry.DurationMs, BytesIn: entry.BytesIn,
 		BytesOut: entry.BytesOut, ErrorCode: entry.ErrorCode, Status: entry.Status,
@@ -430,17 +439,21 @@ func toStoreEntry(entry Entry) store.AuditEntry {
 }
 
 func toStoreFilter(filter Filter) store.AuditFilter {
-	return store.AuditFilter{
+	result := store.AuditFilter{
 		Server: filter.Server, Tool: filter.Tool, Since: filter.Since, Until: filter.Until,
-		ExitCodeEq: filter.ExitCodeEq, ErrorOnly: filter.ErrorOnly, Limit: filter.Limit,
+		Status: filter.Status, ExitCodeEq: filter.ExitCodeEq, ErrorOnly: filter.ErrorOnly, Limit: filter.Limit,
 	}
+	if filter.Before != nil {
+		result.Before = &store.AuditCursor{Timestamp: filter.Before.Timestamp, ID: filter.Before.ID}
+	}
+	return result
 }
 
 func fromStoreEntries(entries []store.AuditEntry) []Entry {
 	result := make([]Entry, len(entries))
 	for index, entry := range entries {
 		result[index] = Entry{
-			Timestamp: entry.Timestamp, SessionID: entry.SessionID, Tool: entry.Tool,
+			ID: entry.ID, Timestamp: entry.Timestamp, SessionID: entry.SessionID, Tool: entry.Tool,
 			Server: entry.Server, AuthMode: entry.AuthMode, ArgsRedacted: entry.ArgsRedacted,
 			ExitCode: entry.ExitCode, DurationMs: entry.DurationMs, BytesIn: entry.BytesIn,
 			BytesOut: entry.BytesOut, ErrorCode: entry.ErrorCode, Status: entry.Status,
@@ -544,6 +557,9 @@ func matchFilter(e Entry, f Filter) bool {
 	if f.Tool != "" && e.Tool != f.Tool {
 		return false
 	}
+	if f.Status != "" && e.Status != f.Status {
+		return false
+	}
 	if f.ExitCodeEq != nil && e.ExitCode != *f.ExitCodeEq {
 		return false
 	}
@@ -555,6 +571,11 @@ func matchFilter(e Entry, f Filter) bool {
 	}
 	if !f.Until.IsZero() && e.Timestamp.After(f.Until) {
 		return false
+	}
+	if f.Before != nil {
+		if e.Timestamp.After(f.Before.Timestamp) || (e.Timestamp.Equal(f.Before.Timestamp) && e.ID >= f.Before.ID) {
+			return false
+		}
 	}
 	return true
 }

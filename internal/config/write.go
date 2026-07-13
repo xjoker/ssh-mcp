@@ -3,10 +3,12 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -164,6 +166,43 @@ func Save(path string, cfg *Config) error {
 	cfg.source = append(cfg.source[:0], encoded...)
 	cfg.snapshot = cloneDiskConfig(encodeConfig(cfg))
 	return nil
+}
+
+// Backup creates a timestamped, durable copy of a configuration file.
+func Backup(path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("config: backup path is required")
+	}
+
+	source, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("config: open backup source %q: %w", path, err)
+	}
+	defer source.Close()
+
+	backupPath := path + ".backup-" + time.Now().UTC().Format("20060102-150405")
+	backup, err := os.OpenFile(backupPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return "", fmt.Errorf("config: create backup %q: %w", backupPath, err)
+	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = backup.Close()
+			_ = os.Remove(backupPath)
+		}
+	}()
+	if _, err := io.Copy(backup, source); err != nil {
+		return "", fmt.Errorf("config: copy backup: %w", err)
+	}
+	if err := backup.Sync(); err != nil {
+		return "", fmt.Errorf("config: sync backup: %w", err)
+	}
+	if err := backup.Close(); err != nil {
+		return "", fmt.Errorf("config: close backup: %w", err)
+	}
+	cleanup = false
+	return backupPath, nil
 }
 
 func encodeForSave(cfg *Config) ([]byte, error) {

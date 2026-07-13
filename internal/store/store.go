@@ -34,6 +34,7 @@ type Options struct {
 
 // AuditEntry is one append-only operational audit record.
 type AuditEntry struct {
+	ID            int64     `json:"-"`
 	Timestamp     time.Time `json:"timestamp"`
 	SessionID     string    `json:"session_id"`
 	Tool          string    `json:"tool"`
@@ -52,14 +53,22 @@ type AuditEntry struct {
 	Stderr        string    `json:"stderr,omitempty"`
 }
 
+// AuditCursor identifies an audit entry for stable descending pagination.
+type AuditCursor struct {
+	Timestamp time.Time
+	ID        int64
+}
+
 // AuditFilter specifies predicates for QueryAudit.
 type AuditFilter struct {
 	Server     string
 	Tool       string
+	Status     string
 	Since      time.Time
 	Until      time.Time
 	ExitCodeEq *int
 	ErrorOnly  bool
+	Before     *AuditCursor
 	Limit      int
 }
 
@@ -488,8 +497,8 @@ func (store *Store) QueryAudit(filter AuditFilter) ([]AuditEntry, error) {
 		limit = maxLimit
 	}
 
-	where := make([]string, 0, 6)
-	args := make([]any, 0, 8)
+	where := make([]string, 0, 8)
+	args := make([]any, 0, 13)
 	if filter.Server != "" {
 		where = append(where, "server = ?")
 		args = append(args, filter.Server)
@@ -497,6 +506,10 @@ func (store *Store) QueryAudit(filter AuditFilter) ([]AuditEntry, error) {
 	if filter.Tool != "" {
 		where = append(where, "tool = ?")
 		args = append(args, filter.Tool)
+	}
+	if filter.Status != "" {
+		where = append(where, "status = ?")
+		args = append(args, filter.Status)
 	}
 	if !filter.Since.IsZero() {
 		where = append(where, "(timestamp_sec > ? OR (timestamp_sec = ? AND timestamp_nsec >= ?))")
@@ -515,7 +528,13 @@ func (store *Store) QueryAudit(filter AuditFilter) ([]AuditEntry, error) {
 	if filter.ErrorOnly {
 		where = append(where, "error_code <> ''")
 	}
-	query := `SELECT timestamp_sec, timestamp_nsec, session_id, tool, server, auth_mode,
+	if filter.Before != nil {
+		where = append(where, `(timestamp_sec < ? OR
+(timestamp_sec = ? AND (timestamp_nsec < ? OR (timestamp_nsec = ? AND id < ?))))`)
+		args = append(args, filter.Before.Timestamp.Unix(), filter.Before.Timestamp.Unix(),
+			filter.Before.Timestamp.Nanosecond(), filter.Before.Timestamp.Nanosecond(), filter.Before.ID)
+	}
+	query := `SELECT id, timestamp_sec, timestamp_nsec, session_id, tool, server, auth_mode,
 args_redacted, exit_code, duration_ms, bytes_in, bytes_out, error_code,
 status, correlation_id, content_sha256, stdout, stderr FROM audit`
 	if len(where) > 0 {
@@ -534,7 +553,7 @@ status, correlation_id, content_sha256, stdout, stderr FROM audit`
 		var entry AuditEntry
 		var seconds int64
 		var nanoseconds int
-		if err := rows.Scan(&seconds, &nanoseconds, &entry.SessionID, &entry.Tool, &entry.Server,
+		if err := rows.Scan(&entry.ID, &seconds, &nanoseconds, &entry.SessionID, &entry.Tool, &entry.Server,
 			&entry.AuthMode, &entry.ArgsRedacted, &entry.ExitCode, &entry.DurationMs,
 			&entry.BytesIn, &entry.BytesOut, &entry.ErrorCode, &entry.Status,
 			&entry.CorrelationID, &entry.ContentSHA256, &entry.Stdout, &entry.Stderr); err != nil {
