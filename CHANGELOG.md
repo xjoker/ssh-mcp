@@ -21,6 +21,11 @@ Branch / version convention:
 ## [Unreleased]
 
 ### Changed
+- Windows SQLite file URIs now normalize drive-letter paths (for example,
+  `C:\\Users\\...` becomes `file:///C:/Users/...`), restoring audit-store
+  startup and the Windows CI test path.
+- GitHub Actions now use Node.js 24-compatible major versions for checkout,
+  Go setup, and release publishing.
 - **Versioning scheme is now `YYYYMMDD.V`** (date-stamped) instead of semver
   `X.Y.Z`. Added a root `VERSION` file as the single source of truth; release
   workflows match `vYYYYMMDD.V` tags and verify the tag agrees with `VERSION`.
