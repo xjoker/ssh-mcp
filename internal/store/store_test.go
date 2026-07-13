@@ -3,6 +3,7 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -61,12 +62,14 @@ func TestOpen_ConfiguresWALAndPrivateFile(t *testing.T) {
 		t.Errorf("journal_mode = %q, want wal", journalMode)
 	}
 
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat database: %v", err)
-	}
-	if got := info.Mode().Perm(); got != 0600 {
-		t.Errorf("database mode = %04o, want 0600", got)
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat database: %v", err)
+		}
+		if got := info.Mode().Perm(); got != 0600 {
+			t.Errorf("database mode = %04o, want 0600", got)
+		}
 	}
 }
 

@@ -555,6 +555,11 @@ func TestQuery_OversizedLineIsSkippedNotFatal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := reader.Close(); err != nil {
+			t.Errorf("close reader: %v", err)
+		}
+	})
 	got, err := reader.Query(Filter{})
 	if err != nil {
 		t.Fatalf("Query with oversized line: %v", err)
@@ -589,6 +594,11 @@ func TestReadFile_LimitBoundsMemoryKeepsNewest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := reader.Close(); err != nil {
+			t.Errorf("close reader: %v", err)
+		}
+	})
 	got, err := reader.Query(Filter{Limit: 10})
 	if err != nil {
 		t.Fatal(err)
