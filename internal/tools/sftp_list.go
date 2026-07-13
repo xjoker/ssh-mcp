@@ -32,6 +32,13 @@ func init() {
   "required": ["path"]
 }`),
 		Handle: handleSftpList,
+		Annotations: &Annotations{
+			Title:           "List remote directory",
+			ReadOnlyHint:    true,
+			DestructiveHint: false,
+			IdempotentHint:  false,
+			OpenWorldHint:   true,
+		},
 	})
 }
 

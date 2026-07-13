@@ -74,10 +74,18 @@ var sshGroupExecSchema = json.RawMessage(`{
 
 func toolSSHGroupExec() Tool {
 	return Tool{
-		Name:        "ssh_group_exec",
-		Description: "Run the same command across a group of servers concurrently. Returns one result per server.",
+		Name: "ssh_group_exec",
+		Description: "Run the same command across a group of servers concurrently. Returns one result per server. " +
+			"The command runs with the full privileges of the SSH user on each server; side effects depend entirely on the command.",
 		InputSchema: sshGroupExecSchema,
 		Handle:      handleSSHGroupExec,
+		Annotations: &Annotations{
+			Title:           "Execute command on server group",
+			ReadOnlyHint:    false,
+			DestructiveHint: true,
+			IdempotentHint:  false,
+			OpenWorldHint:   true,
+		},
 	}
 }
 

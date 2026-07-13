@@ -96,10 +96,18 @@ var sshExecSchema = json.RawMessage(`{
 
 func toolSSHExec() Tool {
 	return Tool{
-		Name:        "ssh_exec",
-		Description: "Execute a single command on a remote SSH server. Returns stdout, stderr, and exit code.",
+		Name: "ssh_exec",
+		Description: "Execute a single command on a remote SSH server. Returns stdout, stderr, and exit code. " +
+			"The command runs with the full privileges of the SSH user; side effects depend entirely on the command.",
 		InputSchema: sshExecSchema,
 		Handle:      handleSSHExec,
+		Annotations: &Annotations{
+			Title:           "Execute remote command",
+			ReadOnlyHint:    false,
+			DestructiveHint: true,
+			IdempotentHint:  false,
+			OpenWorldHint:   true,
+		},
 	}
 }
 

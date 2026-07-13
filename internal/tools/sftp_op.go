@@ -19,8 +19,9 @@ const sftpWriteMaxBytes = sftpReadMaxBytes
 
 func init() {
 	Registered = append(Registered, Tool{
-		Name:        "sftp_op",
-		Description: "Perform a write or management operation on the remote filesystem: write, mkdir, remove, rename, chmod, symlink, realpath.",
+		Name: "sftp_op",
+		Description: "Perform a write or management operation on the remote filesystem: write, mkdir, remove, rename, chmod, symlink, realpath. " +
+			"remove/rename are irreversible; write overwrites existing content.",
 		InputSchema: json.RawMessage(`{
   "type": "object",
   "properties": {
@@ -39,6 +40,13 @@ func init() {
   "required": ["action", "path"]
 }`),
 		Handle: handleSftpOp,
+		Annotations: &Annotations{
+			Title:           "Remote file write/management op",
+			ReadOnlyHint:    false,
+			DestructiveHint: true,
+			IdempotentHint:  false,
+			OpenWorldHint:   true,
+		},
 	})
 }
 

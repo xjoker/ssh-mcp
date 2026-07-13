@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 
 	"github.com/xjoker/ssh-mcp/internal/envelope"
-	internalsftp "github.com/xjoker/ssh-mcp/internal/sftp"
 	"github.com/xjoker/ssh-mcp/internal/safety"
+	internalsftp "github.com/xjoker/ssh-mcp/internal/sftp"
 )
 
 func init() {
@@ -24,6 +24,13 @@ func init() {
   "required": ["path"]
 }`),
 		Handle: handleSftpStat,
+		Annotations: &Annotations{
+			Title:           "Stat remote path",
+			ReadOnlyHint:    true,
+			DestructiveHint: false,
+			IdempotentHint:  false,
+			OpenWorldHint:   true,
+		},
 	})
 }
 

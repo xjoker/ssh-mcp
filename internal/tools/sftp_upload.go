@@ -25,7 +25,8 @@ func init() {
 		Name: "sftp_upload",
 		Description: "Upload a local file to a remote server by streaming it directly through the MCP process " +
 			"(no size limit, no base64/JSON overhead — bytes never enter the AI's context). " +
-			"Disabled by default: requires settings.upload_local_allowed_paths to be configured in config.toml.",
+			"Disabled by default: requires settings.upload_local_allowed_paths to be configured in config.toml. " +
+			"Overwrites the destination file if it exists.",
 		InputSchema: json.RawMessage(`{
   "type": "object",
   "properties": {
@@ -39,6 +40,13 @@ func init() {
   "required": ["local_path", "remote_path"]
 }`),
 		Handle: handleSftpUpload,
+		Annotations: &Annotations{
+			Title:           "Upload local file to remote",
+			ReadOnlyHint:    false,
+			DestructiveHint: true,
+			IdempotentHint:  true,
+			OpenWorldHint:   true,
+		},
 	})
 }
 

@@ -69,9 +69,16 @@ var quickSetupSchema = json.RawMessage(`{
 func toolSSHQuickSetup() Tool {
 	return Tool{
 		Name:        "ssh_quick_setup",
-		Description: "Register an ad-hoc SSH server for the duration of this session (in-memory, TTL-bounded; max 240 min). Repeated calls for the same host+port+user reuse the existing registration. For permanent registration that survives restart, use ssh_persistent_setup instead.",
+		Description: "Register an ad-hoc SSH server for the duration of this session (in-memory, TTL-bounded; max 240 min). Repeated calls for the same host+port+user reuse the existing registration. For permanent registration that survives restart, use ssh_persistent_setup instead. Repeated calls with the same args within the TTL window are idempotent.",
 		InputSchema: quickSetupSchema,
 		Handle:      handleSSHQuickSetup,
+		Annotations: &Annotations{
+			Title:           "Register temporary server",
+			ReadOnlyHint:    false,
+			DestructiveHint: false,
+			IdempotentHint:  true,
+			OpenWorldHint:   true,
+		},
 	}
 }
 
@@ -172,4 +179,3 @@ func handleSSHQuickSetup(ctx context.Context, deps *Deps, args json.RawMessage) 
 		User:           input.User,
 	})
 }
-

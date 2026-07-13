@@ -42,14 +42,14 @@ func init() {
 // --------------------------------------------------------------------------
 
 type persistentSetupInput struct {
-	Name          string   `json:"name"`
-	Host          string   `json:"host"`
-	Port          int      `json:"port,omitempty"`
-	User          string   `json:"user"`
-	Auth          string   `json:"auth"`
-	KeyPath       string   `json:"key_path,omitempty"`
-	KeyPassphrase string   `json:"key_passphrase,omitempty"`
-	Password      string   `json:"password,omitempty"`
+	Name          string `json:"name"`
+	Host          string `json:"host"`
+	Port          int    `json:"port,omitempty"`
+	User          string `json:"user"`
+	Auth          string `json:"auth"`
+	KeyPath       string `json:"key_path,omitempty"`
+	KeyPassphrase string `json:"key_passphrase,omitempty"`
+	Password      string `json:"password,omitempty"`
 	// PasswordStorage controls how plaintext password / key_passphrase is
 	// persisted. Values:
 	//   "keychain"  — (default for auth=password / non-empty key_passphrase)
@@ -121,9 +121,16 @@ var persistentSetupSchema = json.RawMessage(`{
 func toolSSHPersistentSetup() Tool {
 	return Tool{
 		Name:        "ssh_persistent_setup",
-		Description: "Permanently register an SSH server by appending [servers.<name>] to the user's config.toml. Unlike ssh_quick_setup, the entry survives restarts and has no TTL. For auth=password (or auth=key with key_passphrase), the secret is stored in the OS keychain by default (password_storage='keychain'); only the reference is written to config.toml. Set password_storage='plaintext' (with settings.allow_config_plaintext_password=true) to store the literal value in config.toml instead.",
+		Description: "Permanently register an SSH server by appending [servers.<name>] to the user's config.toml. Unlike ssh_quick_setup, the entry survives restarts and has no TTL. For auth=password (or auth=key with key_passphrase), the secret is stored in the OS keychain by default (password_storage='keychain'); only the reference is written to config.toml. Set password_storage='plaintext' (with settings.allow_config_plaintext_password=true) to store the literal value in config.toml instead. Writes to config.toml; refuses to overwrite an existing server block.",
 		InputSchema: persistentSetupSchema,
 		Handle:      handleSSHPersistentSetup,
+		Annotations: &Annotations{
+			Title:           "Register permanent server",
+			ReadOnlyHint:    false,
+			DestructiveHint: false,
+			IdempotentHint:  false,
+			OpenWorldHint:   true,
+		},
 	}
 }
 

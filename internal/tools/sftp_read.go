@@ -8,8 +8,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/xjoker/ssh-mcp/internal/envelope"
-	internalsftp "github.com/xjoker/ssh-mcp/internal/sftp"
 	"github.com/xjoker/ssh-mcp/internal/safety"
+	internalsftp "github.com/xjoker/ssh-mcp/internal/sftp"
 )
 
 const sftpReadMaxBytes = 16 * 1024 * 1024 // 16 MiB
@@ -31,6 +31,13 @@ func init() {
   "required": ["path"]
 }`),
 		Handle: handleSftpRead,
+		Annotations: &Annotations{
+			Title:           "Read remote file",
+			ReadOnlyHint:    true,
+			DestructiveHint: false,
+			IdempotentHint:  false,
+			OpenWorldHint:   true,
+		},
 	})
 }
 

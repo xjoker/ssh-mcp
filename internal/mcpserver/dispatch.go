@@ -69,8 +69,10 @@ func registerAll(mcpSrv *mcp.Server, deps *tools.Deps) error {
 	return nil
 }
 
-// registerOne registers a single tool with the MCP SDK server.
-func registerOne(mcpSrv *mcp.Server, t tools.Tool, deps *tools.Deps) error {
+// buildMCPTool constructs the *mcp.Tool descriptor for a tools.Tool,
+// including the mapping from tools.Annotations to mcp.ToolAnnotations.
+// Factored out of registerOne so it can be exercised directly in tests.
+func buildMCPTool(t tools.Tool) *mcp.Tool {
 	// InputSchema may be json.RawMessage or nil.
 	// mcp.Tool.InputSchema is `any`, so we can assign RawMessage directly.
 	// If nil, default to empty object schema.
@@ -84,6 +86,25 @@ func registerOne(mcpSrv *mcp.Server, t tools.Tool, deps *tools.Deps) error {
 		Description: t.Description,
 		InputSchema: schema,
 	}
+
+	if t.Annotations != nil {
+		destructive := t.Annotations.DestructiveHint
+		openWorld := t.Annotations.OpenWorldHint
+		mcpTool.Annotations = &mcp.ToolAnnotations{
+			Title:           t.Annotations.Title,
+			ReadOnlyHint:    t.Annotations.ReadOnlyHint,
+			DestructiveHint: &destructive,
+			IdempotentHint:  t.Annotations.IdempotentHint,
+			OpenWorldHint:   &openWorld,
+		}
+	}
+
+	return mcpTool
+}
+
+// registerOne registers a single tool with the MCP SDK server.
+func registerOne(mcpSrv *mcp.Server, t tools.Tool, deps *tools.Deps) error {
+	mcpTool := buildMCPTool(t)
 
 	// Capture loop variables for closure.
 	toolName := t.Name

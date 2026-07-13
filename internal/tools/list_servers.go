@@ -74,6 +74,13 @@ func toolListServers() Tool {
 		Description: "Return all configured SSH servers (without secrets). Optionally filter by tag. By default re-reads config.toml from disk so manual edits since process start are visible without restarting the MCP server.",
 		InputSchema: listServersSchema,
 		Handle:      handleListServers,
+		Annotations: &Annotations{
+			Title:           "List configured servers",
+			ReadOnlyHint:    true,
+			DestructiveHint: false,
+			IdempotentHint:  false,
+			OpenWorldHint:   false,
+		},
 	}
 }
 

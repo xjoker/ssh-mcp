@@ -31,6 +31,18 @@ type Tool struct {
 	Description string
 	InputSchema json.RawMessage
 	Handle      HandlerFunc
+	Annotations *Annotations
+}
+
+// Annotations mirrors MCP standard tool annotations (2025-03-26 spec).
+// Kept SDK-agnostic so this package does not import the MCP SDK; the
+// mcpserver package maps these onto mcp.ToolAnnotations at registration.
+type Annotations struct {
+	Title           string
+	ReadOnlyHint    bool
+	DestructiveHint bool // meaningful only when ReadOnlyHint is false
+	IdempotentHint  bool // meaningful only when ReadOnlyHint is false
+	OpenWorldHint   bool
 }
 
 // Registry collects tools produced by individual files in this package.
@@ -47,12 +59,12 @@ func (r *Registry) All() []Tool { return r.tools }
 // Deps is the bundle of long-lived dependencies injected into every tool.
 // Concrete instances are constructed in the mcpserver bootstrap.
 type Deps struct {
-	Cfg          *config.Config
-	Pool         *ssh.Pool
-	SessionMgr   *session.Manager
-	TunnelMgr    *tunnel.Manager
-	Audit        *audit.Logger
-	QuickSetup   QuickSetupRegistry
+	Cfg        *config.Config
+	Pool       *ssh.Pool
+	SessionMgr *session.Manager
+	TunnelMgr  *tunnel.Manager
+	Audit      *audit.Logger
+	QuickSetup QuickSetupRegistry
 
 	// Version is the running binary's version string (e.g. "0.0.1-dev"),
 	// used by the self_update tool for version comparison.

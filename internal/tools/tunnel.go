@@ -32,6 +32,13 @@ func init() {
   "required": ["action"]
 }`),
 		Handle: handleTunnel,
+		Annotations: &Annotations{
+			Title:           "Manage SSH port-forward tunnels",
+			ReadOnlyHint:    false,
+			DestructiveHint: false,
+			IdempotentHint:  false,
+			OpenWorldHint:   true,
+		},
 	})
 }
 

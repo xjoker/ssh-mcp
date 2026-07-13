@@ -55,9 +55,17 @@ func toolSelfUpdate() Tool {
 		Name: "self_update",
 		Description: "Check for a newer ssh-mcp release and optionally download and install it. " +
 			"After a successful update the MCP server process must be restarted to run the new binary. " +
-			"Use check_only=true to inspect availability without downloading.",
+			"Use check_only=true to inspect availability without downloading. " +
+			"Replaces the running binary.",
 		InputSchema: selfUpdateSchema,
 		Handle:      handleSelfUpdate,
+		Annotations: &Annotations{
+			Title:           "Update ssh-mcp binary",
+			ReadOnlyHint:    false,
+			DestructiveHint: true,
+			IdempotentHint:  false,
+			OpenWorldHint:   true,
+		},
 	}
 }
 

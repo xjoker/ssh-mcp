@@ -21,8 +21,8 @@ func init() {
 type auditQueryInput struct {
 	Server     string `json:"server,omitempty"`
 	Tool       string `json:"tool,omitempty"`
-	Since      string `json:"since,omitempty"`       // RFC3339
-	Until      string `json:"until,omitempty"`       // RFC3339
+	Since      string `json:"since,omitempty"` // RFC3339
+	Until      string `json:"until,omitempty"` // RFC3339
 	ExitCode   *int   `json:"exit_code,omitempty"`
 	ErrorsOnly bool   `json:"errors_only,omitempty"`
 	Limit      int    `json:"limit,omitempty"`
@@ -61,6 +61,13 @@ func toolAuditQuery() Tool {
 		Description: "Query the bridge's append-only audit log. Returns entries in reverse-chronological order.",
 		InputSchema: auditQuerySchema,
 		Handle:      handleAuditQuery,
+		Annotations: &Annotations{
+			Title:           "Query audit log",
+			ReadOnlyHint:    true,
+			DestructiveHint: false,
+			IdempotentHint:  false,
+			OpenWorldHint:   false,
+		},
 	}
 }
 
@@ -78,9 +85,9 @@ func handleAuditQuery(_ context.Context, deps *Deps, args json.RawMessage) envel
 
 	// Build filter.
 	f := audit.Filter{
-		Server:    input.Server,
-		Tool:      input.Tool,
-		ErrorOnly: input.ErrorsOnly,
+		Server:     input.Server,
+		Tool:       input.Tool,
+		ErrorOnly:  input.ErrorsOnly,
 		ExitCodeEq: input.ExitCode,
 	}
 

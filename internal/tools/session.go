@@ -77,6 +77,13 @@ func toolSessionStart() Tool {
 		Description: "Open a persistent shell session on a remote server. Accepts either a configured server name or inline ad-hoc credentials. Subsequent session_send calls reuse the same shell.",
 		InputSchema: sessionStartSchema,
 		Handle:      handleSessionStart,
+		Annotations: &Annotations{
+			Title:           "Start persistent shell session",
+			ReadOnlyHint:    false,
+			DestructiveHint: false,
+			IdempotentHint:  false,
+			OpenWorldHint:   true,
+		},
 	}
 }
 
@@ -299,10 +306,18 @@ var sessionSendSchema = json.RawMessage(`{
 
 func toolSessionSend() Tool {
 	return Tool{
-		Name:        "session_send",
-		Description: "Send a command to an existing persistent shell session. Waits for completion via sentinel-based protocol.",
+		Name: "session_send",
+		Description: "Send a command to an existing persistent shell session. Waits for completion via sentinel-based protocol. " +
+			"The command runs with the full privileges of the SSH user; side effects depend entirely on the command.",
 		InputSchema: sessionSendSchema,
 		Handle:      handleSessionSend,
+		Annotations: &Annotations{
+			Title:           "Send command to session",
+			ReadOnlyHint:    false,
+			DestructiveHint: true,
+			IdempotentHint:  false,
+			OpenWorldHint:   true,
+		},
 	}
 }
 
@@ -429,6 +444,13 @@ func toolSessionClose() Tool {
 		Description: "Close a persistent shell session. Idempotent: closing an already-closed session returns OK.",
 		InputSchema: sessionCloseSchema,
 		Handle:      handleSessionClose,
+		Annotations: &Annotations{
+			Title:           "Close session",
+			ReadOnlyHint:    false,
+			DestructiveHint: true,
+			IdempotentHint:  true,
+			OpenWorldHint:   true,
+		},
 	}
 }
 
