@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/xjoker/ssh-mcp/internal/config"
 )
 
 // captureOutput captures stdout and stderr while running fn.
@@ -150,9 +152,16 @@ func TestConfigAddServer_AppendsValidEntry(t *testing.T) {
 	cfgPath := filepath.Join(dir, "config.toml")
 	t.Setenv("MCP_SSH_BRIDGE_CONFIG", cfgPath)
 
-	// Seed an empty-ish config so add-server has something to append to.
-	if code := configCmd([]string{"init"}); code != 0 {
-		t.Fatalf("config init: %d", code)
+	const original = `# keep this operator note
+
+[servers.existing]
+# keep this server note
+host = "10.0.0.9"
+user = "deploy"
+auth = "agent"
+`
+	if err := os.WriteFile(cfgPath, []byte(original), 0600); err != nil {
+		t.Fatal(err)
 	}
 
 	out, _ := captureOutput(func() {
@@ -181,8 +190,47 @@ func TestConfigAddServer_AppendsValidEntry(t *testing.T) {
 			t.Errorf("missing %q in rewritten config:\n%s", want, data)
 		}
 	}
+	for _, want := range []string{"# keep this operator note", "# keep this server note"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("missing preserved comment %q in config:\n%s", want, data)
+		}
+	}
 	if code := configCmd([]string{"validate"}); code != 0 {
 		t.Fatalf("validate after add-server: exit %d", code)
+	}
+}
+
+func TestConfigAddServer_WritesCommandPolicy(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	t.Setenv("MCP_SSH_BRIDGE_CONFIG", cfgPath)
+
+	if code := configCmd([]string{
+		"add-server",
+		"--name", "readonly",
+		"--host", "10.0.0.2",
+		"--user", "deploy",
+		"--mode", "restricted",
+		"--allow", "^uptime$",
+		"--allow", "^df -h$",
+		"--deny", "reboot",
+	}); code != 0 {
+		t.Fatalf("config add-server with policy: %d", code)
+	}
+
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	server := cfg.Servers["readonly"]
+	if server.Mode != "restricted" {
+		t.Errorf("mode = %q, want restricted", server.Mode)
+	}
+	if got := strings.Join(server.AllowPatterns, ","); got != "^uptime$,^df -h$" {
+		t.Errorf("allow_patterns = %q", got)
+	}
+	if got := strings.Join(server.DenyPatterns, ","); got != "reboot" {
+		t.Errorf("deny_patterns = %q", got)
 	}
 }
 

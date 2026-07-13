@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/xjoker/ssh-mcp/internal/knownhosts"
 )
 
 // TestTrustCmdNoArgs verifies that `trust` with no arguments exits non-zero.
@@ -63,7 +65,7 @@ func TestIsAuthError(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		got := isAuthError(tc.msg)
+		got := knownhosts.IsAuthenticationError(tc.msg)
 		if got != tc.want {
 			t.Errorf("isAuthError(%q) = %v, want %v", tc.msg, got, tc.want)
 		}
@@ -115,7 +117,7 @@ func TestTrust_AppendedFlagLogic(t *testing.T) {
 		{"", false},
 	}
 	for _, tc := range cases {
-		got := isAuthError(tc.msg)
+		got := knownhosts.IsAuthenticationError(tc.msg)
 		if got != tc.isAuth {
 			t.Errorf("isAuthError(%q) = %v, want %v", tc.msg, got, tc.isAuth)
 		}

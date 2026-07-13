@@ -2,19 +2,14 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/BurntSushi/toml"
 	gossh "golang.org/x/crypto/ssh"
 
 	"github.com/xjoker/ssh-mcp/internal/auth"
@@ -23,21 +18,8 @@ import (
 	sshpkg "github.com/xjoker/ssh-mcp/internal/ssh"
 )
 
-// cliServerNameRe is a local copy of config.serverNameRe for use in CLI write
-// paths, avoiding a dependency on the unexported symbol. Must stay in sync.
-var cliServerNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
-
-// validateServerName returns nil if name is a valid server map key.
-// The pattern is ^[a-z0-9][a-z0-9_-]*$ with length 1-64.
-// Used by CLI write paths to prevent producing malformed [servers.X] sections.
 func validateServerName(name string) error {
-	if len(name) == 0 || len(name) > 64 {
-		return fmt.Errorf("server name length must be 1-64 (got %d)", len(name))
-	}
-	if !cliServerNameRe.MatchString(name) {
-		return fmt.Errorf("server name %q must match ^[a-z0-9][a-z0-9_-]*$", name)
-	}
-	return nil
+	return config.ValidateServerName(name)
 }
 
 func init() { registerSubcommand("server", serverCmd) }
@@ -236,82 +218,15 @@ func serverAddCmd(args []string) int {
 	return 0
 }
 
-// (rawServerForEncode was removed: serverAppendToConfig writes TOML
-// fragments by hand via strings.Builder, no struct encode required.)
-
-// serverAppendToConfig appends a [servers.<name>] section to cfgPath.
-// If the file doesn't exist, it creates a minimal valid config first.
 func serverAppendToConfig(cfgPath string, name string, srv config.ServerConfig) error {
-	// Build TOML snippet manually to avoid the full encode/decode cycle.
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("\n[servers.%s]\n", name))
-	sb.WriteString(fmt.Sprintf("host = %q\n", srv.Host))
-	if srv.Port != 0 && srv.Port != 22 {
-		sb.WriteString(fmt.Sprintf("port = %d\n", srv.Port))
-	}
-	sb.WriteString(fmt.Sprintf("user = %q\n", srv.User))
-	sb.WriteString(fmt.Sprintf("auth = %q\n", srv.Auth))
-	if srv.KeyPath != "" {
-		sb.WriteString(fmt.Sprintf("key_path = %q\n", srv.KeyPath))
-	}
-	if srv.Description != "" {
-		sb.WriteString(fmt.Sprintf("description = %q\n", srv.Description))
-	}
-
-	// If the file doesn't exist, create with minimal header first.
-	if _, statErr := os.Stat(cfgPath); os.IsNotExist(statErr) {
-		dir := filepath.Dir(cfgPath)
-		if dir != "" {
-			if mkErr := os.MkdirAll(dir, 0700); mkErr != nil {
-				return fmt.Errorf("cannot create config directory: %w", mkErr)
-			}
-		}
-		header := "# ssh-mcp configuration\n\n[settings]\n"
-		if writeErr := os.WriteFile(cfgPath, []byte(header), 0600); writeErr != nil {
-			return fmt.Errorf("cannot create config file: %w", writeErr)
-		}
-	}
-
-	// Check if server name already exists.
-	existing, err := os.ReadFile(cfgPath)
+	cfg, err := loadConfigForWrite(cfgPath)
 	if err != nil {
-		return fmt.Errorf("cannot read config: %w", err)
+		return err
 	}
-	if config.HasServerBlock(existing, name) {
-		return fmt.Errorf("server %q already exists in config", name)
+	if err := config.AddServer(cfg, name, srv); err != nil {
+		return err
 	}
-
-	// Stage the appended content through a random temp file, validate, then
-	// atomically rename — same contract as `config add-server` and
-	// ssh_persistent_setup (a malformed entry must not corrupt the file, and
-	// two concurrent writers must not interleave appends).
-	content := make([]byte, 0, len(existing)+sb.Len()+1)
-	content = append(content, existing...)
-	if len(existing) > 0 && existing[len(existing)-1] != '\n' {
-		content = append(content, '\n')
-	}
-	content = append(content, sb.String()...)
-
-	tmpF, err := os.CreateTemp(filepath.Dir(cfgPath), filepath.Base(cfgPath)+".*.tmp")
-	if err != nil {
-		return fmt.Errorf("cannot create temp file: %w", err)
-	}
-	tmp := tmpF.Name()
-	_, werr := tmpF.Write(content)
-	cerr := tmpF.Close()
-	if werr != nil || cerr != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("cannot write server entry: %w", errors.Join(werr, cerr))
-	}
-	if _, err := config.Load(tmp); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("validation failed (config NOT modified): %w", err)
-	}
-	if err := os.Rename(tmp, cfgPath); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("cannot replace config: %w", err)
-	}
-	return nil
+	return config.Save(cfgPath, cfg)
 }
 
 // --------------------------------------------------------------------------
@@ -363,29 +278,6 @@ func serverListCmd(args []string) int {
 // server remove
 // --------------------------------------------------------------------------
 
-// onDiskConfig mirrors the top-level TOML structure for encode/decode.
-type onDiskConfig struct {
-	Settings config.Settings            `toml:"settings"`
-	Servers  map[string]serverForEncode `toml:"servers,omitempty"`
-}
-
-// serverForEncode is used exclusively for round-trip TOML encode/decode.
-// Using map[string]interface{} to avoid CredRef zero-value serialization issues.
-type serverForEncode struct {
-	Host          string         `toml:"host"`
-	Port          int            `toml:"port,omitempty"`
-	User          string         `toml:"user"`
-	Auth          string         `toml:"auth"`
-	KeyPath       string         `toml:"key_path,omitempty"`
-	KeyPassphrase config.CredRef `toml:"key_passphrase,omitempty"`
-	Password      config.CredRef `toml:"password,omitempty"`
-	DefaultDir    string         `toml:"default_dir,omitempty"`
-	Description   string         `toml:"description,omitempty"`
-	ProxyJump     string         `toml:"proxy_jump,omitempty"`
-	AllowedPaths  []string       `toml:"allowed_paths,omitempty"`
-	Tags          []string       `toml:"tags,omitempty"`
-}
-
 func serverRemoveCmd(args []string) int {
 	fs := flag.NewFlagSet("server remove", flag.ContinueOnError)
 	pathFlag := ""
@@ -412,99 +304,17 @@ func serverRemoveCmd(args []string) int {
 		return 1
 	}
 
-	if _, ok := cfg.Servers[name]; !ok {
-		fmt.Fprintf(os.Stderr, "server remove: server %q not found\n", name)
+	if err := config.RemoveServer(cfg, name); err != nil {
+		fmt.Fprintf(os.Stderr, "server remove: %v\n", err)
 		return 1
 	}
-
-	delete(cfg.Servers, name)
-
-	if err := saveConfig(cfgPath, cfg); err != nil {
+	if err := config.Save(cfgPath, cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "server remove: %v\n", err)
 		return 1
 	}
 
 	fmt.Printf("Server %q removed from %s\n", name, cfgPath)
 	return 0
-}
-
-// saveConfig encodes cfg back to cfgPath using BurntSushi/toml.
-// NOTE: This will lose comments — acceptable for MVP per SDD.
-func saveConfig(cfgPath string, cfg *config.Config) error {
-	enc := make(map[string]serverForEncode, len(cfg.Servers))
-	for k, v := range cfg.Servers {
-		enc[k] = serverForEncode{
-			Host:          v.Host,
-			Port:          v.Port,
-			User:          v.User,
-			Auth:          v.Auth,
-			KeyPath:       v.KeyPath,
-			KeyPassphrase: v.KeyPassphrase,
-			Password:      v.Password,
-			DefaultDir:    v.DefaultDir,
-			Description:   v.Description,
-			ProxyJump:     v.ProxyJump,
-			AllowedPaths:  v.AllowedPaths,
-			Tags:          v.Tags,
-		}
-	}
-
-	disk := onDiskConfig{
-		Settings: cfg.Settings,
-		Servers:  enc,
-	}
-
-	var buf bytes.Buffer
-	if err := toml.NewEncoder(&buf).Encode(disk); err != nil {
-		return fmt.Errorf("encode config: %w", err)
-	}
-
-	if err := writeFileAtomic(cfgPath, buf.Bytes(), 0600); err != nil {
-		return fmt.Errorf("write config: %w", err)
-	}
-	return nil
-}
-
-func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
-	dir := filepath.Dir(path)
-	if dir != "." && dir != "" {
-		if err := os.MkdirAll(dir, 0700); err != nil {
-			return err
-		}
-	}
-
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(tmpName)
-		}
-	}()
-
-	if err := tmp.Chmod(mode); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return err
-	}
-	cleanup = false
-	return nil
 }
 
 // --------------------------------------------------------------------------

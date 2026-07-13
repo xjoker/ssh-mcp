@@ -3,15 +3,11 @@ package main
 import (
 	"flag"
 	"fmt"
-	"net"
 	"os"
 	"strings"
-	"time"
-
-	gossh "golang.org/x/crypto/ssh"
 
 	"github.com/xjoker/ssh-mcp/internal/config"
-	"github.com/xjoker/ssh-mcp/internal/safety"
+	"github.com/xjoker/ssh-mcp/internal/knownhosts"
 )
 
 func init() { registerSubcommand("trust", trustCmd) }
@@ -86,88 +82,11 @@ func trustCmd(args []string) int {
 	addr := fmt.Sprintf("%s:%d", host, port)
 	fmt.Printf("Fetching host key from %s ...\n", addr)
 
-	if err := trustHostKey(addr); err != nil {
+	if err := knownhosts.TrustHostKey(addr); err != nil {
 		fmt.Fprintf(os.Stderr, "trust: %v\n", err)
 		return 1
 	}
 
 	fmt.Printf("Host key for %s has been added to ~/.ssh/known_hosts\n", addr)
 	return 0
-}
-
-// trustHostKey connects to addr with acceptNew=true, completes the SSH
-// handshake (which writes the host key to known_hosts), then immediately
-// closes the connection.
-//
-// We use a dummy user/auth that may fail authentication — that is expected
-// and acceptable, since we only care about the host key exchange phase.
-func trustHostKey(addr string) error {
-	// appended is set to true by the wrapping HostKeyCallback when
-	// safety.HostKeyCallback returns nil (meaning the key was accepted and
-	// written to known_hosts). Only in that case is a subsequent auth failure
-	// treated as success; any other dial error is propagated as-is.
-	appended := false
-	innerCB := safety.HostKeyCallback(true)
-	wrappingCB := gossh.HostKeyCallback(func(hostname string, remote net.Addr, key gossh.PublicKey) error {
-		err := innerCB(hostname, remote, key)
-		if err == nil {
-			// Host key was accepted and persisted to known_hosts.
-			appended = true
-		}
-		return err
-	})
-
-	cfg := &gossh.ClientConfig{
-		User: "mcp-trust-probe",
-		Auth: []gossh.AuthMethod{
-			// Use a none-auth that will always fail — we only need the handshake
-			// to succeed far enough to capture the host key.
-			gossh.Password(""),
-		},
-		HostKeyCallback:   wrappingCB,
-		HostKeyAlgorithms: safety.ModernHostKeyAlgorithms(),
-		Config:            safety.ModernAlgorithms(nil),
-		Timeout:           15 * time.Second,
-	}
-
-	client, err := gossh.Dial("tcp", addr, cfg)
-	if err != nil {
-		if appended {
-			// The host key callback succeeded (key written to known_hosts)
-			// before the auth phase failed — that is the expected outcome
-			// when using a dummy password. Treat as success.
-			return nil
-		}
-		// appended==false: the handshake itself failed before the host key
-		// was written. This includes algorithm mismatches, early TCP errors,
-		// HOST_KEY_MISMATCH, etc. Always propagate as a real failure.
-		if strings.Contains(err.Error(), "HOST_KEY_MISMATCH") {
-			return fmt.Errorf("host key mismatch for %s — key has changed, manual verification required", addr)
-		}
-		return fmt.Errorf("dial %s: %w", addr, err)
-	}
-	// Unexpected success (unlikely with dummy password) — still close cleanly.
-	client.Close()
-	return nil
-}
-
-// isAuthError reports whether an SSH dial error is specifically an
-// authentication failure (meaning the host key exchange already succeeded).
-// Retained for backward compatibility with existing tests but no longer used
-// by trustHostKey — the appended-flag approach is more precise.
-func isAuthError(msg string) bool {
-	authErrorSubstrings := []string{
-		"unable to authenticate",
-		"no supported methods remain",
-		"handshake failed: ssh: unable to authenticate",
-		"ssh: handshake failed",
-		"permission denied",
-	}
-	lower := strings.ToLower(msg)
-	for _, s := range authErrorSubstrings {
-		if strings.Contains(lower, s) {
-			return true
-		}
-	}
-	return false
 }

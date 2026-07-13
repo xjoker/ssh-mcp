@@ -4,17 +4,22 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/xjoker/ssh-mcp/internal/config"
 )
 
-// serverNamePattern matches the SDD server-name rule: ^[a-z0-9][a-z0-9_-]*$,
-// length 1-64. Used by add-server to fail fast before writing.
-var serverNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+type stringList []string
+
+func (values *stringList) String() string { return strings.Join(*values, ",") }
+
+func (values *stringList) Set(value string) error {
+	*values = append(*values, value)
+	return nil
+}
 
 func init() { registerSubcommand("config", configCmd) }
 
@@ -66,6 +71,9 @@ func configCmd(args []string) int {
 		fmt.Fprintln(os.Stderr, "  --description <s>  free-form description")
 		fmt.Fprintln(os.Stderr, "  --proxy-jump <name>  jump-host server name")
 		fmt.Fprintln(os.Stderr, "  --default-dir <p>  default working directory")
+		fmt.Fprintln(os.Stderr, "  --mode <mode>      command policy: unrestricted|readonly|restricted")
+		fmt.Fprintln(os.Stderr, "  --allow <regexp>   allow command pattern (repeatable)")
+		fmt.Fprintln(os.Stderr, "  --deny <regexp>    deny command pattern (repeatable)")
 	}
 
 	if len(args) == 0 {
@@ -160,15 +168,6 @@ func configValidateCmd(cfgPath string) int {
 	return 0
 }
 
-// configAddServerCmd appends a new [servers.<name>] block to cfgPath.
-// Refuses to overwrite an existing entry; the user must remove it manually
-// to avoid silent destruction. The resulting file is re-validated; on a
-// validation failure we restore the original content.
-//
-// For auth=password the default is to emit a keychain: reference instead
-// of a plaintext value, and to print the keychain set-keychain command
-// the user must run next. The CLI never reads, prompts for, or writes a
-// raw password to the config file.
 func configAddServerCmd(args []string) int {
 	fs := flag.NewFlagSet("config add-server", flag.ContinueOnError)
 	var (
@@ -184,7 +183,12 @@ func configAddServerCmd(args []string) int {
 		description      = fs.String("description", "", "free-form description")
 		proxyJump        = fs.String("proxy-jump", "", "jump-host server name")
 		defaultDir       = fs.String("default-dir", "", "default working directory")
+		mode             = fs.String("mode", "", "command policy mode")
+		allowPatterns    stringList
+		denyPatterns     stringList
 	)
+	fs.Var(&allowPatterns, "allow", "allow command pattern (repeatable)")
+	fs.Var(&denyPatterns, "deny", "deny command pattern (repeatable)")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
@@ -197,7 +201,7 @@ func configAddServerCmd(args []string) int {
 		fmt.Fprintln(os.Stderr, "config add-server: --name, --host, --user are required")
 		return 1
 	}
-	if !serverNamePattern.MatchString(*name) {
+	if err := config.ValidateServerName(*name); err != nil {
 		fmt.Fprintf(os.Stderr, "config add-server: invalid name %q (must match ^[a-z0-9][a-z0-9_-]{0,63}$)\n", *name)
 		return 1
 	}
@@ -217,99 +221,43 @@ func configAddServerCmd(args []string) int {
 		return 1
 	}
 
-	// Refuse to clobber an existing entry: scan the current file for the
-	// section header. Cheap and language-agnostic — we don't need a full
-	// TOML parse to detect duplicates.
-	original, err := os.ReadFile(cfgPath)
-	switch {
-	case err == nil:
-		if config.HasServerBlock(original, *name) {
-			fmt.Fprintf(os.Stderr, "config add-server: server %q already exists in %s\n", *name, cfgPath)
-			fmt.Fprintln(os.Stderr, "  Edit the file manually or remove the existing block first.")
-			return 1
-		}
-	case os.IsNotExist(err):
-		// First write — ensure parent dir + run config init shape.
-		dir := filepath.Dir(cfgPath)
-		if mkErr := os.MkdirAll(dir, 0700); mkErr != nil {
-			fmt.Fprintf(os.Stderr, "config add-server: cannot create directory %s: %v\n", dir, mkErr)
-			return 1
-		}
-		original = []byte{}
-	default:
-		fmt.Fprintf(os.Stderr, "config add-server: read %s: %v\n", cfgPath, err)
+	cfg, err := loadConfigForWrite(cfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config add-server: %v\n", err)
 		return 1
 	}
-
-	var sb strings.Builder
-	sb.Write(original)
-	if len(original) > 0 && !strings.HasSuffix(string(original), "\n") {
-		sb.WriteString("\n")
-	}
-	sb.WriteString("\n[servers.")
-	sb.WriteString(*name)
-	sb.WriteString("]\n")
-	sb.WriteString(fmt.Sprintf("host = %q\n", *host))
-	sb.WriteString(fmt.Sprintf("port = %d\n", *port))
-	sb.WriteString(fmt.Sprintf("user = %q\n", *user))
-	sb.WriteString(fmt.Sprintf("auth = %q\n", *auth))
-	if *keyPath != "" {
-		sb.WriteString(fmt.Sprintf("key_path = %q\n", *keyPath))
+	server := config.ServerConfig{
+		Host:        *host,
+		Port:        *port,
+		User:        *user,
+		Auth:        *auth,
+		KeyPath:     *keyPath,
+		Description: *description,
+		ProxyJump:   *proxyJump,
+		DefaultDir:  *defaultDir,
+		Tags:        parseCommaSeparated(*tagsCSV),
 	}
 	keychainHint := ""
 	if *auth == "password" && *passwordKeychain {
 		ref := fmt.Sprintf("keychain:%s:ssh-password:%s", keychainService(), *name)
-		sb.WriteString(fmt.Sprintf("password = %q\n", ref))
+		password, parseErr := config.ParseCredRef(ref)
+		if parseErr != nil {
+			fmt.Fprintf(os.Stderr, "config add-server: build keychain reference: %v\n", parseErr)
+			return 1
+		}
+		server.Password = password
 		keychainHint = fmt.Sprintf("ssh-mcp auth set ssh-password:%s", *name)
 	}
-	if *description != "" {
-		sb.WriteString(fmt.Sprintf("description = %q\n", *description))
-	}
-	if *proxyJump != "" {
-		sb.WriteString(fmt.Sprintf("proxy_jump = %q\n", *proxyJump))
-	}
-	if *defaultDir != "" {
-		sb.WriteString(fmt.Sprintf("default_dir = %q\n", *defaultDir))
-	}
-	if *tagsCSV != "" {
-		var tags []string
-		for _, t := range strings.Split(*tagsCSV, ",") {
-			t = strings.TrimSpace(t)
-			if t != "" {
-				tags = append(tags, fmt.Sprintf("%q", t))
-			}
-		}
-		if len(tags) > 0 {
-			sb.WriteString("tags = [")
-			sb.WriteString(strings.Join(tags, ", "))
-			sb.WriteString("]\n")
-		}
-	}
-
-	// Atomic write so a validation failure mid-flight does not corrupt the
-	// config file. A random temp name (os.CreateTemp, mode 0600) keeps two
-	// concurrent writers from clobbering each other's staging file.
-	tmpF, err := os.CreateTemp(filepath.Dir(cfgPath), filepath.Base(cfgPath)+".*.tmp")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "config add-server: create temp file: %v\n", err)
-		return 1
-	}
-	tmp := tmpF.Name()
-	_, werr := tmpF.WriteString(sb.String())
-	cerr := tmpF.Close()
-	if werr != nil || cerr != nil {
-		_ = os.Remove(tmp)
-		fmt.Fprintf(os.Stderr, "config add-server: write %s: %v\n", tmp, errors.Join(werr, cerr))
-		return 1
-	}
-	if _, err := config.Load(tmp); err != nil {
-		_ = os.Remove(tmp)
+	if err := config.AddServer(cfg, *name, server); err != nil {
 		fmt.Fprintf(os.Stderr, "config add-server: validation failed (config NOT modified):\n  %v\n", err)
 		return 1
 	}
-	if err := os.Rename(tmp, cfgPath); err != nil {
-		_ = os.Remove(tmp)
-		fmt.Fprintf(os.Stderr, "config add-server: rename: %v\n", err)
+	if err := config.SetServerPolicy(cfg, *name, *mode, allowPatterns, denyPatterns); err != nil {
+		fmt.Fprintf(os.Stderr, "config add-server: validation failed (config NOT modified):\n  %v\n", err)
+		return 1
+	}
+	if err := config.Save(cfgPath, cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "config add-server: validation failed (config NOT modified):\n  %v\n", err)
 		return 1
 	}
 
@@ -320,4 +268,25 @@ func configAddServerCmd(args []string) int {
 		fmt.Println("  " + keychainHint)
 	}
 	return 0
+}
+
+func loadConfigForWrite(path string) (*config.Config, error) {
+	cfg, err := config.Load(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return config.NewConfig(), nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+func parseCommaSeparated(raw string) []string {
+	var values []string
+	for _, value := range strings.Split(raw, ",") {
+		if value = strings.TrimSpace(value); value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
 }

@@ -140,6 +140,9 @@ type Config struct {
 	Servers  map[string]ServerConfig
 	Proxies  map[string]ProxyConfig // keyed by lower-cased proxy name
 	Path     string                 // file path the config was loaded from
+
+	source   []byte
+	snapshot *diskConfig
 }
 
 // MarshalText implements encoding.TextMarshaler so that BurntSushi/toml can

@@ -16,6 +16,7 @@ allowlist_for() {
     envelope)  echo "" ;;
     safety)    echo "" ;;
     config)    echo "" ;;
+    knownhosts) echo "safety" ;;
     auth)      echo "safety config" ;;
     audit)     echo "safety" ;;
     proxy)     echo "" ;;

@@ -110,22 +110,21 @@ func Load(path string) (*Config, error) {
 
 	// Build Settings with proper defaults.
 	rs := raw.Settings
-	settings := Settings{
-		AllowConfigPlaintextPassword: boolVal(rs.AllowConfigPlaintextPassword, false),
-		AllowInlineCredentials:       boolVal(rs.AllowInlineCredentials, true),
-		DefaultTimeoutMs:             intVal(rs.DefaultTimeoutMs, 120_000),
-		MaxTimeoutMs:                 intVal(rs.MaxTimeoutMs, 1_800_000),
-		OutputMaxBytes:               intVal(rs.OutputMaxBytes, 65_536),
-		SftpProgressThresholdBytes:   intVal(rs.SftpProgressThresholdBytes, 10*1024*1024),
-		SessionIdleSeconds:           intVal(rs.SessionIdleSeconds, 3_600),
-		MaxSessions:                  intVal(rs.MaxSessions, 16),
-		ConnIdleSeconds:              intVal(rs.ConnIdleSeconds, 600),
-		AuditRetentionDays:           intVal(rs.AuditRetentionDays, 90),
-		AuditRecordOutput:            boolVal(rs.AuditRecordOutput, true),
-		AuditOutputMaxBytes:          intVal(rs.AuditOutputMaxBytes, 32*1024),
-		WeakAlgorithmsOptIn:          rs.WeakAlgorithmsOptIn,
-		UploadLocalAllowedPaths:      rs.UploadLocalAllowedPaths,
-	}
+	settings := defaultSettings()
+	settings.AllowConfigPlaintextPassword = boolVal(rs.AllowConfigPlaintextPassword, settings.AllowConfigPlaintextPassword)
+	settings.AllowInlineCredentials = boolVal(rs.AllowInlineCredentials, settings.AllowInlineCredentials)
+	settings.DefaultTimeoutMs = intVal(rs.DefaultTimeoutMs, settings.DefaultTimeoutMs)
+	settings.MaxTimeoutMs = intVal(rs.MaxTimeoutMs, settings.MaxTimeoutMs)
+	settings.OutputMaxBytes = intVal(rs.OutputMaxBytes, settings.OutputMaxBytes)
+	settings.SftpProgressThresholdBytes = intVal(rs.SftpProgressThresholdBytes, settings.SftpProgressThresholdBytes)
+	settings.SessionIdleSeconds = intVal(rs.SessionIdleSeconds, settings.SessionIdleSeconds)
+	settings.MaxSessions = intVal(rs.MaxSessions, settings.MaxSessions)
+	settings.ConnIdleSeconds = intVal(rs.ConnIdleSeconds, settings.ConnIdleSeconds)
+	settings.AuditRetentionDays = intVal(rs.AuditRetentionDays, settings.AuditRetentionDays)
+	settings.AuditRecordOutput = boolVal(rs.AuditRecordOutput, settings.AuditRecordOutput)
+	settings.AuditOutputMaxBytes = intVal(rs.AuditOutputMaxBytes, settings.AuditOutputMaxBytes)
+	settings.WeakAlgorithmsOptIn = rs.WeakAlgorithmsOptIn
+	settings.UploadLocalAllowedPaths = rs.UploadLocalAllowedPaths
 
 	// configDir is the directory of the loaded config file; relative paths
 	// in key_path are resolved against it so users don't have to repeat the
@@ -167,11 +166,13 @@ func Load(path string) (*Config, error) {
 		Servers:  servers,
 		Proxies:  proxies,
 		Path:     path,
+		source:   append([]byte(nil), data...),
 	}
 
 	if err := validate(cfg); err != nil {
 		return nil, err
 	}
+	cfg.snapshot = cloneDiskConfig(encodeConfig(cfg))
 
 	return cfg, nil
 }
