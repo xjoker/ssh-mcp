@@ -308,6 +308,35 @@ func validate(cfg *Config) error {
 			}
 		}
 
+		// Command policy: mode must be a recognised value, patterns must not
+		// be orphaned (present with mode unset/unrestricted), and every
+		// pattern must be a valid Go regexp (RE2). The actual engine lives in
+		// internal/safety (CompilePolicy) — config is a leaf package and
+		// does not import it (scripts/check-deps.sh), so this duplicates
+		// only the mode enum and calls regexp.Compile directly to validate
+		// pattern syntax ahead of time (fail-closed at load, not at first use).
+		switch srv.Mode {
+		case "", "unrestricted", "readonly", "restricted":
+			// ok
+		default:
+			errs = append(errs, fmt.Sprintf("server %q: mode must be one of unrestricted/readonly/restricted, got %q", name, srv.Mode))
+		}
+		if srv.Mode == "" || srv.Mode == "unrestricted" {
+			if len(srv.AllowPatterns) > 0 || len(srv.DenyPatterns) > 0 {
+				errs = append(errs, fmt.Sprintf("server %q: allow_patterns/deny_patterns require mode=readonly or mode=restricted", name))
+			}
+		}
+		for i, pat := range srv.AllowPatterns {
+			if _, reErr := regexp.Compile(pat); reErr != nil {
+				errs = append(errs, fmt.Sprintf("server %q: allow_patterns[%d] %q: invalid regexp: %v", name, i, pat, reErr))
+			}
+		}
+		for i, pat := range srv.DenyPatterns {
+			if _, reErr := regexp.Compile(pat); reErr != nil {
+				errs = append(errs, fmt.Sprintf("server %q: deny_patterns[%d] %q: invalid regexp: %v", name, i, pat, reErr))
+			}
+		}
+
 		// Rule 11: allowed_paths must be absolute, clean (no .., no double slash),
 		// and must not contain trailing slash (except root "/").
 		for _, p := range srv.AllowedPaths {

@@ -181,6 +181,43 @@ func middlewareChain(
 	reqDeps.Progress = buildProgressFunc(ctx, req)
 	reqDeps.SessionID = sessionID
 
+	// 2.5 Per-server command policy (docs/design/command-policy.md §4).
+	// Only tools that carry a top-level "server" field are evaluated here;
+	// extractServerName returns "" for ssh_group_exec ("servers"/"tag") and
+	// session_send (only "session_id"), so those are naturally skipped and
+	// instead evaluate policy themselves per-target/per-session inside
+	// internal/tools/group_exec.go and internal/tools/session.go.
+	if serverName != "" {
+		policy, perr := tools.PolicyForServer(deps, serverName)
+		if perr != nil {
+			resp = envelope.Err(envelope.CodeInternalError, "policy compile: "+perr.Error(), false)
+			return envelopeToCallToolResult(resp), nil
+		}
+		if policy != nil {
+			if denyErr := evaluateSingleServerPolicy(policy, toolName, rawArgs); denyErr != nil {
+				deniedEntry := audit.Entry{
+					Timestamp:     time.Now().UTC(),
+					SessionID:     sessionID,
+					Tool:          toolName,
+					Server:        serverName,
+					ArgsRedacted:  argsRedacted,
+					Status:        "denied",
+					CorrelationID: correlationID,
+					ErrorCode:     envelope.CodePolicyDenied,
+					Stderr:        denyErr.Error(),
+				}
+				if auditErr := deps.Audit.Record(deniedEntry); auditErr != nil {
+					fmt.Fprintf(getStderr(), "mcpserver: audit denied-record failed for tool %q: %v\n", toolName, auditErr)
+					resp = envelope.Err(envelope.CodeAuditFailed,
+						"audit log unavailable; refusing to execute operation", false)
+					return envelopeToCallToolResult(resp), nil
+				}
+				resp = envelope.Err(envelope.CodePolicyDenied, denyErr.Error(), false)
+				return envelopeToCallToolResult(resp), nil
+			}
+		}
+	}
+
 	// 3. Pre-record (fail-closed) — destructive tools only.
 	//    SDD §9.3: if the pending entry cannot be persisted we refuse to
 	//    invoke the handler. Read-only tools (list_servers, audit_query,
@@ -242,6 +279,15 @@ func buildAuditEntry(start time.Time, toolName, sessionID, serverName, argsRedac
 	}
 	if isDestructive(toolName) {
 		auditEntry.Status = "completed"
+		// session_send / ssh_group_exec evaluate the command policy inside
+		// their own handler (the middleware gate at step 2.5 can't resolve a
+		// session_id→server or a tag→servers fan-out), so a policy denial
+		// reaches here as a normal POLICY_DENIED response. Stamp it "denied"
+		// so it matches the middleware-gated ssh_exec denial record instead
+		// of looking like a completed execution. docs/design/command-policy.md §3.5.
+		if errorCode == envelope.CodePolicyDenied {
+			auditEntry.Status = "denied"
+		}
 		auditEntry.CorrelationID = correlationID
 	}
 
@@ -374,6 +420,72 @@ func extractServerName(raw json.RawMessage) string {
 		return ""
 	}
 	return m.Server
+}
+
+// extractCommand tries to extract a "command" field from raw JSON arguments
+// (ssh_exec). Returns "" if not present or on any error.
+func extractCommand(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var m struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return ""
+	}
+	return m.Command
+}
+
+// isReadOnlyTool reports whether the named tool is registered with
+// Annotations.ReadOnlyHint == true (sftp_list / sftp_read / sftp_stat /
+// list_servers / audit_query). Linear scan over the small (~20 entry)
+// tools.All() list — cheap enough per-request to not warrant a cached map.
+func isReadOnlyTool(name string) bool {
+	for _, t := range tools.All() {
+		if t.Name == name {
+			return t.Annotations != nil && t.Annotations.ReadOnlyHint
+		}
+	}
+	return false
+}
+
+// evaluateSingleServerPolicy judges a single-server tool invocation against
+// an already-non-nil policy (docs/design/command-policy.md §4):
+//   - read-only tools (sftp_list/read/stat, list_servers, audit_query)
+//     always pass — Annotations.ReadOnlyHint is the source of truth;
+//   - sftp_op / sftp_upload / tunnel have no command semantics to evaluate
+//     and are denied outright under any non-nil policy (readonly or
+//     restricted) — safety.Policy.DenyNonCommandWrites;
+//   - ssh_exec's "command" field is evaluated line-by-line via
+//     safety.Policy.EvaluateCommand;
+//   - session_start's optional "command" (run immediately in PTY mode) is
+//     evaluated the same way; a bare open (empty command) passes. Each
+//     subsequent session_send command is evaluated on its own by
+//     internal/tools/session.go, per SDD §4;
+//   - any other single-server tool (ssh_quick_setup, ssh_persistent_setup,
+//     etc.) is unaffected — command-policy.md scopes filtering to command
+//     execution and non-command writes only.
+func evaluateSingleServerPolicy(policy *safety.Policy, toolName string, rawArgs json.RawMessage) error {
+	if isReadOnlyTool(toolName) {
+		return nil
+	}
+	switch toolName {
+	case "sftp_op", "sftp_upload", "tunnel":
+		if policy.DenyNonCommandWrites() {
+			return fmt.Errorf("%s: write operation not permitted under this server's command policy", toolName)
+		}
+	case "ssh_exec":
+		return policy.EvaluateCommand(extractCommand(rawArgs))
+	case "session_start":
+		// PTY-mode session_start runs "command" immediately; a bare open
+		// leaves it empty. EvaluateCommand permits an empty command, so
+		// evaluating unconditionally is correct and fail-closed.
+		if cmd := extractCommand(rawArgs); cmd != "" {
+			return policy.EvaluateCommand(cmd)
+		}
+	}
+	return nil
 }
 
 // getStderr returns os.Stderr. Defined as a function to allow test injection

@@ -227,6 +227,25 @@ func lookupServer(deps *Deps, name string) (struct{ Host, User string }, bool) {
 	return info, false
 }
 
+// sessionServerName resolves the server name a live session was opened
+// against, by scanning SessionMgr.List() for a matching ID. Used by
+// session_send to key command-policy evaluation off the session's origin
+// server (session_send itself carries no "server" field). Returns
+// ("", false) for an unknown/closed session — handleSessionSend then falls
+// through to deps.SessionMgr.Send, which returns the normal SESSION_DEAD /
+// not-found error.
+func sessionServerName(deps *Deps, sessionID string) (string, bool) {
+	if deps == nil || deps.SessionMgr == nil {
+		return "", false
+	}
+	for _, si := range deps.SessionMgr.List() {
+		if si.ID == sessionID {
+			return si.Server, true
+		}
+	}
+	return "", false
+}
+
 // registerInlineSession converts inline credentials into a runtime entry
 // in the QuickSetup registry + ssh.Pool so that the rest of the session
 // machinery can address it by name. The TTL matches the configured session
@@ -343,6 +362,25 @@ func handleSessionSend(ctx context.Context, deps *Deps, args json.RawMessage) en
 	}
 	if input.SessionID == "" {
 		return envelope.Err(envelope.CodeInvalidArgument, "'session_id' is required", false)
+	}
+
+	// Per-server command policy (docs/design/command-policy.md §4).
+	// session_send has no top-level "server" field for the mcpserver
+	// middleware to key off (only session_id), so it is resolved here via
+	// the session's own Server metadata. An empty command (PTY drain-only
+	// send, per SDD §6.4) carries no command semantics to evaluate.
+	if input.Command != "" {
+		if srvName, ok := sessionServerName(deps, input.SessionID); ok {
+			policy, perr := PolicyForServer(deps, srvName)
+			if perr != nil {
+				return envelope.Err(envelope.CodeInternalError, "policy compile: "+perr.Error(), false)
+			}
+			if policy != nil {
+				if err := policy.EvaluateCommand(input.Command); err != nil {
+					return envelope.Err(envelope.CodePolicyDenied, err.Error(), false)
+				}
+			}
+		}
 	}
 
 	timeoutMs := input.TimeoutMs

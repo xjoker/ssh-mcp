@@ -267,13 +267,32 @@ func handleSSHGroupExec(ctx context.Context, deps *Deps, args json.RawMessage) e
 		return envelope.OK(output)
 	}
 
+	// All targets denied by command policy: surface POLICY_DENIED rather
+	// than the generic PARTIAL_FAILURE so callers can tell "every server
+	// refused this command" apart from a mix of connection/exec errors.
+	errCode := envelope.CodePartialFailure
+	errMsg := fmt.Sprintf("%d of %d servers failed", failed, len(serverNames))
+	if failed == len(serverNames) {
+		allPolicyDenied := true
+		for _, r := range results {
+			if r.Error == nil || r.Error.Code != envelope.CodePolicyDenied {
+				allPolicyDenied = false
+				break
+			}
+		}
+		if allPolicyDenied {
+			errCode = envelope.CodePolicyDenied
+			errMsg = fmt.Sprintf("all %d servers denied by command policy", len(serverNames))
+		}
+	}
+
 	// Partial or total failure: return structured data but mark top-level as error
 	resp := envelope.Response{
 		OK:   false,
 		Data: output,
 		Error: &envelope.Error{
-			Code:      envelope.CodePartialFailure,
-			Message:   fmt.Sprintf("%d of %d servers failed", failed, len(serverNames)),
+			Code:      errCode,
+			Message:   errMsg,
 			Retriable: false,
 		},
 	}
@@ -335,6 +354,34 @@ func execOnServer(
 
 	if result, denied := earlyCwdCheck(deps, serverName, rawCwd); denied {
 		return result
+	}
+
+	// Per-server command policy (docs/design/command-policy.md §4).
+	// ssh_group_exec has no top-level "server" field for the mcpserver
+	// middleware to key off (see extractServerName), so each target's
+	// policy is evaluated here — right before connecting — so a denied
+	// target never opens a connection and never affects sibling targets.
+	if policy, perr := PolicyForServer(deps, serverName); perr != nil {
+		return groupExecServerResult{
+			Server: serverName,
+			OK:     false,
+			Error: &envelope.Error{
+				Code:    envelope.CodeInternalError,
+				Message: "policy compile: " + perr.Error(),
+			},
+		}
+	} else if policy != nil {
+		if err := policy.EvaluateCommand(command); err != nil {
+			return groupExecServerResult{
+				Server: serverName,
+				OK:     false,
+				Error: &envelope.Error{
+					Code:      envelope.CodePolicyDenied,
+					Message:   err.Error(),
+					Retriable: false,
+				},
+			}
+		}
 	}
 
 	client, err := deps.Pool.Get(ctx, serverName)

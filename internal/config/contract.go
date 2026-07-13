@@ -87,6 +87,23 @@ type ServerConfig struct {
 	AllowedPaths []string `toml:"allowed_paths"`
 	Tags         []string `toml:"tags"`
 
+	// Mode is the per-server command policy mode: "" / "unrestricted"
+	// (default, no filtering — identical to pre-policy behaviour),
+	// "readonly" (built-in conservative observation allowlist + user
+	// AllowPatterns, hard-denies shell metacharacters), or "restricted"
+	// (command must match AllowPatterns and not DenyPatterns; empty
+	// AllowPatterns denies everything). See docs/design/command-policy.md
+	// and internal/safety.CompilePolicy, which is the engine that
+	// interprets these fields — config only validates their shape.
+	Mode string `toml:"mode"`
+	// AllowPatterns / DenyPatterns are Go regexp (RE2) source strings
+	// evaluated by internal/safety.CompilePolicy. Only meaningful when
+	// Mode is "readonly" or "restricted"; validate() rejects them
+	// otherwise (orphan patterns are a config error, not silently
+	// ignored).
+	AllowPatterns []string `toml:"allow_patterns"`
+	DenyPatterns  []string `toml:"deny_patterns"`
+
 	// AcceptNewHost is a runtime-only field (not deserialised from TOML) that
 	// lets the SSH pool accept an unknown host key on first contact for this
 	// specific server. It is populated by ssh_quick_setup / session_start

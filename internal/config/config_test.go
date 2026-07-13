@@ -1205,3 +1205,100 @@ user = "deploy"
 auth = "agent"
 `, notClean), "is not clean")
 }
+
+// ---- command policy fields: mode / allow_patterns / deny_patterns --------------
+
+func TestLoad_Policy_ModeUnset_OK(t *testing.T) {
+	cfg := mustLoad(t, minimalAgent)
+	srv := cfg.Servers["myserver"]
+	if srv.Mode != "" {
+		t.Errorf("Mode = %q, want empty", srv.Mode)
+	}
+}
+
+func TestLoad_Policy_ModeReadonly_OK(t *testing.T) {
+	cfg := mustLoad(t, `
+[servers.myserver]
+host = "example.com"
+user = "deploy"
+auth = "agent"
+mode = "readonly"
+`)
+	srv := cfg.Servers["myserver"]
+	if srv.Mode != "readonly" {
+		t.Errorf("Mode = %q, want readonly", srv.Mode)
+	}
+}
+
+func TestLoad_Policy_ModeRestricted_WithPatterns_OK(t *testing.T) {
+	cfg := mustLoad(t, `
+[servers.myserver]
+host = "example.com"
+user = "deploy"
+auth = "agent"
+mode = "restricted"
+allow_patterns = ["^docker (ps|logs) "]
+deny_patterns = ["--force"]
+`)
+	srv := cfg.Servers["myserver"]
+	if len(srv.AllowPatterns) != 1 || srv.AllowPatterns[0] != "^docker (ps|logs) " {
+		t.Errorf("AllowPatterns = %v", srv.AllowPatterns)
+	}
+	if len(srv.DenyPatterns) != 1 || srv.DenyPatterns[0] != "--force" {
+		t.Errorf("DenyPatterns = %v", srv.DenyPatterns)
+	}
+}
+
+func TestLoad_Policy_InvalidMode_Error(t *testing.T) {
+	mustFail(t, `
+[servers.myserver]
+host = "example.com"
+user = "deploy"
+auth = "agent"
+mode = "bogus"
+`, `mode must be one of unrestricted/readonly/restricted, got "bogus"`)
+}
+
+func TestLoad_Policy_OrphanAllowPatterns_ModeUnset_Error(t *testing.T) {
+	mustFail(t, `
+[servers.myserver]
+host = "example.com"
+user = "deploy"
+auth = "agent"
+allow_patterns = ["^ls"]
+`, "allow_patterns/deny_patterns require mode=readonly or mode=restricted")
+}
+
+func TestLoad_Policy_OrphanDenyPatterns_ModeUnrestricted_Error(t *testing.T) {
+	mustFail(t, `
+[servers.myserver]
+host = "example.com"
+user = "deploy"
+auth = "agent"
+mode = "unrestricted"
+deny_patterns = ["--force"]
+`, "allow_patterns/deny_patterns require mode=readonly or mode=restricted")
+}
+
+func TestLoad_Policy_InvalidAllowPatternRegex_Error(t *testing.T) {
+	mustFail(t, `
+[servers.myserver]
+host = "example.com"
+user = "deploy"
+auth = "agent"
+mode = "restricted"
+allow_patterns = ["("]
+`, `allow_patterns[0] "(": invalid regexp`)
+}
+
+func TestLoad_Policy_InvalidDenyPatternRegex_Error(t *testing.T) {
+	mustFail(t, `
+[servers.myserver]
+host = "example.com"
+user = "deploy"
+auth = "agent"
+mode = "restricted"
+allow_patterns = ["^ls"]
+deny_patterns = ["("]
+`, `deny_patterns[0] "(": invalid regexp`)
+}

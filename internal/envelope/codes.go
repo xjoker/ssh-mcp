@@ -34,4 +34,12 @@ const (
 	// local_path is rejected against a *non-empty* allow-list) so callers
 	// can tell "feature off" from "path not allowed" apart.
 	CodeUploadDisabled = "UPLOAD_DISABLED"
+	// CodePolicyDenied signals that a command or write operation was
+	// rejected by the target server's per-server command policy
+	// (config.ServerConfig.Mode = readonly/restricted). Distinct from
+	// CodePermissionDenied (a remote-side OS permission failure): this is
+	// a local, pre-execution refusal — the command never reached the
+	// remote shell. Not retriable: retrying the identical command against
+	// the same policy will always be denied again.
+	CodePolicyDenied = "POLICY_DENIED"
 )
