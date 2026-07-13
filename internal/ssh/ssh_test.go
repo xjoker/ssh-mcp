@@ -827,6 +827,28 @@ func TestPool_RedialClosesDeadClient(t *testing.T) {
 	}
 }
 
+func TestPoolListSkipsBusyEntry(t *testing.T) {
+	p := NewPool(&config.Config{Servers: map[string]config.ServerConfig{}}, &fakeResolver{})
+	entry := &pooledEntry{lastUsed: time.Now()}
+	p.entries["busy"] = entry
+
+	entry.mu.Lock()
+	done := make(chan []PoolInfo, 1)
+	go func() {
+		done <- p.List()
+	}()
+
+	select {
+	case infos := <-done:
+		if len(infos) != 0 {
+			t.Fatalf("List returned %#v, want busy entry skipped", infos)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("List blocked on a busy pool entry")
+	}
+	entry.mu.Unlock()
+}
+
 // --------------------------------------------------------------------------
 // Helper
 // --------------------------------------------------------------------------

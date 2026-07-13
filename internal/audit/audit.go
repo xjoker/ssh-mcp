@@ -98,6 +98,14 @@ type Logger struct {
 	closed        bool
 }
 
+// Store returns the operational store owned by this logger. Callers must not
+// close it; Logger.Close remains the single owner of the database lifecycle.
+func (logger *Logger) Store() *store.Store {
+	logger.mu.Lock()
+	defer logger.mu.Unlock()
+	return logger.store
+}
+
 // NewReader opens an existing audit directory in read-only mode for Query
 // callers (e.g. the `audit query` CLI). Unlike New, it does NOT enforce
 // retention (no deletion of old files), does NOT create the directory or

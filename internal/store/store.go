@@ -63,6 +63,30 @@ type AuditFilter struct {
 	Limit      int
 }
 
+// LiveResourceType identifies the runtime resource table that stores a live
+// state snapshot.
+type LiveResourceType string
+
+const (
+	LiveResourceSession    LiveResourceType = "session"
+	LiveResourceTunnel     LiveResourceType = "tunnel"
+	LiveResourceConnection LiveResourceType = "connection"
+)
+
+// LiveEntry is a passive snapshot of one runtime resource owned by an MCP
+// process. It contains no credentials, command text, or network endpoints.
+type LiveEntry struct {
+	ProcessID     string
+	ResourceType  LiveResourceType
+	ResourceID    string
+	Server        string
+	Kind          string
+	PID           int
+	MCPClient     string
+	StartedAt     time.Time
+	LastHeartbeat time.Time
+}
+
 // Store is a concurrency-safe SQLite operational store.
 type Store struct {
 	mu            sync.RWMutex
@@ -191,9 +215,231 @@ CREATE TABLE IF NOT EXISTS audit (
 CREATE INDEX IF NOT EXISTS audit_timestamp_idx ON audit(timestamp_sec DESC, timestamp_nsec DESC, id DESC);
 CREATE INDEX IF NOT EXISTS audit_server_idx ON audit(server, timestamp_sec DESC, timestamp_nsec DESC, id DESC);
 CREATE INDEX IF NOT EXISTS audit_tool_idx ON audit(tool, timestamp_sec DESC, timestamp_nsec DESC, id DESC);
+CREATE TABLE IF NOT EXISTS live_sessions (
+  process_id TEXT NOT NULL,
+  resource_id TEXT NOT NULL,
+  server TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  pid INTEGER NOT NULL,
+  mcp_client TEXT NOT NULL,
+  started_at_sec INTEGER NOT NULL,
+  started_at_nsec INTEGER NOT NULL,
+  last_heartbeat_sec INTEGER NOT NULL,
+  last_heartbeat_nsec INTEGER NOT NULL,
+  PRIMARY KEY (process_id, resource_id)
+);
+CREATE TABLE IF NOT EXISTS live_tunnels (
+  process_id TEXT NOT NULL,
+  resource_id TEXT NOT NULL,
+  server TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  pid INTEGER NOT NULL,
+  mcp_client TEXT NOT NULL,
+  started_at_sec INTEGER NOT NULL,
+  started_at_nsec INTEGER NOT NULL,
+  last_heartbeat_sec INTEGER NOT NULL,
+  last_heartbeat_nsec INTEGER NOT NULL,
+  PRIMARY KEY (process_id, resource_id)
+);
+CREATE TABLE IF NOT EXISTS live_connections (
+  process_id TEXT NOT NULL,
+  resource_id TEXT NOT NULL,
+  server TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  pid INTEGER NOT NULL,
+  mcp_client TEXT NOT NULL,
+  started_at_sec INTEGER NOT NULL,
+  started_at_nsec INTEGER NOT NULL,
+  last_heartbeat_sec INTEGER NOT NULL,
+  last_heartbeat_nsec INTEGER NOT NULL,
+  PRIMARY KEY (process_id, resource_id)
+);
+CREATE INDEX IF NOT EXISTS live_sessions_heartbeat_idx ON live_sessions(last_heartbeat_sec, last_heartbeat_nsec);
+CREATE INDEX IF NOT EXISTS live_tunnels_heartbeat_idx ON live_tunnels(last_heartbeat_sec, last_heartbeat_nsec);
+CREATE INDEX IF NOT EXISTS live_connections_heartbeat_idx ON live_connections(last_heartbeat_sec, last_heartbeat_nsec);
 INSERT OR IGNORE INTO schema_migrations(version, applied_at_sec) VALUES (1, unixepoch());`)
 	if err != nil {
 		return fmt.Errorf("store: migrate schema: %w", err)
+	}
+	if _, err := store.db.Exec("INSERT OR IGNORE INTO schema_migrations(version, applied_at_sec) VALUES (2, unixepoch())"); err != nil {
+		return fmt.Errorf("store: record live-state schema migration: %w", err)
+	}
+	return nil
+}
+
+// ReplaceProcessLive atomically replaces every live-state row owned by one
+// MCP process. Callers provide a complete current snapshot, so resources that
+// closed since the last heartbeat are removed without probing remote systems.
+func (store *Store) ReplaceProcessLive(processID string, entries []LiveEntry) error {
+	if processID == "" {
+		return errors.New("store: live process ID is required")
+	}
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	if store.closed || store.db == nil || store.readOnly {
+		return errors.New("store: database is closed or read-only")
+	}
+	for index := range entries {
+		if entries[index].ProcessID == "" {
+			entries[index].ProcessID = processID
+		}
+		if entries[index].ProcessID != processID {
+			return fmt.Errorf("store: live entry %q belongs to process %q, want %q", entries[index].ResourceID, entries[index].ProcessID, processID)
+		}
+		if err := validateLiveEntry(entries[index]); err != nil {
+			return err
+		}
+	}
+
+	tx, err := store.db.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin live-state replacement: %w", err)
+	}
+	defer tx.Rollback()
+	for _, table := range liveTables {
+		if _, err := tx.Exec("DELETE FROM "+table+" WHERE process_id = ?", processID); err != nil {
+			return fmt.Errorf("store: clear live-state process %q: %w", processID, err)
+		}
+	}
+	for _, entry := range entries {
+		table, err := entry.ResourceType.liveTable()
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec("INSERT INTO "+table+` (
+process_id, resource_id, server, kind, pid, mcp_client,
+started_at_sec, started_at_nsec, last_heartbeat_sec, last_heartbeat_nsec
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			entry.ProcessID, entry.ResourceID, entry.Server, entry.Kind, entry.PID, entry.MCPClient,
+			entry.StartedAt.Unix(), entry.StartedAt.Nanosecond(), entry.LastHeartbeat.Unix(), entry.LastHeartbeat.Nanosecond()); err != nil {
+			return fmt.Errorf("store: insert live %s %q: %w", entry.ResourceType, entry.ResourceID, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit live-state replacement: %w", err)
+	}
+	return nil
+}
+
+// DeleteProcessLive removes every live-state row owned by one MCP process.
+// It is idempotent so clean shutdown can safely race with a disconnected
+// transport's cancellation path.
+func (store *Store) DeleteProcessLive(processID string) error {
+	if processID == "" {
+		return nil
+	}
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	if store.closed || store.db == nil || store.readOnly {
+		return errors.New("store: database is closed or read-only")
+	}
+	for _, table := range liveTables {
+		if _, err := store.db.Exec("DELETE FROM "+table+" WHERE process_id = ?", processID); err != nil {
+			return fmt.Errorf("store: delete live-state process %q: %w", processID, err)
+		}
+	}
+	return nil
+}
+
+// ListLive returns live-state rows whose heartbeat is not older than cutoff.
+// A zero cutoff returns all rows, including stale rows for diagnostics.
+func (store *Store) ListLive(cutoff time.Time) ([]LiveEntry, error) {
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	if store.closed || store.db == nil {
+		return nil, errors.New("store: database is closed")
+	}
+	entries := make([]LiveEntry, 0)
+	for _, resourceType := range liveResourceTypes {
+		table, _ := resourceType.liveTable()
+		query := `SELECT process_id, resource_id, server, kind, pid, mcp_client,
+started_at_sec, started_at_nsec, last_heartbeat_sec, last_heartbeat_nsec FROM ` + table
+		args := make([]any, 0, 3)
+		if !cutoff.IsZero() {
+			query += " WHERE last_heartbeat_sec > ? OR (last_heartbeat_sec = ? AND last_heartbeat_nsec >= ?)"
+			args = append(args, cutoff.Unix(), cutoff.Unix(), cutoff.Nanosecond())
+		}
+		query += " ORDER BY last_heartbeat_sec DESC, last_heartbeat_nsec DESC, process_id, resource_id"
+		rows, err := store.db.Query(query, args...)
+		if err != nil {
+			return nil, fmt.Errorf("store: query live %s: %w", resourceType, err)
+		}
+		for rows.Next() {
+			entry := LiveEntry{ResourceType: resourceType}
+			var startedSec, heartbeatSec int64
+			var startedNSec, heartbeatNSec int
+			if err := rows.Scan(&entry.ProcessID, &entry.ResourceID, &entry.Server, &entry.Kind, &entry.PID, &entry.MCPClient,
+				&startedSec, &startedNSec, &heartbeatSec, &heartbeatNSec); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("store: scan live %s: %w", resourceType, err)
+			}
+			entry.StartedAt = time.Unix(startedSec, int64(startedNSec)).UTC()
+			entry.LastHeartbeat = time.Unix(heartbeatSec, int64(heartbeatNSec)).UTC()
+			entries = append(entries, entry)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("store: iterate live %s: %w", resourceType, err)
+		}
+		rows.Close()
+	}
+	return entries, nil
+}
+
+// ReapLive physically deletes rows whose heartbeat is older than cutoff.
+// Readers must still apply the cutoff in ListLive so crashed-process rows are
+// never shown as active before this lazy cleanup runs.
+func (store *Store) ReapLive(cutoff time.Time) error {
+	if cutoff.IsZero() {
+		return nil
+	}
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	if store.closed || store.db == nil || store.readOnly {
+		return errors.New("store: database is closed or read-only")
+	}
+	for _, table := range liveTables {
+		if _, err := store.db.Exec("DELETE FROM "+table+" WHERE last_heartbeat_sec < ? OR (last_heartbeat_sec = ? AND last_heartbeat_nsec < ?)", cutoff.Unix(), cutoff.Unix(), cutoff.Nanosecond()); err != nil {
+			return fmt.Errorf("store: reap live-state: %w", err)
+		}
+	}
+	return nil
+}
+
+var liveResourceTypes = []LiveResourceType{
+	LiveResourceSession,
+	LiveResourceTunnel,
+	LiveResourceConnection,
+}
+
+var liveTables = []string{
+	"live_sessions",
+	"live_tunnels",
+	"live_connections",
+}
+
+func (resourceType LiveResourceType) liveTable() (string, error) {
+	switch resourceType {
+	case LiveResourceSession:
+		return "live_sessions", nil
+	case LiveResourceTunnel:
+		return "live_tunnels", nil
+	case LiveResourceConnection:
+		return "live_connections", nil
+	default:
+		return "", fmt.Errorf("store: invalid live resource type %q", resourceType)
+	}
+}
+
+func validateLiveEntry(entry LiveEntry) error {
+	if entry.ResourceID == "" {
+		return errors.New("store: live resource ID is required")
+	}
+	if _, err := entry.ResourceType.liveTable(); err != nil {
+		return err
+	}
+	if entry.StartedAt.IsZero() || entry.LastHeartbeat.IsZero() {
+		return fmt.Errorf("store: live %s %q requires start and heartbeat times", entry.ResourceType, entry.ResourceID)
 	}
 	return nil
 }

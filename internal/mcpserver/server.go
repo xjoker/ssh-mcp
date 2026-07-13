@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -16,8 +17,15 @@ import (
 	"github.com/xjoker/ssh-mcp/internal/config"
 	"github.com/xjoker/ssh-mcp/internal/session"
 	sshpkg "github.com/xjoker/ssh-mcp/internal/ssh"
+	"github.com/xjoker/ssh-mcp/internal/store"
 	"github.com/xjoker/ssh-mcp/internal/tools"
 	"github.com/xjoker/ssh-mcp/internal/tunnel"
+)
+
+const (
+	liveHeartbeatInterval = 3 * time.Second
+	liveStateTTL          = 3 * liveHeartbeatInterval
+	liveMCPClient         = "stdio"
 )
 
 // stderrWriter is used by dispatch.go for runtime error logging.
@@ -27,13 +35,18 @@ var stderrWriter io.Writer = os.Stderr
 // Server is the top-level orchestrator that wires together all subsystems and
 // runs the MCP stdio server.
 type Server struct {
-	cfg        *config.Config
-	pool       *sshpkg.Pool
-	sessionMgr *session.Manager
-	tunnelMgr  *tunnel.Manager
-	auditLog   *audit.Logger
-	quickSetup *quickSetupRegistry
-	deps       *tools.Deps
+	cfg           *config.Config
+	pool          *sshpkg.Pool
+	sessionMgr    *session.Manager
+	tunnelMgr     *tunnel.Manager
+	auditLog      *audit.Logger
+	liveStore     *store.Store
+	liveProcessID string
+	liveMu        sync.Mutex
+	liveCancel    context.CancelFunc
+	liveDone      chan struct{}
+	quickSetup    *quickSetupRegistry
+	deps          *tools.Deps
 
 	mcpSrv *mcp.Server
 	cancel context.CancelFunc
@@ -124,14 +137,16 @@ func New(cfg *config.Config, auditDir, updateNotice, ver string) (*Server, error
 	)
 
 	s := &Server{
-		cfg:        cfg,
-		pool:       pool,
-		sessionMgr: sessionMgr,
-		tunnelMgr:  tunnelMgr,
-		auditLog:   auditLog,
-		quickSetup: qs,
-		deps:       deps,
-		mcpSrv:     mcpSrv,
+		cfg:           cfg,
+		pool:          pool,
+		sessionMgr:    sessionMgr,
+		tunnelMgr:     tunnelMgr,
+		auditLog:      auditLog,
+		liveStore:     auditLog.Store(),
+		liveProcessID: "mcp-" + newCorrelationID(),
+		quickSetup:    qs,
+		deps:          deps,
+		mcpSrv:        mcpSrv,
 	}
 	return s, nil
 }
@@ -156,6 +171,7 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	// Start the connection idle reaper. SDD §12.3.
 	go s.runConnReaper(ctx)
+	s.startLiveReporter(ctx)
 
 	return s.mcpSrv.Run(ctx, &mcp.StdioTransport{})
 }
@@ -192,6 +208,126 @@ func (s *Server) runConnReaper(ctx context.Context) {
 	}
 }
 
+func (s *Server) startLiveReporter(ctx context.Context) {
+	s.liveMu.Lock()
+	if s.liveDone != nil {
+		s.liveMu.Unlock()
+		return
+	}
+	reporterCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	s.liveCancel = cancel
+	s.liveDone = done
+	s.liveMu.Unlock()
+
+	go func() {
+		defer close(done)
+		s.runLiveReporter(reporterCtx)
+	}()
+}
+
+func (s *Server) stopLiveReporter() {
+	s.liveMu.Lock()
+	cancel := s.liveCancel
+	done := s.liveDone
+	s.liveMu.Unlock()
+	if cancel == nil || done == nil {
+		return
+	}
+	cancel()
+	<-done
+}
+
+// runLiveReporter snapshots local runtime state into SQLite. It is passive:
+// it reads manager maps only and never opens or probes SSH resources.
+func (s *Server) runLiveReporter(ctx context.Context) {
+	defer func() {
+		if s.liveStore != nil {
+			if err := s.liveStore.DeleteProcessLive(s.liveProcessID); err != nil {
+				fmt.Fprintf(getStderr(), "mcpserver: delete live state: %v\n", err)
+			}
+		}
+	}()
+
+	if err := s.syncLiveState(); err != nil {
+		fmt.Fprintf(getStderr(), "mcpserver: sync live state: %v\n", err)
+	}
+	ticker := time.NewTicker(liveHeartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := s.syncLiveState(); err != nil {
+				fmt.Fprintf(getStderr(), "mcpserver: sync live state: %v\n", err)
+				continue
+			}
+			if err := s.liveStore.ReapLive(time.Now().UTC().Add(-liveStateTTL)); err != nil {
+				fmt.Fprintf(getStderr(), "mcpserver: reap live state: %v\n", err)
+			}
+		}
+	}
+}
+
+func (s *Server) syncLiveState() error {
+	if s.liveStore == nil {
+		return nil
+	}
+	now := time.Now().UTC()
+	entries := make([]store.LiveEntry, 0)
+	if s.sessionMgr != nil {
+		for _, info := range s.sessionMgr.List() {
+			kind := "shell"
+			if s.sessionMgr.IsPTY(info.ID) {
+				kind = "pty"
+			}
+			entries = append(entries, store.LiveEntry{
+				ProcessID:     s.liveProcessID,
+				ResourceType:  store.LiveResourceSession,
+				ResourceID:    info.ID,
+				Server:        info.Server,
+				Kind:          kind,
+				PID:           os.Getpid(),
+				MCPClient:     liveMCPClient,
+				StartedAt:     info.StartedAt,
+				LastHeartbeat: now,
+			})
+		}
+	}
+	if s.tunnelMgr != nil {
+		for _, info := range s.tunnelMgr.List() {
+			entries = append(entries, store.LiveEntry{
+				ProcessID:     s.liveProcessID,
+				ResourceType:  store.LiveResourceTunnel,
+				ResourceID:    info.ID,
+				Server:        info.Server,
+				Kind:          info.Type,
+				PID:           os.Getpid(),
+				MCPClient:     liveMCPClient,
+				StartedAt:     info.StartedAt,
+				LastHeartbeat: now,
+			})
+		}
+	}
+	if s.pool != nil {
+		for _, info := range s.pool.List() {
+			entries = append(entries, store.LiveEntry{
+				ProcessID:     s.liveProcessID,
+				ResourceType:  store.LiveResourceConnection,
+				ResourceID:    info.Server,
+				Server:        info.Server,
+				Kind:          "pooled",
+				PID:           os.Getpid(),
+				MCPClient:     liveMCPClient,
+				StartedAt:     info.StartedAt,
+				LastHeartbeat: now,
+			})
+		}
+	}
+	return s.liveStore.ReplaceProcessLive(s.liveProcessID, entries)
+}
+
 // Shutdown performs an orderly shutdown. SDD §4.5:
 //  1. Cancel in-flight requests via context.
 //  2. Close sessions.
@@ -221,6 +357,7 @@ func (s *Server) shutdownInner() error {
 	if s.cancel != nil {
 		s.cancel()
 	}
+	s.stopLiveReporter()
 
 	// 2. Sessions.
 	if s.sessionMgr != nil {

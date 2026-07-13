@@ -16,8 +16,9 @@ import (
 
 // pooledEntry holds one cached Client along with connection metadata.
 type pooledEntry struct {
-	client   *Client
-	lastUsed time.Time
+	client    *Client
+	startedAt time.Time
+	lastUsed  time.Time
 	// evicted marks an entry that has been (or is being) removed from
 	// Pool.entries. A goroutine that acquires mu and finds evicted=true must
 	// not reuse the entry — it re-fetches from the map instead. This prevents
@@ -26,6 +27,13 @@ type pooledEntry struct {
 	evicted bool
 	// mu serialises concurrent dials for the same server.
 	mu sync.Mutex
+}
+
+// PoolInfo is a credential-free snapshot of a pooled SSH connection.
+type PoolInfo struct {
+	Server    string
+	StartedAt time.Time
+	LastUsed  time.Time
 }
 
 // tempEntry holds a dynamically registered ad-hoc server together with its
@@ -320,6 +328,7 @@ func (p *Pool) getInternal(ctx context.Context, name string, visited map[string]
 	}
 
 	entry.client = client
+	entry.startedAt = time.Now()
 	entry.lastUsed = time.Now()
 	return client, nil
 }
@@ -449,6 +458,33 @@ func (p *Pool) Close() error {
 		}
 	}
 	return lastErr
+}
+
+// List returns credential-free snapshots of every currently pooled SSH
+// connection. It does not dial, ping, or otherwise probe any remote server.
+func (p *Pool) List() []PoolInfo {
+	p.mu.Lock()
+	snapshot := make(map[string]*pooledEntry, len(p.entries))
+	for name, entry := range p.entries {
+		snapshot[name] = entry
+	}
+	p.mu.Unlock()
+
+	entries := make([]PoolInfo, 0, len(snapshot))
+	for name, entry := range snapshot {
+		if !entry.mu.TryLock() {
+			continue
+		}
+		if !entry.evicted && entry.client != nil {
+			entries = append(entries, PoolInfo{
+				Server:    name,
+				StartedAt: entry.startedAt,
+				LastUsed:  entry.lastUsed,
+			})
+		}
+		entry.mu.Unlock()
+	}
+	return entries
 }
 
 // dial builds an *gossh.Client for srv. acceptNew controls whether unknown

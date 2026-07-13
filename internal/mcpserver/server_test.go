@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/xjoker/ssh-mcp/internal/config"
+	"github.com/xjoker/ssh-mcp/internal/store"
 	"github.com/xjoker/ssh-mcp/internal/tools"
 )
 
@@ -199,5 +200,82 @@ func TestRunConnReaper_UsesConnIdleSeconds(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("runConnReaper did not exit")
+	}
+}
+
+func TestLiveReporterReplacesOnlyItsOwnProcessRows(t *testing.T) {
+	cfg := &config.Config{
+		Settings: config.Settings{
+			AuditRetentionDays: 90,
+			SessionIdleSeconds: 3600,
+		},
+		Servers: map[string]config.ServerConfig{},
+	}
+
+	s, err := New(cfg, t.TempDir(), "", "test")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer s.Shutdown()
+	s.liveProcessID = "process-a"
+
+	st := s.auditLog.Store()
+	now := time.Now().UTC()
+	for _, entry := range []store.LiveEntry{
+		{
+			ProcessID:     "process-a",
+			ResourceType:  store.LiveResourceSession,
+			ResourceID:    "old-session",
+			Kind:          "shell",
+			PID:           1,
+			MCPClient:     "stdio",
+			StartedAt:     now,
+			LastHeartbeat: now,
+		},
+		{
+			ProcessID:     "process-b",
+			ResourceType:  store.LiveResourceTunnel,
+			ResourceID:    "other-tunnel",
+			Kind:          "local",
+			PID:           2,
+			MCPClient:     "stdio",
+			StartedAt:     now,
+			LastHeartbeat: now,
+		},
+	} {
+		if err := st.ReplaceProcessLive(entry.ProcessID, []store.LiveEntry{entry}); err != nil {
+			t.Fatalf("ReplaceProcessLive %s: %v", entry.ProcessID, err)
+		}
+	}
+
+	if err := s.syncLiveState(); err != nil {
+		t.Fatalf("syncLiveState: %v", err)
+	}
+	entries, err := st.ListLive(time.Time{})
+	if err != nil {
+		t.Fatalf("ListLive after sync: %v", err)
+	}
+	if len(entries) != 1 || entries[0].ProcessID != "process-b" {
+		t.Fatalf("live rows after sync = %#v, want only process-b", entries)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		s.runLiveReporter(ctx)
+		close(done)
+	}()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runLiveReporter did not stop after cancellation")
+	}
+	entries, err = st.ListLive(time.Time{})
+	if err != nil {
+		t.Fatalf("ListLive after reporter stop: %v", err)
+	}
+	if len(entries) != 1 || entries[0].ProcessID != "process-b" {
+		t.Fatalf("live rows after reporter stop = %#v, want only process-b", entries)
 	}
 }
