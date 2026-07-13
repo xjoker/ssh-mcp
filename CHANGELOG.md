@@ -21,6 +21,9 @@ Branch / version convention:
 ## [Unreleased]
 
 ### Changed
+- CI and release workflows now pin Go 1.26.5 exactly. The previous minor-only
+  selector could resolve to an older cached patch while `GOTOOLCHAIN=local`,
+  bypassing the repository's security toolchain pin.
 - Windows test cleanup now closes audit SQLite readers before temporary
   directories are removed, and POSIX database mode assertions only run on
   platforms that expose POSIX permission bits.
