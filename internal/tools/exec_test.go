@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/xjoker/ssh-mcp/internal/envelope"
+	"github.com/xjoker/ssh-mcp/internal/safety"
 )
 
 // mustJSON marshals v to JSON or panics. Used for concise test args.
@@ -113,6 +114,64 @@ func TestSSHExec_RejectsTooSmallTimeout(t *testing.T) {
 	}
 	if resp.Error == nil || resp.Error.Code != envelope.CodeInvalidArgument {
 		t.Fatalf("expected INVALID_ARGUMENT, got %+v", resp.Error)
+	}
+}
+
+func TestSSHExecRejectsTerminateOnTimeoutWithPTY(t *testing.T) {
+	deps := minDeps(false)
+	resp := handleSSHExec(context.Background(), deps, mustJSON(map[string]any{
+		"server":               "does-not-matter",
+		"command":              "sleep 10",
+		"pty":                  true,
+		"terminate_on_timeout": true,
+	}))
+	if resp.OK {
+		t.Fatal("expected PTY plus terminate_on_timeout to be rejected")
+	}
+	if resp.Error == nil || resp.Error.Code != envelope.CodeInvalidArgument {
+		t.Fatalf("expected INVALID_ARGUMENT, got %+v", resp.Error)
+	}
+}
+
+func TestSSHExecSchemaExposesTerminateOnTimeout(t *testing.T) {
+	if !strings.Contains(string(sshExecSchema), `"terminate_on_timeout"`) {
+		t.Fatalf("ssh_exec schema is missing terminate_on_timeout: %s", sshExecSchema)
+	}
+}
+
+func TestIsExecTimeoutRecognizesNestedDeadline(t *testing.T) {
+	if !isExecTimeout(context.Background(), context.DeadlineExceeded) {
+		t.Fatal("internal ExecBuffered deadline must map to TIMEOUT even when parent context is still active")
+	}
+}
+
+func TestRemoteTimeoutUnavailableRequiresReservedExitAndMarker(t *testing.T) {
+	if !remoteTimeoutUnavailable(125, safety.RemoteTimeoutUnavailableMessage+"\n") {
+		t.Fatal("reserved exit plus setup marker must be recognized")
+	}
+	if remoteTimeoutUnavailable(125, "user command exited 125") {
+		t.Fatal("exit 125 without the fixed setup marker must remain a normal command result")
+	}
+	if remoteTimeoutUnavailable(1, safety.RemoteTimeoutUnavailableMessage) {
+		t.Fatal("marker without reserved exit must not be treated as setup failure")
+	}
+}
+
+func TestRemoteTimeoutOutputMaxPreservesUnavailableMarker(t *testing.T) {
+	const configuredMax = 1
+	limit := remoteTimeoutOutputMax(configuredMax, true)
+	stderr := safety.RemoteTimeoutUnavailableMessage + "\n"
+	if len(stderr) > limit {
+		stderr = stderr[:limit]
+	}
+	if !remoteTimeoutUnavailable(125, stderr) {
+		t.Fatalf("remote timeout setup marker was truncated at limit %d: %q", limit, stderr)
+	}
+	if got := remoteTimeoutOutputMax(configuredMax, false); got != configuredMax {
+		t.Fatalf("disabled watchdog changed output cap: got %d, want %d", got, configuredMax)
+	}
+	if got := remoteTimeoutOutputMax(65536, true); got != 65536 {
+		t.Fatalf("normal output cap changed: got %d, want 65536", got)
 	}
 }
 

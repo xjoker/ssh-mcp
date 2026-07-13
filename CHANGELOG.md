@@ -26,8 +26,16 @@ Branch / version convention:
   workflows match `vYYYYMMDD.V` tags and verify the tag agrees with `VERSION`.
   The `internal/updater` comparison was rewritten to order both schemes (and
   the legacy→new transition) correctly.
+- **Audit storage now uses SQLite** with durable writes and a read-only,
+  idempotent migration path from legacy JSONL logs. Runtime state is reported
+  into the same local store for lightweight management visibility.
+- Configuration writes and host-key trust updates now share validated,
+  atomic core operations instead of duplicating persistence logic in CLI
+  handlers.
 
 ### Added
+- **Local management TUI** via `ssh-mcp tui` for inspecting servers, audit
+  activity, runtime state, and command policies without a separate daemon.
 - **MCP standard tool annotations** on every tool (`readOnlyHint` /
   `destructiveHint` / `idempotentHint` / `openWorldHint`) so MCP clients can
   present risk-appropriate confirmation UX.
@@ -39,6 +47,15 @@ Branch / version convention:
   Write-channel tools (`sftp_op`/`sftp_upload`/`tunnel`) are denied on any
   moded server. Denials are audited as `POLICY_DENIED`. Defense-in-depth, not
   a sandbox — see SECURITY.md.
+- **Opt-in remote timeout termination** for `ssh_exec` and `ssh_group_exec`.
+  `terminate_on_timeout: true` launches a remote `setsid + timeout` watchdog
+  that sends TERM and then KILL to the command process group. It is disabled
+  by default, rejected for PTY commands, and fails before executing the user
+  command when the required remote utilities are unavailable.
+- **Permission fragment export** via
+  `ssh-mcp permissions <claude-code|codex>`. It prints explicit read-only or
+  standard per-tool approval lists without editing client configuration;
+  persistent/high-impact Tier 3 tools are always excluded.
 
 ## [0.0.7] — 2026-07-11
 

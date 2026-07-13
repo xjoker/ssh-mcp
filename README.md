@@ -145,6 +145,18 @@ By default Claude Code asks for confirmation on every MCP tool call. You can pre
 
 Instead, use the tiered approach below:
 
+Generate the matching client fragment instead of copying the lists manually:
+
+```sh
+ssh-mcp permissions claude-code                 # safe read-only tools
+ssh-mcp permissions codex                       # safe read-only tools
+ssh-mcp permissions claude-code --tier standard # include Tier 2
+```
+
+The command only prints configuration; it never edits client files. Use
+`--server-name` if the MCP server is registered under a name other than
+`ssh-bridge`.
+
 #### Tier 1 — Safe to pre-authorise (read-only, no side effects)
 
 ```json
@@ -183,9 +195,10 @@ These tools execute commands or write files on remote servers. Pre-authorising t
 
 #### Tier 3 — Never wildcard-allow; require manual confirmation every time
 
-These tools have persistent or irreversible effects: `tunnel` establishes long-lived port forwards, `ssh_persistent_setup` writes permanent server credentials, and `self_update` replaces the running binary (the security boundary itself). Always confirm these manually.
+These tools cross persistent or local-machine security boundaries: `tunnel` establishes long-lived port forwards, `sftp_upload` reads a local file and sends it remotely, `ssh_persistent_setup` writes permanent server credentials, and `self_update` replaces the running binary (the security boundary itself). Always confirm these manually.
 
 - `mcp__ssh-bridge__tunnel`
+- `mcp__ssh-bridge__sftp_upload`
 - `mcp__ssh-bridge__ssh_persistent_setup`
 - `mcp__ssh-bridge__self_update`
 
@@ -208,6 +221,15 @@ Repeated `ssh_quick_setup` calls for the same `host+port+user` already dedup int
 |------|-------------|
 | `ssh_exec` | Run a command on a single server. Supports PTY mode for TUI programs (htop, btop, ncdu) with ANSI stripping. |
 | `ssh_group_exec` | Run the same command on multiple servers in parallel — select by name list or tag. |
+
+For a one-shot command that must not continue after the client-side deadline,
+set `terminate_on_timeout: true`. This explicit opt-in wraps the command in a
+remote `setsid + timeout` watchdog: TERM is sent after the deadline and KILL
+five seconds later. The remote host must provide both utilities; otherwise the
+call fails before running the command. It is incompatible with `pty: true` and
+only guarantees termination of processes that remain in the launched process
+group—daemonized or re-sessioned descendants can escape. Persistent
+`session_send` keeps its existing timeout semantics and is not affected.
 
 ### File Operations (SFTP)
 

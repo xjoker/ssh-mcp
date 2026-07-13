@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	cryptoSSH "golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
@@ -38,6 +39,8 @@ func NewRemotePathUnchecked(p string) RemotePath { return RemotePath{p: p} }
 type RemoteCommand struct{ raw string }
 
 func (c RemoteCommand) Raw() string { return c.raw }
+
+const RemoteTimeoutUnavailableMessage = "ssh-mcp: terminate_on_timeout requires remote setsid and timeout utilities"
 
 // --------------------------------------------------------------------------
 // Sentinel errors
@@ -613,4 +616,42 @@ func NewRemoteCommand(cmd string, dir string) (RemoteCommand, error) {
 	escaped := strings.ReplaceAll(dir, "'", "'\\''")
 	raw := "cd '" + escaped + "' && " + cmd
 	return RemoteCommand{raw: raw}, nil
+}
+
+// WithRemoteTimeout wraps a validated remote command in an opt-in watchdog.
+// The watchdog starts one second after the caller's local deadline so the MCP
+// response keeps its existing timeout semantics while the detached remote
+// process group is still terminated after the SSH channel is closed.
+//
+// The remote host must provide setsid and timeout. The preflight runs before
+// the user command and fails with exit 125 if either utility is unavailable.
+func WithRemoteTimeout(cmd RemoteCommand, timeout, killGrace time.Duration) (RemoteCommand, error) {
+	if timeout <= 0 {
+		return RemoteCommand{}, fmt.Errorf("safety: remote timeout must be positive")
+	}
+	if killGrace <= 0 {
+		return RemoteCommand{}, fmt.Errorf("safety: remote timeout kill grace must be positive")
+	}
+
+	watchdogSeconds := durationCeilSeconds(timeout) + 1
+	graceSeconds := durationCeilSeconds(killGrace)
+	quotedCommand := shellSingleQuote(cmd.Raw())
+	raw := fmt.Sprintf(
+		"command -v setsid >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1 || "+
+			"{ printf '%%s\\n' '%s' >&2; exit 125; }; "+
+			"setsid timeout -s TERM -k %ds %ds sh -c %s",
+		RemoteTimeoutUnavailableMessage,
+		graceSeconds,
+		watchdogSeconds,
+		quotedCommand,
+	)
+	return RemoteCommand{raw: raw}, nil
+}
+
+func durationCeilSeconds(d time.Duration) int64 {
+	return int64((d + time.Second - 1) / time.Second)
+}
+
+func shellSingleQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }

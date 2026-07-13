@@ -3,11 +3,18 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/xjoker/ssh-mcp/internal/config"
 	"github.com/xjoker/ssh-mcp/internal/envelope"
 )
+
+func TestSSHGroupExecSchemaExposesTerminateOnTimeout(t *testing.T) {
+	if !strings.Contains(string(sshGroupExecSchema), `"terminate_on_timeout"`) {
+		t.Fatalf("ssh_group_exec schema is missing terminate_on_timeout: %s", sshGroupExecSchema)
+	}
+}
 
 // --------------------------------------------------------------------------
 // H01 — cwd / default_dir allowed_paths enforcement (pre-connect syntactic)

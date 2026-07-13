@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	cryptoSSH "golang.org/x/crypto/ssh"
 )
@@ -105,6 +106,56 @@ func TestS2_RemoteCommandAbsoluteDir(t *testing.T) {
 	expected := "cd '/home/user' && ls -la"
 	if cmd.Raw() != expected {
 		t.Errorf("expected %q, got %q", expected, cmd.Raw())
+	}
+}
+
+func TestWithRemoteTimeoutWrapsCommandAndEscapesSingleQuotes(t *testing.T) {
+	cmd, err := NewRemoteCommand("printf '%s\\n' \"hello\"\nprintf done", "/tmp/it's-here")
+	if err != nil {
+		t.Fatalf("NewRemoteCommand: %v", err)
+	}
+
+	wrapped, err := WithRemoteTimeout(cmd, 1500*time.Millisecond, 5*time.Second)
+	if err != nil {
+		t.Fatalf("WithRemoteTimeout: %v", err)
+	}
+	raw := wrapped.Raw()
+	for _, want := range []string{
+		"command -v setsid",
+		"command -v timeout",
+		"setsid timeout -s TERM -k 5s 3s sh -c '",
+		`'\''`,
+		"printf done'",
+	} {
+		if !strings.Contains(raw, want) {
+			t.Errorf("wrapped command missing %q:\n%s", want, raw)
+		}
+	}
+	if strings.Index(raw, "command -v setsid") > strings.Index(raw, "printf done") {
+		t.Fatalf("tool preflight must run before the user command:\n%s", raw)
+	}
+}
+
+func TestWithRemoteTimeoutRejectsNonPositiveDurations(t *testing.T) {
+	cmd, err := NewRemoteCommand("true", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		timeout time.Duration
+		grace   time.Duration
+	}{
+		{name: "zero timeout", timeout: 0, grace: time.Second},
+		{name: "negative timeout", timeout: -time.Second, grace: time.Second},
+		{name: "zero grace", timeout: time.Second, grace: 0},
+		{name: "negative grace", timeout: time.Second, grace: -time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := WithRemoteTimeout(cmd, tc.timeout, tc.grace); err == nil {
+				t.Fatal("expected error")
+			}
+		})
 	}
 }
 

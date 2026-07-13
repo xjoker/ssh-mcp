@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -23,13 +24,14 @@ func init() {
 // --------------------------------------------------------------------------
 
 type groupExecInput struct {
-	Servers        []string `json:"servers,omitempty"`
-	Tag            string   `json:"tag,omitempty"`
-	Command        string   `json:"command"`
-	Cwd            string   `json:"cwd,omitempty"`
-	TimeoutMs      int      `json:"timeout_ms"`
-	StopOnError    bool     `json:"stop_on_error"`
-	MaxConcurrency int      `json:"max_concurrency"`
+	Servers            []string `json:"servers,omitempty"`
+	Tag                string   `json:"tag,omitempty"`
+	Command            string   `json:"command"`
+	Cwd                string   `json:"cwd,omitempty"`
+	TimeoutMs          int      `json:"timeout_ms"`
+	TerminateOnTimeout bool     `json:"terminate_on_timeout"`
+	StopOnError        bool     `json:"stop_on_error"`
+	MaxConcurrency     int      `json:"max_concurrency"`
 }
 
 type groupExecServerResult struct {
@@ -66,6 +68,7 @@ var sshGroupExecSchema = json.RawMessage(`{
     "command": { "type": "string" },
     "cwd":     { "type": "string" },
     "timeout_ms":       { "type": "integer", "default": 120000 },
+	"terminate_on_timeout": { "type": "boolean", "default": false, "description": "Opt in to remote process-group termination after timeout. Requires setsid and timeout on every target host." },
     "stop_on_error":    { "type": "boolean", "default": false },
     "max_concurrency":  { "type": "integer", "default": 8, "maximum": 16 }
   },
@@ -170,6 +173,7 @@ func handleSSHGroupExec(ctx context.Context, deps *Deps, args json.RawMessage) e
 	if outputMax <= 0 {
 		outputMax = 65536
 	}
+	outputMax = remoteTimeoutOutputMax(outputMax, input.TerminateOnTimeout)
 
 	overallStart := time.Now()
 
@@ -228,7 +232,7 @@ func handleSSHGroupExec(ctx context.Context, deps *Deps, args json.RawMessage) e
 			default:
 			}
 
-			res := execOnServer(execCtx, deps, name, input.Command, input.Cwd, timeout, outputMax)
+			res := execOnServer(execCtx, deps, name, input.Command, input.Cwd, timeout, outputMax, input.TerminateOnTimeout)
 			mu.Lock()
 			results[i] = res
 			mu.Unlock()
@@ -340,6 +344,7 @@ func execOnServer(
 	serverName, command, cwd string,
 	timeout time.Duration,
 	outputMax int,
+	terminateOnTimeout bool,
 ) groupExecServerResult {
 	// Determine what cwd/defaultDir string we intend to use so we can
 	// syntactically validate allowed_paths BEFORE acquiring a connection.
@@ -453,13 +458,26 @@ func execOnServer(
 			},
 		}
 	}
+	if terminateOnTimeout {
+		remoteCmd, err = safety.WithRemoteTimeout(remoteCmd, timeout, 5*time.Second)
+		if err != nil {
+			return groupExecServerResult{
+				Server: serverName,
+				OK:     false,
+				Error: &envelope.Error{
+					Code:    envelope.CodeInternalError,
+					Message: err.Error(),
+				},
+			}
+		}
+	}
 
 	result, err := client.ExecBuffered(ctx, remoteCmd, ssh.ExecOpts{
 		OutputMaxBytes: outputMax,
 		Timeout:        timeout,
 	})
 	if err != nil {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			return groupExecServerResult{
 				Server: serverName,
 				OK:     false,
@@ -475,6 +493,16 @@ func execOnServer(
 			Server: serverName,
 			OK:     false,
 			Error:  errResp.Error,
+		}
+	}
+	if terminateOnTimeout && remoteTimeoutUnavailable(result.ExitCode, string(result.Stderr)) {
+		return groupExecServerResult{
+			Server: serverName,
+			OK:     false,
+			Error: &envelope.Error{
+				Code:    envelope.CodeInvalidArgument,
+				Message: safety.RemoteTimeoutUnavailableMessage,
+			},
 		}
 	}
 

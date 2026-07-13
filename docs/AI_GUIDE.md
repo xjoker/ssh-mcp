@@ -41,7 +41,9 @@ Decision order (top wins):
    `list_servers` / `audit_query`. Never use `ssh_exec` for `cat`, `ls`,
    `stat` — those have first-class tools.
 2. **Single command on one host?** → `ssh_exec`. Pass `cwd` if the command
-   is path-sensitive.
+   is path-sensitive. If the command must not outlive `timeout_ms`, opt in
+   with `terminate_on_timeout: true` (non-PTY only; remote `setsid` and
+   `timeout` are required).
 3. **Same command on many hosts?** → `ssh_group_exec` with either a
    `servers` list or a `tag`. Honor `stop_on_error` when the user said
    "stop on first failure".
@@ -195,7 +197,7 @@ agent/key.
 | `HOST_KEY_MISMATCH` | Server's host key changed. | **Stop**. Surface this prominently — possible MITM. Do not retry. |
 | `AUTH_FAILED` | Wrong key / password / agent unavailable. | Suggest `auth set` (password) or `ssh-add` (agent). Do not loop. |
 | `PERMISSION_DENIED` | Path outside `allowed_paths`, or remote chmod refused. | Show the user the path and the configured prefix. Don't widen scope silently. |
-| `TIMEOUT` | Command hit `timeout_ms`. | Retry only with explicit user OK and a higher `timeout_ms`. Note the retriable flag. **The session itself stays alive** — the next `session_send` will drain the prior command's tail output before issuing your new command. No need to start a fresh session. |
+| `TIMEOUT` | Command hit `timeout_ms`. | Retry only with explicit user OK and a higher `timeout_ms`. For one-shot `ssh_exec` / `ssh_group_exec`, `terminate_on_timeout:true` schedules remote process-group TERM then KILL; without it, closing the SSH channel alone cannot guarantee remote termination. For `session_send`, the session deliberately stays alive and the next call drains the prior command's tail output. |
 | `SESSION_BUSY` | A `session_send` arrived while the prior command's tail output was still draining (5 s budget). | Either wait briefly and retry, or call `session_close` if the prior command is stuck. Do NOT discard the session on this code. |
 | `SESSION_DEAD` | The remote shell actually closed (EOF on stdout). | Discard the session_id and start a new session. This is **not** triggered by command timeout alone — only by genuine shell exit. |
 | `SESSION_LIMIT` | 16 concurrent sessions reached (default). | Close idle sessions before opening more. |

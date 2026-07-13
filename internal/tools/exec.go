@@ -30,12 +30,13 @@ func init() {
 // execInput mirrors the JSON input schema for ssh_exec (SDD §6.1).
 // The inline field reuses the shared sftpInline type from conn.go.
 type execInput struct {
-	Server    string      `json:"server"`
-	Inline    *sftpInline `json:"inline,omitempty"`
-	Command   string      `json:"command"`
-	Cwd       string      `json:"cwd,omitempty"`
-	Stream    bool        `json:"stream"`
-	TimeoutMs int         `json:"timeout_ms"`
+	Server             string      `json:"server"`
+	Inline             *sftpInline `json:"inline,omitempty"`
+	Command            string      `json:"command"`
+	Cwd                string      `json:"cwd,omitempty"`
+	Stream             bool        `json:"stream"`
+	TimeoutMs          int         `json:"timeout_ms"`
+	TerminateOnTimeout bool        `json:"terminate_on_timeout"`
 	// PTY parameters
 	PTY       bool `json:"pty"`
 	PTYCols   int  `json:"cols"`
@@ -86,6 +87,7 @@ var sshExecSchema = json.RawMessage(`{
     "cwd":        { "type": "string", "description": "Working directory. Resolved via SFTP realpath; supports ~ expansion." },
     "stream":     { "type": "boolean", "default": false },
     "timeout_ms": { "type": "integer", "minimum": 1000, "maximum": 1800000, "default": 120000 },
+	"terminate_on_timeout": { "type": "boolean", "default": false, "description": "Opt in to remote process-group termination after timeout. Requires setsid and timeout on the remote host; incompatible with pty=true." },
     "pty":        { "type": "boolean", "default": false, "description": "Allocate a pseudo-terminal. Required for TUI programs (btop, htop, ncdu). Merges stderr into stdout." },
     "cols":       { "type": "integer", "minimum": 10, "maximum": 500, "default": 220, "description": "Terminal width for PTY (columns). Only used when pty=true." },
     "rows":       { "type": "integer", "minimum": 5, "maximum": 200, "default": 50, "description": "Terminal height for PTY (rows). Only used when pty=true." },
@@ -130,6 +132,10 @@ func handleSSHExec(ctx context.Context, deps *Deps, args json.RawMessage) envelo
 	}
 	if input.Command == "" {
 		return envelope.Err(envelope.CodeInvalidArgument, "'command' is required", false)
+	}
+	if input.TerminateOnTimeout && input.PTY {
+		return envelope.Err(envelope.CodeInvalidArgument,
+			"terminate_on_timeout is incompatible with pty=true; use a persistent session for interactive commands", false)
 	}
 
 	// Inline credentials check
@@ -262,15 +268,22 @@ func handleSSHExec(ctx context.Context, deps *Deps, args json.RawMessage) envelo
 	if err != nil {
 		return envelope.Err(envelope.CodeInvalidArgument, err.Error(), false)
 	}
+	if input.TerminateOnTimeout {
+		remoteCmd, err = safety.WithRemoteTimeout(remoteCmd, timeout, 5*time.Second)
+		if err != nil {
+			return envelope.Err(envelope.CodeInternalError, err.Error(), false)
+		}
+	}
 
 	// Execute
 	outputMax := deps.Cfg.Settings.OutputMaxBytes
 	if outputMax <= 0 {
 		outputMax = 65536
 	}
+	outputMax = remoteTimeoutOutputMax(outputMax, input.TerminateOnTimeout)
 
 	if input.Stream {
-		return handleSSHExecStreaming(ctx, deps, client, remoteCmd, timeout, hostLabel, userLabel, outputMax)
+		return handleSSHExecStreaming(ctx, deps, client, remoteCmd, timeout, hostLabel, userLabel, outputMax, input.TerminateOnTimeout)
 	}
 
 	ptyOpts := ssh.ExecOpts{
@@ -285,11 +298,14 @@ func handleSSHExec(ctx context.Context, deps *Deps, args json.RawMessage) envelo
 
 	result, err := client.ExecBuffered(ctx, remoteCmd, ptyOpts)
 	if err != nil {
-		if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		if isExecTimeout(ctx, err) {
 			return envelope.Err(envelope.CodeTimeout,
 				"command timed out: "+err.Error(), true)
 		}
 		return mapExecError(err)
+	}
+	if input.TerminateOnTimeout && remoteTimeoutUnavailable(result.ExitCode, string(result.Stderr)) {
+		return envelope.Err(envelope.CodeInvalidArgument, safety.RemoteTimeoutUnavailableMessage, false)
 	}
 
 	stdoutStr := string(result.Stdout)
@@ -332,6 +348,7 @@ func handleSSHExecStreaming(
 	timeout time.Duration,
 	host, user string,
 	outputMax int,
+	terminateOnTimeout bool,
 ) envelope.Response {
 	// Shared budget and truncation flag across stdout/stderr callbacks.
 	var remaining atomic.Int64
@@ -414,6 +431,9 @@ func handleSSHExecStreaming(
 	stdoutStr := stdoutBuf.String()
 	stderrStr := stderrBuf.String()
 	truncated := truncatedFlag.Load()
+	if terminateOnTimeout && remoteTimeoutUnavailable(execErrorExitCode(streamErr), stderrStr) {
+		return envelope.Err(envelope.CodeInvalidArgument, safety.RemoteTimeoutUnavailableMessage, false)
+	}
 
 	if truncated {
 		total := len(stdoutStr) + len(stderrStr)
@@ -509,4 +529,31 @@ func mapExecError(err error) envelope.Response {
 		return envelope.Err(envelope.CodePermissionDenied, msg, false)
 	}
 	return envelope.Err(envelope.CodeInternalError, msg, false)
+}
+
+func isExecTimeout(ctx context.Context, err error) bool {
+	return ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
+}
+
+func remoteTimeoutUnavailable(exitCode int, stderr string) bool {
+	return exitCode == 125 && strings.Contains(stderr, safety.RemoteTimeoutUnavailableMessage)
+}
+
+func remoteTimeoutOutputMax(configured int, enabled bool) int {
+	minimum := len(safety.RemoteTimeoutUnavailableMessage) + 1
+	if enabled && configured < minimum {
+		return minimum
+	}
+	return configured
+}
+
+func execErrorExitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var exitErr *gossh.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitStatus()
+	}
+	return -1
 }
