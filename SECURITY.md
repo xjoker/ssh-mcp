@@ -2,12 +2,14 @@
 
 ## Supported Versions
 
-Only the latest tagged release on `main` is supported. Reported vulnerabilities are fixed in a new patch release; there is no LTS commitment yet.
+Only the latest tagged release on `main` is supported. Reported vulnerabilities are fixed in a new release; there is no LTS commitment yet.
+
+From the next release onward the project uses date-based versioning (`YYYYMMDD.V`); releases up to and including `0.0.7` used semver. `ssh-mcp update` compares across both schemes.
 
 | Version | Status |
 |---------|--------|
-| `0.0.7` | Current — security fixes land here |
-| `< 0.0.7` | Use `ssh-mcp update` to upgrade; older binaries are not patched |
+| Latest `YYYYMMDD.V` release | Current — security fixes land here |
+| `0.0.7` and earlier (semver) | Use `ssh-mcp update` to upgrade; older binaries are not patched |
 
 Each release tag (`vX.Y.Z`) is built by GitHub Actions from `main` and ships SHA-256 checksums alongside the binaries. The installer (`scripts/install.sh`) verifies the SHA-256 automatically.
 

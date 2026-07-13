@@ -2,21 +2,43 @@
 
 All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-**Pre-1.0 versioning policy:** while the version number is `0.x.y`, the
-project reserves the right to make breaking changes between minor releases
-when a security or design fix requires it. Each breaking change is called
-out in a `### Breaking` section in the affected release. The `1.0.0`
-release will commit to standard semver compatibility going forward.
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+Releases up to and including `0.0.7` used [Semantic Versioning](https://semver.org/spec/v2.0.0.html);
+from the next release onward the project uses **date-based versioning**
+(`YYYYMMDD.V`, see below). Breaking changes are still called out in a
+`### Breaking` section of the affected release.
 
 Branch / version convention:
 - Development happens on `dev`; releases are tagged on `main`.
-- Dev versions carry a `-dev` suffix (e.g. `0.0.1-dev`); release versions
-  drop the suffix (`0.0.1`). `make release VERSION=…` stamps the binary.
+- **Versioning scheme `YYYYMMDD.V`** (e.g. `20260713.1`; `.V` increments for
+  multiple releases on the same day). The root `VERSION` file is the single
+  source of truth; release tags are `vYYYYMMDD.V` and CI verifies the tag
+  matches `VERSION`. Dev-line builds carry a `-dev` suffix. `make release`
+  stamps the binary from `VERSION`; CI stamps from the matching tag.
+- The self-update version comparison spans both schemes, so upgrading from a
+  legacy `0.0.x` build to a `YYYYMMDD.V` release is ordered correctly.
 
 ## [Unreleased]
+
+### Changed
+- **Versioning scheme is now `YYYYMMDD.V`** (date-stamped) instead of semver
+  `X.Y.Z`. Added a root `VERSION` file as the single source of truth; release
+  workflows match `vYYYYMMDD.V` tags and verify the tag agrees with `VERSION`.
+  The `internal/updater` comparison was rewritten to order both schemes (and
+  the legacy→new transition) correctly.
+
+### Added
+- **MCP standard tool annotations** on every tool (`readOnlyHint` /
+  `destructiveHint` / `idempotentHint` / `openWorldHint`) so MCP clients can
+  present risk-appropriate confirmation UX.
+- **Per-server command policy** — `mode = "readonly" | "restricted"` plus
+  optional `allow_patterns` / `deny_patterns` on `[servers.<name>]`. Opt-in
+  command filtering: `readonly` permits a built-in observation allowlist and
+  rejects shell metacharacters; `restricted` requires an `allow_patterns`
+  match with `deny_patterns` winning; empty allow denies all (fail-closed).
+  Write-channel tools (`sftp_op`/`sftp_upload`/`tunnel`) are denied on any
+  moded server. Denials are audited as `POLICY_DENIED`. Defense-in-depth, not
+  a sandbox — see SECURITY.md.
 
 ## [0.0.7] — 2026-07-11
 

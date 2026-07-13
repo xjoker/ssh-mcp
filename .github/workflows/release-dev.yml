@@ -3,7 +3,7 @@ name: Release (dev)
 on:
   push:
     tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+-dev*'   # Dev pre-release tags only
+      - 'v[0-9]+.[0-9]+-dev*'   # Dev pre-release tags, scheme vYYYYMMDD.V-dev*
 
 permissions:
   contents: write      # Required for creating GitHub Releases
@@ -23,8 +23,8 @@ jobs:
       - name: Extract version
         id: version
         run: |
-          TAG="${GITHUB_REF_NAME}"          # e.g. v0.0.2-dev
-          VERSION="${TAG#v}"                # e.g. 0.0.2-dev
+          TAG="${GITHUB_REF_NAME}"          # e.g. v20260713.1-dev
+          VERSION="${TAG#v}"                # e.g. 20260713.1-dev
           COMMIT="$(git rev-parse --short HEAD)"
           echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"

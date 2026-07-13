@@ -16,13 +16,14 @@ import (
 )
 
 // version and commit are injected at build time via -ldflags. The default
-// reflects the current development line: when no ldflags override is
-// provided (e.g. plain `go build`), this is what `version` prints.
+// reflects the current development line and is only printed when no ldflags
+// override is provided (e.g. plain `go build`); real builds stamp it from the
+// root VERSION file (dev) or the git tag (release).
 //
-// Branch convention: -dev suffix on dev/feature branches; release builds
-// from main strip the suffix via -X main.version=<tag>.
+// Scheme: YYYYMMDD.V (single source of truth = root VERSION file). A -dev
+// suffix marks pre-release/dev-line builds.
 var (
-	version = "0.0.7-dev"
+	version = "20260713.1-dev"
 	commit  = "unknown"
 )
 

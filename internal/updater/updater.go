@@ -123,9 +123,9 @@ func CheckLatest(ctx context.Context, includePrerelease bool) (*Release, error) 
 	return rel, nil
 }
 
-// IsNewer reports whether latest is strictly newer than current.
-// Dev versions (with "-dev" suffix) are treated as pre-releases and are
-// considered older than the same numeric release version.
+// IsNewer reports whether latest is strictly newer than current. Both are
+// parsed by parseVer (YYYYMMDD.V or legacy X.Y.Z); an unparseable operand
+// yields false (fail-closed: never claim an upgrade we cannot verify).
 func IsNewer(current, latest string) bool {
 	cv := parseVer(current)
 	lv := parseVer(latest)
@@ -258,82 +258,68 @@ func fetchSHA256(ctx context.Context, url, binName string) (string, error) {
 // Version comparison
 // --------------------------------------------------------------------------
 
-type semver struct {
-	major, minor, patch int
-	dev                 bool
-	preRelease          string // suffix after "-dev." e.g. "20260506.1"
+// version is a parsed version compared as a sequence of dot-separated integer
+// components plus a "prerelease" flag. This single model spans both the current
+// YYYYMMDD.V scheme (e.g. "20260713.1") and the legacy X.Y.Z scheme (e.g.
+// "0.0.7"), and orders a legacy→new upgrade correctly: a date-stamped version's
+// leading component (20260713) dominates any legacy 0.0.x. A prerelease build
+// ("-dev", or any "-suffix") ranks below the plain release of the same number.
+type version struct {
+	parts      []int
+	prerelease bool
 }
 
-func parseVer(s string) *semver {
+func parseVer(s string) *version {
 	s = strings.TrimPrefix(s, "v")
-	var preRelease string
-	dev := false
-	if idx := strings.Index(s, "-dev"); idx >= 0 {
-		dev = true
-		rest := s[idx+4:] // everything after "-dev"
-		if strings.HasPrefix(rest, ".") {
-			preRelease = rest[1:] // "20260506.1"
+	prerelease := false
+	// Any "-suffix" (e.g. "-dev", "-dev.20260506.1", "-rc1") marks a
+	// prerelease and is dropped before numeric parsing.
+	if idx := strings.IndexByte(s, '-'); idx >= 0 {
+		prerelease = true
+		s = s[:idx]
+	}
+	segs := strings.Split(s, ".")
+	parts := make([]int, 0, len(segs))
+	for _, seg := range segs {
+		n, err := strconv.Atoi(seg)
+		if err != nil {
+			return nil // unparseable → caller treats as "cannot compare"
 		}
-		s = s[:idx] // keep only "major.minor.patch"
+		parts = append(parts, n)
 	}
-	parts := strings.SplitN(s, ".", 3)
-	if len(parts) != 3 {
+	if len(parts) == 0 {
 		return nil
 	}
-	major, e1 := strconv.Atoi(parts[0])
-	minor, e2 := strconv.Atoi(parts[1])
-	patch, e3 := strconv.Atoi(parts[2])
-	if e1 != nil || e2 != nil || e3 != nil {
-		return nil
-	}
-	return &semver{major, minor, patch, dev, preRelease}
+	return &version{parts: parts, prerelease: prerelease}
 }
 
-// cmpVer returns >0 if a > b, 0 if equal, <0 if a < b.
-// Among equal numeric versions: release > dev. Among two dev builds with the
-// same numeric base, the pre-release suffix is compared numerically via
-// cmpPreRelease (date-stamped suffixes like "20260506.1" < "20260506.10").
-func cmpVer(a, b *semver) int {
-	if d := a.major - b.major; d != 0 {
-		return d
+// cmpVer returns >0 if a > b, 0 if equal, <0 if a < b. Components are compared
+// pairwise; a missing component (shorter version) is treated as 0 so that
+// "20260713.1" > "20260713". Among numerically-equal versions, a plain release
+// outranks a prerelease.
+func cmpVer(a, b *version) int {
+	n := len(a.parts)
+	if len(b.parts) > n {
+		n = len(b.parts)
 	}
-	if d := a.minor - b.minor; d != 0 {
-		return d
-	}
-	if d := a.patch - b.patch; d != 0 {
-		return d
+	for i := 0; i < n; i++ {
+		av, bv := 0, 0
+		if i < len(a.parts) {
+			av = a.parts[i]
+		}
+		if i < len(b.parts) {
+			bv = b.parts[i]
+		}
+		if av != bv {
+			return av - bv
+		}
 	}
 	switch {
-	case a.dev && !b.dev:
+	case a.prerelease && !b.prerelease:
 		return -1
-	case !a.dev && b.dev:
+	case !a.prerelease && b.prerelease:
 		return 1
-	case a.dev && b.dev:
-		return cmpPreRelease(a.preRelease, b.preRelease)
 	default:
 		return 0
 	}
-}
-
-// cmpPreRelease compares two pre-release suffixes of the form "YYYYMMDD.N"
-// numerically. Falls back to lexicographic order for unexpected formats so that
-// the comparison is always well-defined.
-func cmpPreRelease(a, b string) int {
-	parse := func(s string) (date, build int) {
-		parts := strings.SplitN(s, ".", 2)
-		date, _ = strconv.Atoi(parts[0])
-		if len(parts) == 2 {
-			build, _ = strconv.Atoi(parts[1])
-		}
-		return
-	}
-	aDate, aBuild := parse(a)
-	bDate, bBuild := parse(b)
-	if aDate == 0 && bDate == 0 {
-		return strings.Compare(a, b)
-	}
-	if d := aDate - bDate; d != 0 {
-		return d
-	}
-	return aBuild - bBuild
 }

@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'   # Only stable tags (no -dev suffix)
+      - 'v[0-9]+.[0-9]+'   # Stable tags, scheme vYYYYMMDD.V (no -dev suffix)
 
 permissions:
   contents: write      # Required for creating GitHub Releases
@@ -23,9 +23,15 @@ jobs:
       - name: Extract version
         id: version
         run: |
-          TAG="${GITHUB_REF_NAME}"          # e.g. v0.0.2
-          VERSION="${TAG#v}"                # e.g. 0.0.2
+          TAG="${GITHUB_REF_NAME}"          # e.g. v20260713.1
+          VERSION="${TAG#v}"                # e.g. 20260713.1
           COMMIT="$(git rev-parse --short HEAD)"
+          # Single source of truth: the tag must match the committed VERSION file.
+          FILE_VERSION="$(cat VERSION | tr -d '[:space:]')"
+          if [ "$VERSION" != "$FILE_VERSION" ]; then
+            echo "release: tag $TAG (version $VERSION) does not match VERSION file ($FILE_VERSION)" >&2
+            exit 1
+          fi
           echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "commit=$COMMIT"   >> "$GITHUB_OUTPUT"
