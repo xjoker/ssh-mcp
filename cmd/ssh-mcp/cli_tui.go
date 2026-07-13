@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/xjoker/ssh-mcp/internal/tui"
 )
@@ -28,10 +27,8 @@ func parseTUIOptions(args []string) (tui.Options, int, bool) {
 	flags := flag.NewFlagSet("tui", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	configPath := flags.String("path", "", "config file path")
-	auditDir := flags.String("audit-dir", "", "audit directory")
-	knownHostsPath := flags.String("known-hosts", "", "known_hosts file path")
 	flags.Usage = func() {
-		fmt.Fprintln(os.Stderr, "Usage: ssh-mcp tui [--path config.toml] [--audit-dir dir] [--known-hosts file]")
+		fmt.Fprintln(os.Stderr, "Usage: ssh-mcp tui [--path config.toml]")
 		flags.PrintDefaults()
 	}
 	if err := flags.Parse(args); err != nil {
@@ -48,16 +45,5 @@ func parseTUIOptions(args []string) (tui.Options, int, bool) {
 	if *configPath == "" {
 		*configPath = resolveConfigPath()
 	}
-	if *auditDir == "" {
-		*auditDir = defaultAuditDirCLI()
-	}
-	if *knownHostsPath == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "tui: resolve home directory: %v\n", err)
-			return tui.Options{}, 1, false
-		}
-		*knownHostsPath = filepath.Join(home, ".ssh", "known_hosts")
-	}
-	return tui.Options{ConfigPath: *configPath, AuditDir: *auditDir, KnownHostsPath: *knownHostsPath}, 0, true
+	return tui.Options{ConfigPath: *configPath}, 0, true
 }

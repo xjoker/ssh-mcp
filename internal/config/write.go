@@ -112,7 +112,7 @@ func SetServerPolicy(cfg *Config, name, mode string, allowPatterns, denyPatterns
 	return replaceServer(cfg, name, server)
 }
 
-func Save(path string, cfg *Config) error {
+func Save(path string, cfg *Config) (saveErr error) {
 	if path == "" {
 		return fmt.Errorf("config: save path is required")
 	}
@@ -158,6 +158,23 @@ func Save(path string, cfg *Config) error {
 	if _, err := Load(tmpPath); err != nil {
 		return fmt.Errorf("config: validate temporary file: %w", err)
 	}
+	releaseLock, err := acquireSaveLock(path)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := releaseLock(); err != nil {
+			unlockErr := fmt.Errorf("config: release save lock for %q: %w", path, err)
+			if saveErr == nil {
+				saveErr = unlockErr
+			} else {
+				saveErr = fmt.Errorf("%w; %v", saveErr, unlockErr)
+			}
+		}
+	}()
+	if err := ensureSaveTargetUnchanged(path, cfg); err != nil {
+		return err
+	}
 	if err := os.Rename(tmpPath, path); err != nil {
 		return fmt.Errorf("config: replace %q: %w", path, err)
 	}
@@ -165,6 +182,28 @@ func Save(path string, cfg *Config) error {
 	cfg.Path = path
 	cfg.source = append(cfg.source[:0], encoded...)
 	cfg.snapshot = cloneDiskConfig(encodeConfig(cfg))
+	return nil
+}
+
+func ensureSaveTargetUnchanged(path string, cfg *Config) error {
+	sameSource := cfg.Path != "" && filepath.Clean(cfg.Path) == filepath.Clean(path)
+	current, err := os.ReadFile(path)
+	if sameSource {
+		if err != nil {
+			return fmt.Errorf("config: %q changed on disk since it was loaded: %w", path, err)
+		}
+		if !bytes.Equal(current, cfg.source) {
+			return fmt.Errorf("config: %q changed on disk since it was loaded", path)
+		}
+		return nil
+	}
+
+	if err == nil {
+		return fmt.Errorf("config: %q changed on disk before the new configuration was saved", path)
+	}
+	if !os.IsNotExist(err) {
+		return fmt.Errorf("config: inspect save target %q: %w", path, err)
+	}
 	return nil
 }
 

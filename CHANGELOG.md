@@ -21,6 +21,9 @@ Branch / version convention:
 ## [Unreleased]
 
 ### Changed
+- The TUI is now an English-only machine configuration manager focused on
+  server add, view, edit, and delete workflows. Audit, live-state, trust,
+  credential, connection-test, and connection controls are no longer exposed.
 - `ssh-mcp tui --help` now exits successfully instead of returning status 1.
 - Installers now verify release checksums before atomically replacing an
   existing user-local binary; the Windows installer also selects only the
@@ -52,8 +55,8 @@ Branch / version convention:
   handlers.
 
 ### Added
-- **Local management TUI** via `ssh-mcp tui` for inspecting servers, audit
-  activity, runtime state, and command policies without a separate daemon.
+- **Local machine management TUI** via `ssh-mcp tui` for editing server
+  configuration without a separate daemon.
 - **MCP standard tool annotations** on every tool (`readOnlyHint` /
   `destructiveHint` / `idempotentHint` / `openWorldHint`) so MCP clients can
   present risk-appropriate confirmation UX.

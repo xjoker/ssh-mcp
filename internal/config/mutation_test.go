@@ -153,3 +153,33 @@ server = "jump"
 		t.Fatal("Save replaced config despite failed validation")
 	}
 }
+
+func TestSave_RejectsConcurrentOnDiskChange(t *testing.T) {
+	path := writeToml(t, minimalAgent)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	external := strings.Replace(minimalAgent, "example.com", "external.example.com", 1)
+	if err := os.WriteFile(path, []byte(external), 0600); err != nil {
+		t.Fatalf("external WriteFile: %v", err)
+	}
+	server := cfg.Servers["myserver"]
+	server.Description = "local edit"
+	if err := config.UpsertServer(cfg, "myserver", server); err != nil {
+		t.Fatalf("UpsertServer: %v", err)
+	}
+
+	err = config.Save(path, cfg)
+	if err == nil || !strings.Contains(err.Error(), "changed on disk") {
+		t.Fatalf("Save error = %v, want changed-on-disk conflict", err)
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("ReadFile: %v", readErr)
+	}
+	if string(got) != external {
+		t.Fatal("Save replaced a concurrent external change")
+	}
+}

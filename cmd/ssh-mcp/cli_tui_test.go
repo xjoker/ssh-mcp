@@ -7,17 +7,22 @@ import (
 
 func TestParseTUIOptionsHonorsExplicitPaths(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.toml")
-	auditPath := filepath.Join(t.TempDir(), "audit")
-	knownHostsPath := filepath.Join(t.TempDir(), "known_hosts")
-	options, code, run := parseTUIOptions([]string{"--path", configPath, "--audit-dir", auditPath, "--known-hosts", knownHostsPath})
+	options, code, run := parseTUIOptions([]string{"--path", configPath})
 	if code != 0 {
 		t.Fatalf("parseTUIOptions exit code = %d", code)
 	}
 	if !run {
 		t.Fatal("parseTUIOptions unexpectedly handled the command without running TUI")
 	}
-	if options.ConfigPath != configPath || options.AuditDir != auditPath || options.KnownHostsPath != knownHostsPath {
-		t.Fatalf("options = %+v, want explicit paths", options)
+	if options.ConfigPath != configPath {
+		t.Fatalf("options = %+v, want config path %q", options, configPath)
+	}
+}
+
+func TestParseTUIOptionsRejectsRemovedManagementFlags(t *testing.T) {
+	_, code, run := parseTUIOptions([]string{"--audit-dir", t.TempDir()})
+	if code == 0 || run {
+		t.Fatalf("removed --audit-dir flag returned code=%d run=%v", code, run)
 	}
 }
 
