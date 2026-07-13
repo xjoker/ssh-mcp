@@ -131,11 +131,22 @@ type respHandler struct {
 	stdout   string
 	stderr   string
 	exitCode int
+	release  <-chan struct{}
 }
 
 func (sr *shellResponder) addResponse(stdout, stderr string, exitCode int) {
 	sr.mu.Lock()
-	sr.handlers = append(sr.handlers, respHandler{stdout, stderr, exitCode})
+	sr.handlers = append(sr.handlers, respHandler{
+		stdout: stdout, stderr: stderr, exitCode: exitCode,
+	})
+	sr.mu.Unlock()
+}
+
+func (sr *shellResponder) addResponseAfter(release <-chan struct{}, stdout, stderr string, exitCode int) {
+	sr.mu.Lock()
+	sr.handlers = append(sr.handlers, respHandler{
+		stdout: stdout, stderr: stderr, exitCode: exitCode, release: release,
+	})
 	sr.mu.Unlock()
 }
 
@@ -206,7 +217,10 @@ func (sr *shellResponder) handleLine(line string) {
 		h, ok := sr.nextHandler()
 		if !ok {
 			// No handler — write a default sentinel with exit 0.
-			h = respHandler{"", "", 0}
+			h = respHandler{}
+		}
+		if h.release != nil {
+			<-h.release
 		}
 		if h.stdout != "" {
 			sr.sh.feedLine(h.stdout)
@@ -830,26 +844,25 @@ func TestSend_TimeoutClosesTransport(t *testing.T) {
 func TestSend_AfterTimeoutResumesWhenStaleCompletes(t *testing.T) {
 	m, id, sr := newManagedSession(t)
 
-	// We don't enqueue a handler for the first send — the responder writes
-	// the default exit-0 sentinel immediately. To simulate "command is still
-	// running when timeout fires", we manually withhold the sentinel.
-	//
-	// Strategy: use a custom hand-rolled shell instead. But the simplest
-	// reproduction is to send a tiny timeout and rely on scheduling jitter
-	// to occasionally hit before the responder's reply. For determinism we
-	// drain the stale sentinel manually by sending a second command after a
-	// short wait — by then the responder will have produced both the stale
-	// completion and the new command's completion.
+	firstRelease := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(firstRelease) })
+	})
+	sr.addResponseAfter(firstRelease, "", "", 0)
 
-	// First send: short timeout so we MAY race with the responder. Even if
-	// it completes normally, that's OK — the test is mainly about the
-	// "follow-up Send succeeds" half.
-	_, _ = m.Send(context.Background(), id, "first", 1*time.Millisecond)
+	// Withhold the first completion sentinel until Send has definitely timed
+	// out, then release it so the follow-up Send can drain the stale command.
+	_, err := m.Send(context.Background(), id, "first", 50*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "TIMEOUT") {
+		t.Fatalf("first Send must time out while its response is blocked, got: %v", err)
+	}
 
 	// Second send: must succeed and return the matching response. If the
 	// session was incorrectly torn down on timeout, this would return
 	// SESSION_DEAD.
 	sr.addResponse("second-output", "", 0)
+	releaseOnce.Do(func() { close(firstRelease) })
 	res, err := m.Send(context.Background(), id, "second", 5*time.Second)
 	if err != nil {
 		t.Fatalf("follow-up Send must succeed (session must stay alive), got: %v", err)
