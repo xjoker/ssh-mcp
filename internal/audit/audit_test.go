@@ -67,7 +67,7 @@ func TestNew_DirPermissions(t *testing.T) {
 	}
 }
 
-// TestRecord_FilePermissions verifies that the audit file is created with
+// TestRecord_FilePermissions verifies that the audit database is created with
 // mode 0600 (S-8).
 func TestRecord_FilePermissions(t *testing.T) {
 	skipOnWindowsPOSIXMode(t)
@@ -78,8 +78,7 @@ func TestRecord_FilePermissions(t *testing.T) {
 		t.Fatalf("Record: %v", err)
 	}
 
-	today := time.Now().UTC().Format(dateLayout)
-	path := filepath.Join(dir, filePrefix+today+fileSuffix)
+	path := filepath.Join(dir, databaseFile)
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("stat file: %v", err)
@@ -108,7 +107,7 @@ func TestRecord_QueryRoundTrip(t *testing.T) {
 		t.Fatalf("Record: %v", err)
 	}
 
-	results, err := l.Query(Filter{Limit: 10})
+	results, err := l.Query(Filter{Until: ts.Add(time.Second), Limit: 10})
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
@@ -150,7 +149,7 @@ func TestRecord_MultipleOrder(t *testing.T) {
 		}
 	}
 
-	results, err := l.Query(Filter{Limit: 10})
+	results, err := l.Query(Filter{Until: base.Add(time.Second), Limit: 10})
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
@@ -183,7 +182,7 @@ func TestQuery_ReverseTimestampOrder(t *testing.T) {
 		t.Fatalf("Record later: %v", err)
 	}
 
-	results, err := l.Query(Filter{Limit: 10})
+	results, err := l.Query(Filter{Until: base.Add(time.Second), Limit: 10})
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
@@ -207,7 +206,7 @@ func TestQuery_FilterServer(t *testing.T) {
 		}
 	}
 
-	results, err := l.Query(Filter{Server: "alpha", Limit: 10})
+	results, err := l.Query(Filter{Server: "alpha", Until: base.Add(time.Second), Limit: 10})
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
@@ -232,7 +231,7 @@ func TestQuery_FilterTool(t *testing.T) {
 		}
 	}
 
-	results, err := l.Query(Filter{Tool: "ssh_exec", Limit: 10})
+	results, err := l.Query(Filter{Tool: "ssh_exec", Until: base.Add(time.Second), Limit: 10})
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
@@ -263,7 +262,7 @@ func TestQuery_FilterErrorOnly(t *testing.T) {
 		t.Fatalf("Record err: %v", err)
 	}
 
-	results, err := l.Query(Filter{ErrorOnly: true, Limit: 10})
+	results, err := l.Query(Filter{ErrorOnly: true, Until: base.Add(time.Second), Limit: 10})
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
@@ -286,7 +285,7 @@ func TestQuery_Limit(t *testing.T) {
 		}
 	}
 
-	results, err := l.Query(Filter{Limit: 3})
+	results, err := l.Query(Filter{Until: base.Add(time.Second), Limit: 3})
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
@@ -335,12 +334,9 @@ func TestQuery_MalformedJSONLSkipsLine(t *testing.T) {
 func TestS5_AuditFailureBlocksCaller(t *testing.T) {
 	l, _ := newTestLogger(t)
 
-	// Force close the internal file to simulate an I/O failure.
-	l.mu.Lock()
-	if l.file != nil {
-		_ = l.file.Close()
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
-	l.mu.Unlock()
 
 	e := makeEntry(time.Now().UTC(), "ssh_exec", "prod")
 	err := l.Record(e)
@@ -406,14 +402,13 @@ func TestS6_SecretsRedactedInLog(t *testing.T) {
 		t.Errorf("ArgsRedacted does not contain REDACTED: %q", results[0].ArgsRedacted)
 	}
 
-	// Also verify the raw file on disk does not contain the marker.
-	today := time.Now().UTC().Format(dateLayout)
-	raw, err := os.ReadFile(filepath.Join(dir, filePrefix+today+fileSuffix))
+	// Also verify the raw database file on disk does not contain the marker.
+	raw, err := os.ReadFile(filepath.Join(dir, databaseFile))
 	if err != nil {
-		t.Fatalf("read file: %v", err)
+		t.Fatalf("read database: %v", err)
 	}
 	if strings.Contains(string(raw), "SECRET-MARKER-XYZ") {
-		t.Errorf("raw log file on disk still contains secret marker")
+		t.Errorf("raw database on disk still contains secret marker")
 	}
 }
 
@@ -441,9 +436,8 @@ func TestS8_FileAndDirPermissions(t *testing.T) {
 		t.Errorf("dir mode = %04o, want 0700", dirInfo.Mode().Perm())
 	}
 
-	// File mode.
-	today := time.Now().UTC().Format(dateLayout)
-	fileInfo, err := os.Stat(filepath.Join(dir, filePrefix+today+fileSuffix))
+	// Database mode.
+	fileInfo, err := os.Stat(filepath.Join(dir, databaseFile))
 	if err != nil {
 		t.Fatalf("stat file: %v", err)
 	}
@@ -457,6 +451,13 @@ func TestS8_FileAndDirPermissions(t *testing.T) {
 // retention; the CLI must never mutate the dir as a side-effect of a query.
 func TestNewReader_DoesNotTriggerRetention(t *testing.T) {
 	dir := t.TempDir()
+	writer, err := New(dir, 90)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 	oldFile := filepath.Join(dir, "audit-2020-01-01.jsonl")
 	if err := os.WriteFile(oldFile, []byte(`{}`+"\n"), 0600); err != nil {
 		t.Fatalf("write old file: %v", err)
@@ -478,9 +479,35 @@ func TestNewReader_DoesNotTriggerRetention(t *testing.T) {
 	}
 }
 
-// TestRetention verifies that files older than retentionDays are deleted on
-// New. SDD §9.5.
-func TestRetention(t *testing.T) {
+func TestNewReader_QueriesUnmigratedLegacyJSONL(t *testing.T) {
+	dir := t.TempDir()
+	legacy := filepath.Join(dir, "audit-2026-07-12.jsonl")
+	entry := makeEntry(time.Date(2026, 7, 12, 10, 0, 0, 0, time.UTC), "ssh_exec", "prod")
+	encoded, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, append(encoded, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	reader, err := NewReader(dir)
+	if err != nil {
+		t.Fatalf("NewReader: %v", err)
+	}
+	defer reader.Close()
+	entries, err := reader.Query(Filter{Limit: 10})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Tool != "ssh_exec" {
+		t.Fatalf("entries = %+v, want legacy ssh_exec", entries)
+	}
+}
+
+// TestLegacyJSONLIsRetained verifies that the SQLite migration never deletes
+// the legacy source file, even when it is older than the current retention.
+func TestLegacyJSONLIsRetained(t *testing.T) {
 	dir := t.TempDir()
 
 	// Plant an old file.
@@ -495,8 +522,8 @@ func TestRetention(t *testing.T) {
 	}
 	defer l.Close()
 
-	if _, statErr := os.Stat(oldFile); !os.IsNotExist(statErr) {
-		t.Errorf("old audit file was not deleted by retention cleanup")
+	if _, statErr := os.Stat(oldFile); statErr != nil {
+		t.Errorf("legacy audit file was deleted: %v", statErr)
 	}
 }
 
@@ -504,21 +531,14 @@ func TestRetention(t *testing.T) {
 // scanner budget must be skipped like a malformed row, not abort the query.
 func TestQuery_OversizedLineIsSkippedNotFatal(t *testing.T) {
 	dir := t.TempDir()
-	l, err := New(dir, 30)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := l.Record(Entry{Timestamp: time.Now().UTC(), SessionID: "s", Tool: "ssh_exec"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := l.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	// Append a >8MiB garbage line plus one more valid entry by hand.
+	// Seed a legacy JSONL file with a >8MiB garbage line between valid rows.
 	path := filepath.Join(dir, filePrefix+time.Now().UTC().Format(dateLayout)+fileSuffix)
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0600)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
+		t.Fatal(err)
+	}
+	first, _ := json.Marshal(Entry{Timestamp: time.Now().UTC(), SessionID: "s1", Tool: "ssh_exec"})
+	if _, err := f.Write(append(first, '\n')); err != nil {
 		t.Fatal(err)
 	}
 	huge := bytes.Repeat([]byte("x"), maxAuditLineBytes+1024)
@@ -531,7 +551,7 @@ func TestQuery_OversizedLineIsSkippedNotFatal(t *testing.T) {
 	}
 	_ = f.Close()
 
-	reader, err := NewReader(dir)
+	reader, err := New(dir, 30)
 	if err != nil {
 		t.Fatal(err)
 	}

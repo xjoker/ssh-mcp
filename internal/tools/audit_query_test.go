@@ -138,9 +138,10 @@ func TestHandleAuditQuery_Limit(t *testing.T) {
 	defer logger.Close()
 
 	// Write 5 entries.
+	base := time.Now().UTC().Add(-time.Second)
 	for i := 0; i < 5; i++ {
 		logger.Record(audit.Entry{
-			Timestamp: time.Now().UTC().Add(time.Duration(i) * time.Millisecond),
+			Timestamp: base.Add(time.Duration(i) * time.Millisecond),
 			Tool:      "ssh_exec", DurationMs: 1,
 		})
 	}

@@ -16,9 +16,10 @@ allowlist_for() {
     envelope)  echo "" ;;
     safety)    echo "" ;;
     config)    echo "" ;;
+    store)     echo "" ;;
     knownhosts) echo "safety" ;;
     auth)      echo "safety config" ;;
-    audit)     echo "safety" ;;
+    audit)     echo "safety store" ;;
     proxy)     echo "" ;;
     # v0.0.6: ssh.proxychain imports internal/proxy (dialer abstractions) and
     # internal/auth (resolve direct-mode SSH proxy creds via CredRef).

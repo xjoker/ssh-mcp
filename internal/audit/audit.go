@@ -1,4 +1,4 @@
-// Package audit implements the append-only JSONL audit log.
+// Package audit implements the append-only audit log backed by SQLite.
 // SDD §5.9, §9.1–§9.6.
 //
 // Module boundary: only internal/safety may be imported from internal/*.
@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/xjoker/ssh-mcp/internal/safety"
+	"github.com/xjoker/ssh-mcp/internal/store"
 )
 
 // dateLayout is the UTC date format used in filenames.
@@ -28,6 +29,8 @@ const filePrefix = "audit-"
 
 // fileSuffix is the suffix for audit log filenames.
 const fileSuffix = ".jsonl"
+
+const databaseFile = "ssh-mcp.db"
 
 // defaultLimit is the default Query result limit.
 const defaultLimit = 100
@@ -88,6 +91,7 @@ type Logger struct {
 	mu            sync.Mutex
 	dir           string
 	retentionDays int
+	store         *store.Store
 	currentDate   string // YYYY-MM-DD of open file
 	file          *os.File
 	bw            *bufio.Writer
@@ -106,9 +110,18 @@ func NewReader(dir string) (*Logger, error) {
 	if _, err := os.Stat(dir); err != nil {
 		return nil, fmt.Errorf("audit: cannot stat dir %s: %w", dir, err)
 	}
-	// file/bw stay nil; Record will reject any write attempts via the
-	// "audit: logger is closed" path. Close is idempotent and safe.
-	return &Logger{dir: dir}, nil
+	dbPath := filepath.Join(dir, databaseFile)
+	if _, err := os.Stat(dbPath); err != nil {
+		if os.IsNotExist(err) {
+			return &Logger{dir: dir}, nil
+		}
+		return nil, fmt.Errorf("audit: cannot stat database %s: %w", dbPath, err)
+	}
+	st, err := store.OpenReadOnly(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("audit: open read-only store: %w", err)
+	}
+	return &Logger{dir: dir, store: st}, nil
 }
 
 // New creates (or opens) the audit directory, deletes files older than
@@ -118,34 +131,11 @@ func New(dir string, retentionDays int) (*Logger, error) {
 	if retentionDays <= 0 {
 		return nil, fmt.Errorf("audit: retentionDays must be positive, got %d", retentionDays)
 	}
-
-	// Create directory with mode 0700.
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return nil, fmt.Errorf("audit: cannot create dir %s: %w", dir, err)
+	st, err := store.Open(filepath.Join(dir, databaseFile), store.Options{AuditRetentionDays: retentionDays})
+	if err != nil {
+		return nil, fmt.Errorf("audit: open store: %w", err)
 	}
-
-	// Enforce directory permission: set 0700 explicitly in case it already
-	// existed with looser permissions. 0700 is intentional — audit log is
-	// user-private; only the owning user (the ssh-mcp daemon's UID) needs
-	// to traverse / list / create here.
-	if err := os.Chmod(dir, 0o700); err != nil { // #nosec G302 -- audit dir is user-private by design
-		return nil, fmt.Errorf("audit: cannot chmod dir %s: %w", dir, err)
-	}
-
-	l := &Logger{
-		dir:           dir,
-		retentionDays: retentionDays,
-	}
-
-	// Retention: remove files older than retentionDays. SDD §9.5.
-	if err := l.enforceRetention(); err != nil {
-		return nil, err
-	}
-
-	if err := l.openCurrentFile(); err != nil {
-		return nil, err
-	}
-	return l, nil
+	return &Logger{dir: dir, retentionDays: retentionDays, store: st}, nil
 }
 
 // enforceRetention deletes audit files older than retentionDays. Runs at New
@@ -214,6 +204,16 @@ func (l *Logger) auditFilePath(date string) string {
 func (l *Logger) Record(e Entry) error {
 	// Redact secrets from ArgsRedacted before write (defence in depth; SDD §9.4).
 	e.ArgsRedacted = string(safety.RedactSecret([]byte(e.ArgsRedacted)))
+	l.mu.Lock()
+	st := l.store
+	closed := l.closed
+	l.mu.Unlock()
+	if st != nil {
+		if closed {
+			return fmt.Errorf("audit: logger is closed")
+		}
+		return st.RecordAudit(toStoreEntry(e))
+	}
 
 	data, err := json.Marshal(e)
 	if err != nil {
@@ -264,6 +264,12 @@ func (l *Logger) Record(e Entry) error {
 func (l *Logger) Flush() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.store != nil {
+		if l.closed {
+			return fmt.Errorf("audit: logger is closed")
+		}
+		return nil
+	}
 	return l.flushLocked()
 }
 
@@ -289,6 +295,9 @@ func (l *Logger) Close() error {
 		return nil
 	}
 	l.closed = true
+	if l.store != nil {
+		return l.store.Close()
+	}
 	if l.file == nil {
 		return nil
 	}
@@ -305,6 +314,20 @@ func (l *Logger) Close() error {
 // Query returns audit entries matching f, most recent first, up to f.Limit.
 // SDD §9.6.
 func (l *Logger) Query(f Filter) ([]Entry, error) {
+	l.mu.Lock()
+	st := l.store
+	closed := l.closed
+	l.mu.Unlock()
+	if st != nil {
+		if closed {
+			return nil, fmt.Errorf("audit: logger is closed")
+		}
+		entries, err := st.QueryAudit(toStoreFilter(f))
+		if err != nil {
+			return nil, err
+		}
+		return fromStoreEntries(entries), nil
+	}
 	limit := f.Limit
 	if limit <= 0 {
 		limit = defaultLimit
@@ -385,6 +408,39 @@ func (l *Logger) Query(f Filter) ([]Entry, error) {
 	}
 
 	return results, nil
+}
+
+func toStoreEntry(entry Entry) store.AuditEntry {
+	return store.AuditEntry{
+		Timestamp: entry.Timestamp, SessionID: entry.SessionID, Tool: entry.Tool,
+		Server: entry.Server, AuthMode: entry.AuthMode, ArgsRedacted: entry.ArgsRedacted,
+		ExitCode: entry.ExitCode, DurationMs: entry.DurationMs, BytesIn: entry.BytesIn,
+		BytesOut: entry.BytesOut, ErrorCode: entry.ErrorCode, Status: entry.Status,
+		CorrelationID: entry.CorrelationID, ContentSHA256: entry.ContentSHA256,
+		Stdout: entry.Stdout, Stderr: entry.Stderr,
+	}
+}
+
+func toStoreFilter(filter Filter) store.AuditFilter {
+	return store.AuditFilter{
+		Server: filter.Server, Tool: filter.Tool, Since: filter.Since, Until: filter.Until,
+		ExitCodeEq: filter.ExitCodeEq, ErrorOnly: filter.ErrorOnly, Limit: filter.Limit,
+	}
+}
+
+func fromStoreEntries(entries []store.AuditEntry) []Entry {
+	result := make([]Entry, len(entries))
+	for index, entry := range entries {
+		result[index] = Entry{
+			Timestamp: entry.Timestamp, SessionID: entry.SessionID, Tool: entry.Tool,
+			Server: entry.Server, AuthMode: entry.AuthMode, ArgsRedacted: entry.ArgsRedacted,
+			ExitCode: entry.ExitCode, DurationMs: entry.DurationMs, BytesIn: entry.BytesIn,
+			BytesOut: entry.BytesOut, ErrorCode: entry.ErrorCode, Status: entry.Status,
+			CorrelationID: entry.CorrelationID, ContentSHA256: entry.ContentSHA256,
+			Stdout: entry.Stdout, Stderr: entry.Stderr,
+		}
+	}
+	return result
 }
 
 // maxAuditLineBytes bounds a single JSONL line during Query. Lines beyond
