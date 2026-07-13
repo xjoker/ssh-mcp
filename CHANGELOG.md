@@ -21,6 +21,8 @@ Branch / version convention:
 ## [Unreleased]
 
 ### Changed
+- The stale-command recovery test now blocks and releases the first response
+  explicitly, removing a scheduling race that intermittently failed on Windows.
 - CI and release workflows now pin Go 1.26.5 exactly. The previous minor-only
   selector could resolve to an older cached patch while `GOTOOLCHAIN=local`,
   bypassing the repository's security toolchain pin.
