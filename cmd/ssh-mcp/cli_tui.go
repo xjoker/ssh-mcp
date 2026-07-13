@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -12,8 +13,8 @@ import (
 func init() { registerSubcommand("tui", tuiCmd) }
 
 func tuiCmd(args []string) int {
-	options, code := parseTUIOptions(args)
-	if code != 0 {
+	options, code, run := parseTUIOptions(args)
+	if code != 0 || !run {
 		return code
 	}
 	if err := tui.Run(options); err != nil {
@@ -23,7 +24,7 @@ func tuiCmd(args []string) int {
 	return 0
 }
 
-func parseTUIOptions(args []string) (tui.Options, int) {
+func parseTUIOptions(args []string) (tui.Options, int, bool) {
 	flags := flag.NewFlagSet("tui", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	configPath := flags.String("path", "", "config file path")
@@ -34,11 +35,14 @@ func parseTUIOptions(args []string) (tui.Options, int) {
 		flags.PrintDefaults()
 	}
 	if err := flags.Parse(args); err != nil {
-		return tui.Options{}, 1
+		if errors.Is(err, flag.ErrHelp) {
+			return tui.Options{}, 0, false
+		}
+		return tui.Options{}, 1, false
 	}
 	if flags.NArg() != 0 {
 		flags.Usage()
-		return tui.Options{}, 1
+		return tui.Options{}, 1, false
 	}
 
 	if *configPath == "" {
@@ -51,9 +55,9 @@ func parseTUIOptions(args []string) (tui.Options, int) {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "tui: resolve home directory: %v\n", err)
-			return tui.Options{}, 1
+			return tui.Options{}, 1, false
 		}
 		*knownHostsPath = filepath.Join(home, ".ssh", "known_hosts")
 	}
-	return tui.Options{ConfigPath: *configPath, AuditDir: *auditDir, KnownHostsPath: *knownHostsPath}, 0
+	return tui.Options{ConfigPath: *configPath, AuditDir: *auditDir, KnownHostsPath: *knownHostsPath}, 0, true
 }

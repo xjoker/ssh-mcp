@@ -21,6 +21,7 @@ Branch / version convention:
 ## [Unreleased]
 
 ### Changed
+- `ssh-mcp tui --help` now exits successfully instead of returning status 1.
 - Installers now verify release checksums before atomically replacing an
   existing user-local binary; the Windows installer also selects only the
   latest stable release. Failed verification leaves the installed binary
