@@ -21,6 +21,9 @@ Branch / version convention:
 ## [Unreleased]
 
 ### Changed
+- Windows test cleanup now closes audit SQLite readers before temporary
+  directories are removed, and POSIX database mode assertions only run on
+  platforms that expose POSIX permission bits.
 - Windows SQLite file URIs now normalize drive-letter paths (for example,
   `C:\\Users\\...` becomes `file:///C:/Users/...`), restoring audit-store
   startup and the Windows CI test path.
