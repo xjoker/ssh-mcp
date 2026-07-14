@@ -195,6 +195,8 @@ func runPowerShellInstaller(t *testing.T, powerShell, prefix, checksum string) (
 	harness := filepath.Join(t.TempDir(), "install-harness.ps1")
 	apiLog := filepath.Join(t.TempDir(), "api-url.txt")
 	script := fmt.Sprintf(`
+# Load Get-FileHash before mocking commands exported by the same module.
+Import-Module Microsoft.PowerShell.Utility
 $env:PREFIX = '%s'
 Remove-Item Env:VERSION -ErrorAction SilentlyContinue
 function global:Invoke-RestMethod {
