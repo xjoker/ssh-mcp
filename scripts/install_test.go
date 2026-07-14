@@ -81,6 +81,23 @@ func TestInstallPowerShellSafetyContract(t *testing.T) {
 	}
 }
 
+func TestPowerShellEnvironmentSeparatesWindowsPowerShellFromPwsh(t *testing.T) {
+	inherited := []string{
+		"PATH=C:\\tools",
+		"PSModulePath=C:\\Program Files\\PowerShell\\Modules",
+		"OTHER=value",
+	}
+
+	for _, entry := range powerShellEnvironment("powershell.exe", inherited) {
+		if strings.EqualFold(strings.SplitN(entry, "=", 2)[0], "PSModulePath") {
+			t.Fatalf("powershell.exe inherited pwsh PSModulePath: %q", entry)
+		}
+	}
+	if got := strings.Join(powerShellEnvironment("pwsh.exe", inherited), "\x00"); got != strings.Join(inherited, "\x00") {
+		t.Fatalf("pwsh.exe environment changed: %q", got)
+	}
+}
+
 func TestInstallPowerShellChecksumMismatchPreservesExistingBinary(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("PowerShell installer behavior is verified on Windows")
@@ -186,6 +203,23 @@ func findPowerShell(t *testing.T) string {
 	return ""
 }
 
+func powerShellEnvironment(powerShell string, inherited []string) []string {
+	if !strings.EqualFold(filepath.Base(powerShell), "powershell.exe") {
+		return inherited
+	}
+
+	// Windows PowerShell rebuilds its own default module path when PSModulePath is absent.
+	env := make([]string, 0, len(inherited))
+	for _, entry := range inherited {
+		name, _, _ := strings.Cut(entry, "=")
+		if strings.EqualFold(name, "PSModulePath") {
+			continue
+		}
+		env = append(env, entry)
+	}
+	return env
+}
+
 func runPowerShellInstaller(t *testing.T, powerShell, prefix, checksum string) (string, error) {
 	t.Helper()
 	installer, err := filepath.Abs("install.ps1")
@@ -219,6 +253,7 @@ exit $LASTEXITCODE
 		t.Fatal(err)
 	}
 	cmd := exec.Command(powerShell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", harness)
+	cmd.Env = powerShellEnvironment(powerShell, os.Environ())
 	output, runErr := cmd.CombinedOutput()
 	if apiURL, readErr := os.ReadFile(apiLog); readErr == nil && !strings.HasSuffix(strings.TrimSpace(string(apiURL)), "/releases/latest") {
 		t.Errorf("install.ps1 queried non-stable API: %s", apiURL)
