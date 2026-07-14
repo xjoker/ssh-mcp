@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"net"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -524,6 +525,28 @@ func TestHostKeyCallback_AcceptNewSucceedsAndPersists(t *testing.T) {
 	}
 	if st.Size() == 0 {
 		t.Error("known_hosts is empty after acceptNew append")
+	}
+}
+
+func TestHostKeyCallback_RejectsUnknownWhenKnownHostsDoesNotExist(t *testing.T) {
+	dir := t.TempDir()
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", dir)
+	} else {
+		t.Setenv("HOME", dir)
+	}
+	cb := HostKeyCallback(false)
+	pub, _, err := genTestKey(t)
+	if err != nil {
+		t.Fatalf("genTestKey: %v", err)
+	}
+	addr := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 22}
+	err = cb("unknown.example:22", addr, pub)
+	if err == nil || !strings.Contains(err.Error(), "HOST_KEY_UNKNOWN") {
+		t.Fatalf("unknown host error = %v, want HOST_KEY_UNKNOWN", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, ".ssh", "known_hosts")); !os.IsNotExist(statErr) {
+		t.Fatalf("acceptNew=false created known_hosts: %v", statErr)
 	}
 }
 

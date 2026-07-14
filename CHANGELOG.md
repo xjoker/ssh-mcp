@@ -21,9 +21,10 @@ Branch / version convention:
 ## [Unreleased]
 
 ### Changed
-- The TUI is now an English-only machine configuration manager focused on
-  server add, view, edit, and delete workflows. Audit, live-state, trust,
-  credential, connection-test, and connection controls are no longer exposed.
+- The TUI is now an English-only, single-screen operations console for machine
+  add, view, edit, delete, search, and reload workflows. Its contextual action
+  menu adds connection tests, interactive SSH shells, OS-keychain password
+  management, and explicit host-key trust without exposing plaintext secrets.
 - `ssh-mcp tui --help` now exits successfully instead of returning status 1.
 - Installers now verify release checksums before atomically replacing an
   existing user-local binary; the Windows installer also selects only the
@@ -55,8 +56,11 @@ Branch / version convention:
   handlers.
 
 ### Added
-- **Local machine management TUI** via `ssh-mcp tui` for editing server
-  configuration without a separate daemon.
+- **Local operations console** via `ssh-mcp tui` for editing server accounts,
+  authentication, jump hosts, tags, and command policy without a separate
+  daemon. Passwords remain in the OS keychain, unknown host keys require
+  fingerprint confirmation, and machine deletion creates a configuration
+  backup before removing the entry.
 - **MCP standard tool annotations** on every tool (`readOnlyHint` /
   `destructiveHint` / `idempotentHint` / `openWorldHint`) so MCP clients can
   present risk-appropriate confirmation UX.

@@ -135,6 +135,38 @@ ssh-mcp auth set ssh-password:prod
 # prompts for password; nothing sensitive lands in config.toml
 ```
 
+### Manage machines in the operations console
+
+Launch the English-only TUI against the default configuration:
+
+```sh
+ssh-mcp tui
+```
+
+Use a different configuration when needed:
+
+```sh
+ssh-mcp tui --path /path/to/config.toml
+```
+
+The console keeps the machine list, selected-machine status, and next actions
+on one screen. Use `j`/`k` or the arrow keys to select a machine, `/` to
+search, `a` to add, `r` to reload, and `Enter` to open the machine actions:
+
+| Key | Action |
+| --- | --- |
+| `t` | Test the SSH connection |
+| `c` | Leave the console temporarily and open an interactive SSH shell |
+| `e` | Edit the machine, account, authentication, jump host, tags, and command policy |
+| `p` | Store, replace, or delete the password in the OS keychain |
+| `k` | Preview and explicitly trust an unknown host key |
+| `d` | Delete the machine after confirmation and create a configuration backup |
+
+Passwords are never displayed or written to `config.toml`; the console shows
+only `Stored`, `Missing`, or `Unavailable`. Connection tests and shells remain
+fail-closed until the host key is trusted. A changed host key is blocked and
+must be repaired outside the console after independent verification.
+
 ### Pre-authorise tools (avoid per-call permission prompts)
 
 By default Claude Code asks for confirmation on every MCP tool call. You can pre-authorise individual tools by adding them to `permissions.allow` in `~/.claude/settings.json` (user-wide) or `.claude/settings.json` (project-only).
@@ -450,6 +482,7 @@ Full example: [`examples/config.toml`](examples/config.toml)
 
 ```sh
 # Config & server management
+ssh-mcp tui
 ssh-mcp config init
 ssh-mcp config validate
 ssh-mcp config add-server <name> --host H --user U --auth agent|key|password

@@ -465,6 +465,9 @@ func HostKeyCallback(acceptNew bool) cryptoSSH.HostKeyCallback {
 				return fmt.Errorf("HOST_KEY_UNKNOWN: callback error: %w", cbErr)
 			}
 		}
+		if !acceptNew {
+			return fmt.Errorf("HOST_KEY_UNKNOWN for %s: not in known_hosts", hostname)
+		}
 
 		// acceptNew=true and host is unknown — append to known_hosts.
 		// Every step is fail-closed: if we cannot persist the trust
