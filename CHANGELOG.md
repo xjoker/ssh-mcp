@@ -54,6 +54,9 @@ Branch / version convention:
 - Configuration writes and host-key trust updates now share validated,
   atomic core operations instead of duplicating persistence logic in CLI
   handlers.
+- `ssh_persistent_setup` now joins the same cross-process configuration lock
+  and optimistic-concurrency checks. Keychain failure leaves the active config
+  untouched instead of rolling it back over another process's saved changes.
 
 ### Added
 - **Local operations console** via `ssh-mcp tui` for editing server accounts,

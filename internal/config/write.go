@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -48,6 +49,25 @@ type diskProxyConfig struct {
 	Auth               string  `toml:"auth,omitempty"`
 	KeyPath            string  `toml:"key_path,omitempty"`
 	InsecureSkipVerify bool    `toml:"insecure_skip_verify,omitempty"`
+}
+
+var (
+	replaceConfigFile     = os.Rename
+	acquireConfigSaveLock = acquireSaveLock
+)
+
+// SaveCommittedError reports a post-commit cleanup failure. The target file
+// has already been atomically replaced when this error is returned.
+type SaveCommittedError struct {
+	Err error
+}
+
+func (e *SaveCommittedError) Error() string { return e.Err.Error() }
+func (e *SaveCommittedError) Unwrap() error { return e.Err }
+
+func IsSaveCommitted(err error) bool {
+	var committedErr *SaveCommittedError
+	return errors.As(err, &committedErr)
 }
 
 func NewConfig() *Config {
@@ -112,7 +132,21 @@ func SetServerPolicy(cfg *Config, name, mode string, allowPatterns, denyPatterns
 	return replaceServer(cfg, name, server)
 }
 
-func Save(path string, cfg *Config) (saveErr error) {
+func Save(path string, cfg *Config) error {
+	return saveWithPreCommit(path, cfg, nil, nil)
+}
+
+// SaveWithPreCommit is Save with an operation that runs after the target is
+// locked and confirmed unchanged, but before the prepared config replaces it.
+// A pre-commit error leaves the target file untouched.
+func SaveWithPreCommit(path string, cfg *Config, preCommit, rollback func() error) error {
+	if preCommit == nil || rollback == nil {
+		return fmt.Errorf("config: pre-commit and rollback operations are required")
+	}
+	return saveWithPreCommit(path, cfg, preCommit, rollback)
+}
+
+func saveWithPreCommit(path string, cfg *Config, preCommit, rollback func() error) (saveErr error) {
 	if path == "" {
 		return fmt.Errorf("config: save path is required")
 	}
@@ -158,14 +192,17 @@ func Save(path string, cfg *Config) (saveErr error) {
 	if _, err := Load(tmpPath); err != nil {
 		return fmt.Errorf("config: validate temporary file: %w", err)
 	}
-	releaseLock, err := acquireSaveLock(path)
+	releaseLock, err := acquireConfigSaveLock(path)
 	if err != nil {
 		return err
 	}
+	committed := false
 	defer func() {
 		if err := releaseLock(); err != nil {
 			unlockErr := fmt.Errorf("config: release save lock for %q: %w", path, err)
-			if saveErr == nil {
+			if committed && saveErr == nil {
+				saveErr = &SaveCommittedError{Err: unlockErr}
+			} else if saveErr == nil {
 				saveErr = unlockErr
 			} else {
 				saveErr = fmt.Errorf("%w; %v", saveErr, unlockErr)
@@ -175,9 +212,20 @@ func Save(path string, cfg *Config) (saveErr error) {
 	if err := ensureSaveTargetUnchanged(path, cfg); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if preCommit != nil {
+		if err := preCommit(); err != nil {
+			return fmt.Errorf("config: pre-commit operation: %w", err)
+		}
+	}
+	if err := replaceConfigFile(tmpPath, path); err != nil {
+		if preCommit != nil {
+			if rollbackErr := rollback(); rollbackErr != nil {
+				return fmt.Errorf("config: replace %q: %w; pre-commit rollback failed: %v", path, err, rollbackErr)
+			}
+		}
 		return fmt.Errorf("config: replace %q: %w", path, err)
 	}
+	committed = true
 	cleanup = false
 	cfg.Path = path
 	cfg.source = append(cfg.source[:0], encoded...)

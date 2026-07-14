@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -151,9 +152,16 @@ func TestPersistentSetup_PasswordKeychainDefault_Persists(t *testing.T) {
 	if err := auth.SetKeychain("ssh-mcp", "ssh-password:_probe-persistent", []byte("x")); err != nil {
 		t.Skipf("keychain unavailable on this host: %v", err)
 	}
+	if err := auth.SetKeychain("ssh-mcp", "ssh-password:db-kc", []byte("preexisting")); err != nil {
+		t.Fatalf("seed pre-existing keychain entry: %v", err)
+	}
+	storedAccount := ""
 	defer func() {
 		_ = auth.DeleteKeychain("ssh-mcp", "ssh-password:_probe-persistent")
 		_ = auth.DeleteKeychain("ssh-mcp", "ssh-password:db-kc")
+		if storedAccount != "" {
+			_ = auth.DeleteKeychain("ssh-mcp", storedAccount)
+		}
 	}()
 
 	// Note: gate=false intentionally — keychain path must not require it.
@@ -172,7 +180,7 @@ func TestPersistentSetup_PasswordKeychainDefault_Persists(t *testing.T) {
 	}
 
 	body, _ := os.ReadFile(cfgPath)
-	wantRef := `password = "keychain:ssh-mcp:ssh-password:db-kc"`
+	wantRef := `password = "keychain:ssh-mcp:ssh-password:db-kc-`
 	if !strings.Contains(string(body), wantRef) {
 		t.Errorf("expected keychain reference in config; got:\n%s", body)
 	}
@@ -180,12 +188,18 @@ func TestPersistentSetup_PasswordKeychainDefault_Persists(t *testing.T) {
 	if strings.Contains(string(body), "k3ych@in-pw") {
 		t.Errorf("plaintext password leaked to disk; got:\n%s", body)
 	}
-	if _, err := config.Load(cfgPath); err != nil {
+	loaded, err := config.Load(cfgPath)
+	if err != nil {
 		t.Errorf("written config does not validate: %v", err)
 	}
 
 	// Keychain entry should be readable.
-	ref := config.CredRef{Kind: config.CredRefKeychain, Service: "ssh-mcp", Account: "ssh-password:db-kc"}
+	ref := loaded.Servers["db-kc"].Password
+	if ref.Kind != config.CredRefKeychain || ref.Service != "ssh-mcp" ||
+		!strings.HasPrefix(ref.Account, "ssh-password:db-kc-") {
+		t.Fatalf("unexpected keychain reference: kind=%v service=%q account=%q", ref.Kind, ref.Service, ref.Account)
+	}
+	storedAccount = ref.Account
 	sec, err := auth.Resolve(context.Background(), ref, false)
 	if err != nil {
 		t.Fatalf("auth.Resolve on stored ref: %v", err)
@@ -193,6 +207,63 @@ func TestPersistentSetup_PasswordKeychainDefault_Persists(t *testing.T) {
 	defer sec.Close()
 	if got := string(sec.Bytes()); got != "k3ych@in-pw" {
 		t.Errorf("keychain content mismatch: got %q want %q", got, "k3ych@in-pw")
+	}
+	oldRef := config.CredRef{Kind: config.CredRefKeychain, Service: "ssh-mcp", Account: "ssh-password:db-kc"}
+	oldSecret, err := auth.Resolve(context.Background(), oldRef, false)
+	if err != nil {
+		t.Fatalf("resolve pre-existing keychain entry: %v", err)
+	}
+	defer oldSecret.Close()
+	if got := string(oldSecret.Bytes()); got != "preexisting" {
+		t.Errorf("pre-existing keychain entry overwritten: got %q", got)
+	}
+}
+
+func TestPersistentSetup_KeychainFailurePreservesConcurrentConfigChange(t *testing.T) {
+	deps, cfgPath := makePersistentDeps(t, false)
+	original := `[settings]
+default_timeout_ms = 120000
+`
+	external := `[settings]
+default_timeout_ms = 120000
+
+[servers.external]
+host = "external.example.com"
+port = 22
+user = "deploy"
+auth = "agent"
+`
+	if err := os.WriteFile(cfgPath, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	previousSet := setPersistentKeychain
+	setPersistentKeychain = func(_, _ string, _ []byte) error {
+		if err := os.WriteFile(cfgPath, []byte(external), 0o600); err != nil {
+			t.Fatalf("write concurrent config: %v", err)
+		}
+		return errors.New("keychain unavailable")
+	}
+	t.Cleanup(func() { setPersistentKeychain = previousSet })
+
+	args := json.RawMessage(`{
+		"name": "db-kc",
+		"host": "10.0.0.2",
+		"user": "root",
+		"auth": "password",
+		"password": "secret"
+	}`)
+	resp := handleSSHPersistentSetup(context.Background(), deps, args)
+	if resp.OK {
+		t.Fatal("expected keychain failure")
+	}
+
+	body, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != external {
+		t.Fatalf("concurrent config change was overwritten:\n%s", body)
 	}
 }
 

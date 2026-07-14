@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -181,5 +182,73 @@ func TestSave_RejectsConcurrentOnDiskChange(t *testing.T) {
 	}
 	if string(got) != external {
 		t.Fatal("Save replaced a concurrent external change")
+	}
+}
+
+func TestSaveWithPreCommit_ErrorLeavesTargetUnchanged(t *testing.T) {
+	path := writeToml(t, minimalAgent)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	server := cfg.Servers["myserver"]
+	server.Description = "local edit"
+	if err := config.UpsertServer(cfg, "myserver", server); err != nil {
+		t.Fatalf("UpsertServer: %v", err)
+	}
+
+	called := false
+	err = config.SaveWithPreCommit(path, cfg, func() error {
+		called = true
+		return errors.New("credential store unavailable")
+	}, func() error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "credential store unavailable") {
+		t.Fatalf("SaveWithPreCommit error = %v", err)
+	}
+	if !called {
+		t.Fatal("pre-commit operation was not called")
+	}
+	body, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(body) != minimalAgent {
+		t.Fatal("pre-commit failure replaced the config")
+	}
+}
+
+func TestSaveWithPreCommit_ConflictSkipsOperation(t *testing.T) {
+	path := writeToml(t, minimalAgent)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	server := cfg.Servers["myserver"]
+	server.Description = "local edit"
+	if err := config.UpsertServer(cfg, "myserver", server); err != nil {
+		t.Fatalf("UpsertServer: %v", err)
+	}
+
+	external := strings.Replace(minimalAgent, "example.com", "external.example.com", 1)
+	if err := os.WriteFile(path, []byte(external), 0o600); err != nil {
+		t.Fatalf("external WriteFile: %v", err)
+	}
+	called := false
+	err = config.SaveWithPreCommit(path, cfg, func() error {
+		called = true
+		return nil
+	}, func() error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "changed on disk") {
+		t.Fatalf("SaveWithPreCommit error = %v, want changed-on-disk conflict", err)
+	}
+	if called {
+		t.Fatal("pre-commit operation ran despite an OCC conflict")
+	}
+	body, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(body) != external {
+		t.Fatal("SaveWithPreCommit replaced a concurrent external change")
 	}
 }

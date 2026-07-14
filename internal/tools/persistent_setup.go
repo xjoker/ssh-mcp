@@ -10,13 +10,13 @@ package tools
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
-	"strings"
 	"time"
 
 	"github.com/xjoker/ssh-mcp/internal/auth"
@@ -31,6 +31,11 @@ import (
 const (
 	persistentKeychainService       = "ssh-mcp"
 	persistentKeychainAccountPrefix = "ssh-password:"
+)
+
+var (
+	setPersistentKeychain    = auth.SetKeychain
+	deletePersistentKeychain = auth.DeleteKeychain
 )
 
 func init() {
@@ -252,42 +257,22 @@ func handleSSHPersistentSetup(ctx context.Context, deps *Deps, args json.RawMess
 		cfgPath = config.DefaultPath()
 	}
 
-	// Refuse if the entry already exists in the on-disk file. We deliberately
-	// do not support overwrite — replacing a TOML block reliably without a
-	// full round-trip risks losing user comments / formatting. Operators who
-	// want to update an entry can edit config.toml directly.
-	original, readErr := os.ReadFile(cfgPath)
-	switch {
-	case readErr == nil:
-		if config.HasServerBlock(original, input.Name) {
-			return envelope.ErrWithHint(
-				envelope.CodeInvalidArgument,
-				fmt.Sprintf("server %q already exists in %s", input.Name, cfgPath),
-				"Edit config.toml manually to update an existing entry, or pick a different name.",
-				false,
-			)
-		}
-	case os.IsNotExist(readErr):
-		dir := filepath.Dir(cfgPath)
-		if mkErr := os.MkdirAll(dir, 0o700); mkErr != nil {
-			return envelope.Err(envelope.CodeInternalError,
-				fmt.Sprintf("cannot create directory %s: %v", dir, mkErr), false)
-		}
-		original = nil
-	default:
+	diskCfg, loadErr := config.Load(cfgPath)
+	if errors.Is(loadErr, os.ErrNotExist) {
+		diskCfg = config.NewConfig()
+	} else if loadErr != nil {
 		return envelope.Err(envelope.CodeInternalError,
-			fmt.Sprintf("read %s: %v", cfgPath, readErr), false)
+			fmt.Sprintf("read %s: %v", cfgPath, loadErr), false)
 	}
 
 	// Refuse to shadow an in-memory static server name (already validated
-	// against the on-disk file above; this catches the rare case where Cfg
-	// holds a name that isn't in the file we just read, e.g. test setups).
+	// against the on-disk config below; this catches the rare case where Cfg
+	// holds a name that isn't in the file we just loaded, e.g. test setups).
 	if deps.Cfg != nil && deps.Cfg.Servers != nil {
-		if _, exists := deps.Cfg.Servers[input.Name]; exists && len(original) > 0 {
-			if !config.HasServerBlock(original, input.Name) {
+		if _, exists := deps.Cfg.Servers[input.Name]; exists {
+			if _, onDisk := diskCfg.Servers[input.Name]; !onDisk {
 				return envelope.Err(envelope.CodeInvalidArgument,
-					fmt.Sprintf("server %q already registered in current session", input.Name),
-					false)
+					fmt.Sprintf("server %q already registered in current session", input.Name), false)
 			}
 		}
 	}
@@ -298,9 +283,15 @@ func handleSSHPersistentSetup(ctx context.Context, deps *Deps, args json.RawMess
 	// succeeds, so a validation failure leaves no orphan keychain entries.
 	effective := input
 	keychainRef := ""
+	keychainAccount := ""
 	if hasSecret && storage == "keychain" {
-		ref := fmt.Sprintf("keychain:%s:%s%s",
-			persistentKeychainService, persistentKeychainAccountPrefix, input.Name)
+		var err error
+		keychainAccount, err = newPersistentKeychainAccount(input.Name)
+		if err != nil {
+			return envelope.Err(envelope.CodeInternalError,
+				fmt.Sprintf("create keychain account: %v", err), false)
+		}
+		ref := fmt.Sprintf("keychain:%s:%s", persistentKeychainService, keychainAccount)
 		keychainRef = ref
 		if input.Auth == "password" {
 			effective.Password = ref
@@ -313,77 +304,57 @@ func handleSSHPersistentSetup(ctx context.Context, deps *Deps, args json.RawMess
 		}
 	}
 
-	// Build the new [servers.<name>] block.
-	block := buildPersistentBlock(effective, port)
-
-	var sb strings.Builder
-	sb.Write(original)
-	if len(original) > 0 && !strings.HasSuffix(string(original), "\n") {
-		sb.WriteString("\n")
+	server, err := persistentServerConfig(effective, port)
+	if err != nil {
+		return envelope.Err(envelope.CodeInvalidArgument,
+			fmt.Sprintf("invalid credential reference: %v", err), false)
 	}
-	sb.WriteString(block)
-
-	// Atomic write to a temp file, validate, then rename. This way a
-	// validation failure (e.g. proxy_jump cycle, unknown referenced server)
-	// leaves the original file untouched.
-	tmpF, tmpErr := os.CreateTemp(filepath.Dir(cfgPath), filepath.Base(cfgPath)+".persistent-setup.*.tmp")
-	if tmpErr != nil {
-		return envelope.Err(envelope.CodeInternalError,
-			fmt.Sprintf("create temp file: %v", tmpErr), false)
-	}
-	tmp := tmpF.Name()
-	_, werr := tmpF.WriteString(sb.String())
-	cerr := tmpF.Close()
-	if werr != nil || cerr != nil {
-		_ = os.Remove(tmp)
-		return envelope.Err(envelope.CodeInternalError,
-			fmt.Sprintf("write temp file %s: %v", tmp, errors.Join(werr, cerr)), false)
-	}
-
-	loaded, loadErr := config.Load(tmp)
-	if loadErr != nil {
-		_ = os.Remove(tmp)
+	if err := config.AddServer(diskCfg, input.Name, server); err != nil {
 		return envelope.ErrWithHint(
 			envelope.CodeInvalidArgument,
-			fmt.Sprintf("config validation failed (file NOT modified): %v", loadErr),
-			"Fix the inputs and retry; the existing config.toml has not been changed.",
+			err.Error(),
+			"Edit config.toml manually to update an existing entry, or pick a different name.",
 			false,
 		)
 	}
-	if err := os.Rename(tmp, cfgPath); err != nil {
-		_ = os.Remove(tmp)
-		return envelope.Err(envelope.CodeInternalError,
-			fmt.Sprintf("rename %s → %s: %v", tmp, cfgPath, err), false)
-	}
 
-	// Keychain write happens AFTER atomic config rename so a failed config
-	// validation never produces an orphan keychain entry. If the keychain
-	// write itself fails we roll back the config to its pre-rename state.
+	var keychainErr error
 	if hasSecret && storage == "keychain" {
-		account := persistentKeychainAccountPrefix + input.Name
-		var secretBytes []byte
-		switch input.Auth {
-		case "password":
-			secretBytes = []byte(input.Password)
-		case "key":
+		secretBytes := []byte(input.Password)
+		if input.Auth == "key" {
 			secretBytes = []byte(input.KeyPassphrase)
 		}
-		if err := auth.SetKeychain(persistentKeychainService, account, secretBytes); err != nil {
-			// Roll back the config file.
-			if rbErr := os.WriteFile(cfgPath, original, 0o600); rbErr != nil && len(original) > 0 {
-				return envelope.Err(envelope.CodeInternalError,
-					fmt.Sprintf("keychain write failed (%v) and rollback also failed (%v); config may be in an inconsistent state at %s", err, rbErr, cfgPath), false)
+		err = config.SaveWithPreCommit(cfgPath, diskCfg, func() error {
+			keychainErr = setPersistentKeychain(persistentKeychainService, keychainAccount, secretBytes)
+			return keychainErr
+		}, func() error {
+			deleteErr := deletePersistentKeychain(persistentKeychainService, keychainAccount)
+			if errors.Is(deleteErr, auth.ErrKeyNotFound) {
+				return nil
 			}
-			if len(original) == 0 {
-				_ = os.Remove(cfgPath)
-			}
+			return deleteErr
+		})
+	} else {
+		err = config.Save(cfgPath, diskCfg)
+	}
+	if config.IsSaveCommitted(err) {
+		err = nil
+	}
+	if err != nil {
+		if keychainErr != nil {
 			return envelope.ErrWithHint(
 				envelope.CodeInternalError,
-				fmt.Sprintf("keychain write failed: %v", err),
+				fmt.Sprintf("keychain write failed: %v", keychainErr),
 				"OS keychain may be locked or unavailable. Retry, or set password_storage=\"plaintext\" together with settings.allow_config_plaintext_password=true if keychain is not an option on this host.",
 				false,
 			)
 		}
+		return envelope.ErrWithHint(
+			envelope.CodeInternalError,
+			fmt.Sprintf("save %s: %v", cfgPath, err),
+			"The config changed concurrently or could not be saved; review it and retry.",
+			false,
+		)
 	}
 
 	// Make the entry live in the current session without a restart by
@@ -393,7 +364,7 @@ func handleSSHPersistentSetup(ctx context.Context, deps *Deps, args json.RawMess
 	// reuse it without modification.
 	sessionLive := false
 	if deps.Pool != nil {
-		if newSrv, ok := loaded.Servers[input.Name]; ok {
+		if newSrv, ok := diskCfg.Servers[input.Name]; ok {
 			// AcceptNewHost is explicitly left false — first dial to a
 			// just-registered server will surface HOST_KEY_UNKNOWN if the
 			// host isn't already in known_hosts. The caller must then run
@@ -423,42 +394,39 @@ func handleSSHPersistentSetup(ctx context.Context, deps *Deps, args json.RawMess
 	return envelope.OK(out)
 }
 
-// buildPersistentBlock renders a [servers.<name>] TOML block from the
-// validated input. All string values are emitted with %q so quotes,
-// backslashes, and other shell-metacharacters are escaped correctly.
-func buildPersistentBlock(in persistentSetupInput, port int) string {
-	var b strings.Builder
-	b.WriteString("\n[servers.")
-	b.WriteString(in.Name)
-	b.WriteString("]\n")
-	fmt.Fprintf(&b, "host = %q\n", in.Host)
-	fmt.Fprintf(&b, "port = %d\n", port)
-	fmt.Fprintf(&b, "user = %q\n", in.User)
-	fmt.Fprintf(&b, "auth = %q\n", in.Auth)
-	if in.KeyPath != "" {
-		fmt.Fprintf(&b, "key_path = %q\n", in.KeyPath)
+func newPersistentKeychainAccount(name string) (string, error) {
+	var nonce [8]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", err
+	}
+	return persistentKeychainAccountPrefix + name + "-" + hex.EncodeToString(nonce[:]), nil
+}
+
+func persistentServerConfig(in persistentSetupInput, port int) (config.ServerConfig, error) {
+	server := config.ServerConfig{
+		Name:        in.Name,
+		Host:        in.Host,
+		Port:        port,
+		User:        in.User,
+		Auth:        in.Auth,
+		KeyPath:     in.KeyPath,
+		Description: in.Description,
+		DefaultDir:  in.DefaultDir,
+		ProxyJump:   in.ProxyJump,
+		Tags:        append([]string(nil), in.Tags...),
+	}
+	var err error
+	if in.Password != "" {
+		server.Password, err = config.ParseCredRef(in.Password)
+		if err != nil {
+			return config.ServerConfig{}, err
+		}
 	}
 	if in.KeyPassphrase != "" {
-		fmt.Fprintf(&b, "key_passphrase = %q\n", in.KeyPassphrase)
-	}
-	if in.Password != "" {
-		fmt.Fprintf(&b, "password = %q\n", in.Password)
-	}
-	if in.Description != "" {
-		fmt.Fprintf(&b, "description = %q\n", in.Description)
-	}
-	if in.DefaultDir != "" {
-		fmt.Fprintf(&b, "default_dir = %q\n", in.DefaultDir)
-	}
-	if in.ProxyJump != "" {
-		fmt.Fprintf(&b, "proxy_jump = %q\n", in.ProxyJump)
-	}
-	if len(in.Tags) > 0 {
-		quoted := make([]string, 0, len(in.Tags))
-		for _, t := range in.Tags {
-			quoted = append(quoted, fmt.Sprintf("%q", t))
+		server.KeyPassphrase, err = config.ParseCredRef(in.KeyPassphrase)
+		if err != nil {
+			return config.ServerConfig{}, err
 		}
-		fmt.Fprintf(&b, "tags = [%s]\n", strings.Join(quoted, ", "))
 	}
-	return b.String()
+	return server, nil
 }
