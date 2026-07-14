@@ -23,7 +23,7 @@ import (
 // Scheme: YYYYMMDD.V (single source of truth = root VERSION file). A -dev
 // suffix marks pre-release/dev-line builds.
 var (
-	version = "20260714.2-dev"
+	version = "20260714.3-dev"
 	commit  = "unknown"
 )
 
