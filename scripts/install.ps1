@@ -44,6 +44,7 @@ New-Item -ItemType Directory -Force -Path $Prefix | Out-Null
 # required for the default prefix.
 $Dest = Join-Path $Prefix 'ssh-mcp.exe'
 $Temp = Join-Path $Prefix ('.ssh-mcp-install-{0}.tmp' -f [Guid]::NewGuid().ToString('N'))
+$Backup = $null
 $ChecksumFile = [System.IO.Path]::GetTempFileName()
 Log "downloading $Tag (windows/amd64)..."
 try {
@@ -71,7 +72,8 @@ try {
   }
 
   if (Test-Path -LiteralPath $Dest) {
-    [System.IO.File]::Replace($Temp, $Dest, $null)
+    $Backup = "$Temp.backup"
+    [System.IO.File]::Replace($Temp, $Dest, $Backup)
   } else {
     [System.IO.File]::Move($Temp, $Dest)
   }
@@ -81,6 +83,9 @@ try {
 } finally {
   if ($Temp -and (Test-Path -LiteralPath $Temp)) {
     Remove-Item -LiteralPath $Temp -Force
+  }
+  if ($Backup -and (Test-Path -LiteralPath $Backup)) {
+    Remove-Item -LiteralPath $Backup -Force
   }
   if (Test-Path -LiteralPath $ChecksumFile) {
     Remove-Item -LiteralPath $ChecksumFile -Force
