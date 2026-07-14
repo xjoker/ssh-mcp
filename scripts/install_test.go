@@ -199,12 +199,12 @@ func runPowerShellInstaller(t *testing.T, powerShell, prefix, checksum string) (
 Import-Module Microsoft.PowerShell.Utility
 $env:PREFIX = '%s'
 Remove-Item Env:VERSION -ErrorAction SilentlyContinue
-function global:Invoke-RestMethod {
+function Invoke-RestMethod {
   param([string]$Uri)
   Set-Content -LiteralPath '%s' -Value $Uri
   return [pscustomobject]@{ tag_name = 'vstable' }
 }
-function global:Invoke-WebRequest {
+function Invoke-WebRequest {
   param([string]$Uri, [string]$OutFile, [switch]$UseBasicParsing)
   if ($Uri -like '*checksums.sha256') {
     Set-Content -LiteralPath $OutFile -Value '%s  ssh-mcp_windows_amd64.exe'
@@ -212,7 +212,7 @@ function global:Invoke-WebRequest {
     [System.IO.File]::WriteAllText($OutFile, '%s')
   }
 }
-& '%s'
+. '%s'
 exit $LASTEXITCODE
 `, psQuote(prefix), psQuote(apiLog), checksum, newBinary, psQuote(installer))
 	if err := os.WriteFile(harness, []byte(script), 0o600); err != nil {
