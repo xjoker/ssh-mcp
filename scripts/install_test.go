@@ -162,6 +162,16 @@ func TestInstallPowerShellSafetyContract(t *testing.T) {
 	}
 }
 
+func TestInstallPowerShellCandidateHasExecutableExtension(t *testing.T) {
+	content, err := os.ReadFile("install.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(content), "'.ssh-mcp-install-{0}.tmp.exe'") {
+		t.Fatal("install.ps1 must give the downloaded Windows executable an .exe suffix before running `version`")
+	}
+}
+
 func TestPowerShellEnvironmentSeparatesWindowsPowerShellFromPwsh(t *testing.T) {
 	inherited := []string{
 		"PATH=C:\\tools",

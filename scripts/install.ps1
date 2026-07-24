@@ -43,7 +43,7 @@ New-Item -ItemType Directory -Force -Path $Prefix | Out-Null
 # replace the existing user-local installation. No administrator rights are
 # required for the default prefix.
 $Dest = Join-Path $Prefix 'ssh-mcp.exe'
-$Temp = Join-Path $Prefix ('.ssh-mcp-install-{0}.tmp' -f [Guid]::NewGuid().ToString('N'))
+$Temp = Join-Path $Prefix ('.ssh-mcp-install-{0}.tmp.exe' -f [Guid]::NewGuid().ToString('N'))
 $Backup = $null
 $ChecksumFile = [System.IO.Path]::GetTempFileName()
 Log "downloading $Tag (windows/amd64)..."

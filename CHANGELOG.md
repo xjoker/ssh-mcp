@@ -23,6 +23,14 @@ Branch / version convention:
 
 ## [Unreleased]
 
+## [20260724.2] — 2026-07-24
+
+### Fixed
+
+- The PowerShell installer now keeps an `.exe` suffix on the verified
+  temporary Windows binary, allowing its embedded version and commit to be
+  checked before replacing the existing installation.
+
 ## [20260724.1] — 2026-07-24
 
 ### Changed
