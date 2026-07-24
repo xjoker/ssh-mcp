@@ -35,7 +35,7 @@ port        = 2222
 user        = "dbadmin"
 auth        = "password"
 # Store the password in the OS keychain:
-#   ssh-mcp auth set-keychain ssh-mcp ssh-password:dbserver
+#   ssh-mcp auth set ssh-password:dbserver
 password    = "keychain:ssh-mcp:ssh-password:dbserver"
 description = "Internal database server (keychain auth)"
 tags        = ["prod", "db"]

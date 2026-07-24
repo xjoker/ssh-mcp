@@ -53,7 +53,7 @@ func TestAnnotations_BuildMCPToolMapsFields(t *testing.T) {
 		return tools.Tool{}
 	}
 
-	cases := []string{"ssh_exec", "sftp_list"}
+	cases := []string{"ssh_exec", "sftp_list", "ssh_host_scan"}
 	for _, name := range cases {
 		tl := find(name)
 		if tl.Annotations == nil {

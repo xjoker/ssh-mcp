@@ -135,8 +135,13 @@ func (c *Client) Close() error {
 // SFTP opens an SFTP sub-system on the connection.
 // The returned *sftp.Client is from github.com/pkg/sftp; the caller is
 // responsible for closing it.
+//
+// UseConcurrentWrites enables pkg/sftp's pipelined *File.ReadFrom writes so
+// callers that pass an *sftp.File directly to io.Copy (see cli_transfer.go)
+// get concurrent write throughput on high-RTT links instead of waiting for
+// each 32 KiB chunk's ack before sending the next.
 func (c *Client) SFTP() (*sftppkg.Client, error) {
-	return sftppkg.NewClient(c.inner)
+	return sftppkg.NewClient(c.inner, sftppkg.UseConcurrentWrites(true))
 }
 
 // ResolveHome returns the remote $HOME directory, using a per-client cache.
@@ -260,7 +265,7 @@ func (c *Client) ExecBuffered(ctx context.Context, cmd safety.RemoteCommand, opt
 			rows = 50
 		}
 		modes := gossh.TerminalModes{
-			gossh.ECHO:          0,     // no local echo — we read server output directly
+			gossh.ECHO:          0, // no local echo — we read server output directly
 			gossh.TTY_OP_ISPEED: 38400,
 			gossh.TTY_OP_OSPEED: 38400,
 		}

@@ -28,9 +28,10 @@ allowlist_for() {
     sftp)      echo "safety" ;;
     session)   echo "ssh safety" ;;
     tunnel)    echo "ssh safety" ;;
-    updater)   echo "" ;;
+    updater)   echo "version" ;;
+    version)   echo "" ;;
     mcpserver) echo "envelope config auth safety ssh sftp session tunnel audit store tools" ;;
-    tools)     echo "envelope config auth safety ssh sftp session tunnel audit updater" ;;
+    tools)     echo "envelope config auth safety ssh sftp session tunnel audit updater knownhosts" ;;
     *)         echo "__UNKNOWN__" ;;
   esac
 }

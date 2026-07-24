@@ -9,27 +9,43 @@ from the next release onward the project uses **date-based versioning**
 `### Breaking` section of the affected release.
 
 Branch / version convention:
-- Development happens on `dev`; releases are tagged on `main`.
+- Development happens on `dev`; development tags must point to its history.
+  Stable tags must point to `main`. Branch pushes and pull requests run CI but
+  publishing is triggered only by a matching tag.
 - **Versioning scheme `YYYYMMDD.V`** (e.g. `20260713.1`; `.V` increments for
   multiple releases on the same day). The root `VERSION` file is the single
-  source of truth; release tags are `vYYYYMMDD.V` and CI verifies the tag
-  matches `VERSION`. Dev-line builds carry a `-dev` suffix. `make release`
-  stamps the binary from `VERSION`; CI stamps from the matching tag.
+  source of truth; stable tags are exactly `vYYYYMMDD.V`, development tags are
+  exactly `vYYYYMMDD.V-dev`, and CI verifies either tag against `VERSION`.
+  `make build` derives the development suffix; `make release` and CI stamp the
+  binary from the validated base.
 - The self-update version comparison spans both schemes, so upgrading from a
   legacy `0.0.x` build to a `YYYYMMDD.V` release is ordered correctly.
 
 ## [Unreleased]
 
+## [20260724.1] — 2026-07-24
+
 ### Changed
+
+- Version and release CI now share one strict contract: valid calendar date,
+  positive non-zero daily revision, exact stable/development tag match, full
+  quality gates before publishing, embedded version/commit verification, and
+  checksum verification. Stable tags must be reachable from `main`; development
+  tags must be reachable from `dev`.
+
 - The TUI is now an English-only, single-screen operations console for machine
   add, view, edit, delete, search, and reload workflows. Its contextual action
   menu adds connection tests, interactive SSH shells, OS-keychain password
   management, and explicit host-key trust without exposing plaintext secrets.
 - `ssh-mcp tui --help` now exits successfully instead of returning status 1.
-- Installers now verify release checksums before atomically replacing an
-  existing user-local binary; the Windows installer also selects only the
-  latest stable release. Failed verification leaves the installed binary
-  untouched on macOS, Linux, and Windows without elevation.
+- Installers and the built-in updater now verify release checksums plus the
+  candidate binary's embedded version/commit before replacing an existing
+  user-local installation. The Windows installer selects only the latest
+  stable release; Windows self-update synchronously installs the verified
+  binary by renaming the running image aside, then removes that old image after
+  process exit. macOS clears download attributes, applies an ad-hoc signature,
+  and verifies it before replacement. Failed validation leaves the installed
+  binary untouched on every platform without elevation.
 - The stale-command recovery test now blocks and releases the first response
   explicitly, removing a scheduling race that intermittently failed on Windows.
 - CI and release workflows now pin Go 1.26.5 exactly. The previous minor-only

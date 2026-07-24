@@ -124,7 +124,9 @@ func Load(path string) (*Config, error) {
 	settings.AuditRecordOutput = boolVal(rs.AuditRecordOutput, settings.AuditRecordOutput)
 	settings.AuditOutputMaxBytes = intVal(rs.AuditOutputMaxBytes, settings.AuditOutputMaxBytes)
 	settings.WeakAlgorithmsOptIn = rs.WeakAlgorithmsOptIn
-	settings.UploadLocalAllowedPaths = rs.UploadLocalAllowedPaths
+	if rs.UploadLocalAllowedPaths != nil {
+		settings.UploadLocalAllowedPaths = rs.UploadLocalAllowedPaths
+	}
 
 	// configDir is the directory of the loaded config file; relative paths
 	// in key_path are resolved against it so users don't have to repeat the

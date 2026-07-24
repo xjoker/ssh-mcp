@@ -212,10 +212,17 @@ func saveWithPreCommit(path string, cfg *Config, preCommit, rollback func() erro
 	if err := ensureSaveTargetUnchanged(path, cfg); err != nil {
 		return err
 	}
+	configUnchanged := preCommit != nil && cfg.snapshot != nil && cfg.Path != "" &&
+		filepath.Clean(cfg.Path) == filepath.Clean(path) &&
+		reflect.DeepEqual(encodeConfig(cfg), *cfg.snapshot)
 	if preCommit != nil {
 		if err := preCommit(); err != nil {
 			return fmt.Errorf("config: pre-commit operation: %w", err)
 		}
+	}
+	if configUnchanged {
+		committed = true
+		return nil
 	}
 	if err := replaceConfigFile(tmpPath, path); err != nil {
 		if preCommit != nil {
@@ -360,7 +367,18 @@ func defaultSettings() Settings {
 		AuditRetentionDays:           90,
 		AuditRecordOutput:            true,
 		AuditOutputMaxBytes:          32 * 1024,
+		UploadLocalAllowedPaths:      DefaultUploadLocalAllowedPaths(),
 	}
+}
+
+// DefaultUploadLocalAllowedPaths returns the narrow, user-owned staging
+// directory. Home lookup failure disables uploads rather than guessing.
+func DefaultUploadLocalAllowedPaths() []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return []string{}
+	}
+	return []string{filepath.Join(home, ".ssh-mcp", "uploads")}
 }
 
 func validateMutationTarget(cfg *Config, name string) error {

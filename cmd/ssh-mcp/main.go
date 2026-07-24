@@ -15,15 +15,14 @@ import (
 	"github.com/xjoker/ssh-mcp/internal/updater"
 )
 
-// version and commit are injected at build time via -ldflags. The default
-// reflects the current development line and is only printed when no ldflags
-// override is provided (e.g. plain `go build`); real builds stamp it from the
-// root VERSION file (dev) or the git tag (release).
+// version and commit are injected at build time via -ldflags. Unstamped builds
+// say "unknown" rather than duplicating the root VERSION value here and
+// silently drifting from the single source of truth.
 //
 // Scheme: YYYYMMDD.V (single source of truth = root VERSION file). A -dev
 // suffix marks pre-release/dev-line builds.
 var (
-	version = "20260714.3-dev"
+	version = "unknown"
 	commit  = "unknown"
 )
 

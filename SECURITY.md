@@ -11,7 +11,14 @@ From the next release onward the project uses date-based versioning (`YYYYMMDD.V
 | Latest `YYYYMMDD.V` release | Current — security fixes land here |
 | `0.0.7` and earlier (semver) | Use `ssh-mcp update` to upgrade; older binaries are not patched |
 
-Each release tag (`vX.Y.Z`) is built by GitHub Actions from `main` and ships SHA-256 checksums alongside the binaries. The installer (`scripts/install.sh`) verifies the SHA-256 automatically.
+Each stable release tag (`vYYYYMMDD.V`) and development tag
+(`vYYYYMMDD.V-dev`) must exactly match the root `VERSION` base. GitHub Actions
+runs the full quality gates, verifies the built binary's embedded version and
+commit, and checks generated SHA-256 sums before publishing. Both installers
+and the built-in updater verify SHA-256 plus the candidate binary's embedded
+version and commit before replacement. macOS additionally clears download
+attributes, applies an ad-hoc signature, and verifies it. Validation failures
+leave the existing user-local binary untouched.
 
 ## Reporting a Vulnerability
 
@@ -50,11 +57,27 @@ Key assumptions:
 - **`RemoteCommand` sanitisation** — command strings are validated and sent verbatim over the SSH exec channel (not constructed via local `/bin/sh -c`), preventing local shell-injection. The remote SSH server interprets the exec request through the user's login shell, so standard quoting rules still apply on the remote side.
 - **Per-server command policy (opt-in)** — a server may set `mode = "readonly"` or `mode = "restricted"` (default `unrestricted` = no filtering, byte-for-byte prior behaviour). `readonly` permits only a built-in conservative observation allowlist (`ls`/`cat`/`ps`/`docker ps|logs`/`systemctl status`/… plus any user `allow_patterns`) and **rejects shell metacharacters** (`;` `&` `|` `>` `<` `` ` `` `$(`) outright so a prefix match can't be ridden by a second command. `restricted` requires every command line to match at least one `allow_patterns` entry and no `deny_patterns` entry; **DENY always beats ALLOW**; empty `allow_patterns` denies everything (fail-closed). Multi-line commands are evaluated per line — any denied line denies the whole call. `sftp_op` / `sftp_upload` / `tunnel` (write/forward channels with no command to filter) are denied outright on any server with a mode set; read-only tools (`sftp_read`/`sftp_list`/`sftp_stat`) always pass. Denied calls are recorded with `status="denied"` / `error_code="POLICY_DENIED"`. **Limitations (this is defense-in-depth, not a sandbox):** once a command is permitted it runs with the full privileges of the SSH user; regex filtering can be bypassed by crafted payloads (encoded input, shell-variable indirection). Unlike `readonly`, **`restricted` applies no built-in metacharacter guard** — its `allow_patterns` are user-authored regexes, so you must anchor them yourself (bound with `( |$)`, and put `;&|<>` into `deny_patterns` if you don't intend to allow command chaining). Pair strict modes with a low-privilege remote account.
 - **`allowed_paths` enforcement** — SFTP paths are canonicalised through the remote SFTP `realpath` RPC before `allowed_paths` policy is applied, closing symlink TOCTOU. The `realpath` action itself is now subject to the same gate, so it cannot be used to probe paths outside the allow-list. Servers injected dynamically via `list_servers refresh=true` or `ssh_persistent_setup` inherit `allowed_paths` through the SSH pool's temp-server fallback.
-- **`sftp_upload` local allowlist, fail-closed by default** — `sftp_upload` streams an arbitrary local file to a remote server, which is a local-data-exfiltration primitive (e.g. an injected/compromised AI uploading `~/.ssh/id_rsa` or a browser credential export). It is gated by `settings.upload_local_allowed_paths` (a list of absolute local directory prefixes), which defaults to **empty** — every call returns `UPLOAD_DISABLED` until an operator hand-edits `config.toml`. This list cannot be populated through `ssh_persistent_setup`, `ssh_quick_setup`, or any other MCP tool call; it requires direct file access, matching the trust level of a human sitting at the keyboard. Once enabled, `local_path` is resolved via `filepath.EvalSymlinks` before the prefix check, so a symlink planted inside an allowed directory that points outside it is denied — the same TOCTOU hardening `allowed_paths` applies on the remote side. `local_path` must also resolve to a regular file (no directories, FIFOs, devices). The remote destination goes through the identical `resolveAndCheckRemotePath` + `allowed_paths` gate as `sftp_op action=write`. Prefer scoping `upload_local_allowed_paths` to a specific working directory — never `$HOME` or `/`. On case-insensitive filesystems (default macOS APFS, Windows NTFS), the configured prefix must match the on-disk casing exactly — a casing mismatch (e.g. allowing `/Users/Deploy` but the real directory is `/Users/deploy`) is denied. This is fail-closed by design, not a vulnerability.
+- **`sftp_upload` local allowlist with a narrow default** — `sftp_upload`
+  streams a local file to a remote server, which is a local-data-exfiltration
+  primitive. When `settings.upload_local_allowed_paths` is absent, the only
+  allowed root is `~/.ssh-mcp/uploads`; it is created lazily with mode `0700`
+  on the first upload. An explicit empty list disables the tool and returns
+  `UPLOAD_DISABLED`. MCP tools cannot broaden this list. `local_path` is
+  resolved through `filepath.EvalSymlinks`, must be a regular file, and must
+  stay inside an allowed root; parent, leaf, and internal symlink escapes are
+  rejected. The remote destination still goes through
+  `resolveAndCheckRemotePath` plus the server's `allowed_paths` policy. Prefer
+  the default staging directory or another narrowly scoped working directory;
+  never allow all of `$HOME` or `/`.
 - **Proxy chain credentials (v0.0.6)** — `[proxies.<name>] password` is a `CredRef` string with the same guard as server credentials (keychain by default; plaintext requires `allow_config_plaintext_password = true`). Cycle detection covers `proxy_jump` and `proxy_chain` together, including `ssh`-type proxies that reference configured servers. `type="ssh"` direct-mode entries do not support encrypted private keys in v0.0.6 — use `ssh-agent` or reference an existing `[servers.<name>]` (which supports `key_passphrase`).
 - **Session limits** — concurrent session count is capped (`settings.max_sessions`, default 16) to limit blast radius from runaway automation.
 - **`permissions.allow` is tiered, not wildcard** — the README guides users away from `mcp__ssh-bridge__*`. Tier 1 (read-only) is safe to pre-authorise; Tier 2 (writes / exec) requires explicit intent; Tier 3 (`tunnel`, `ssh_persistent_setup`, `self_update`) must stay on the human-confirmation path.
-- **Installer integrity** — `scripts/install.sh` downloads `checksums.sha256` from the same GitHub release and verifies the binary; mismatch → reject and delete the downloaded file. This is the supply-chain bar for a single-binary tool; signed releases (cosign / SLSA) are not currently planned.
+- **Installer integrity** — `scripts/install.sh`, `scripts/install.ps1`, and
+  the built-in updater download `checksums.sha256` from the same GitHub release
+  and verify the candidate's hash plus embedded version/commit before
+  replacement; mismatch means reject and clean up the candidate. This is the
+  supply-chain bar for a single-binary tool; signed releases (cosign / SLSA)
+  are not currently planned.
 - **No `autoApprove`** — the example client configurations intentionally omit `autoApprove`. Destructive tools remain on the human-confirmation path.
 
 ## Out of Scope

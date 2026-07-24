@@ -9,23 +9,28 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
+	"github.com/xjoker/ssh-mcp/internal/config"
 	"github.com/xjoker/ssh-mcp/internal/envelope"
 	"github.com/xjoker/ssh-mcp/internal/safety"
 	internalsftp "github.com/xjoker/ssh-mcp/internal/sftp"
 )
+
+var errDefaultUploadSymlink = errors.New("default upload directory is a symlink")
 
 func init() {
 	Registered = append(Registered, Tool{
 		Name: "sftp_upload",
 		Description: "Upload a local file to a remote server by streaming it directly through the MCP process " +
 			"(no size limit, no base64/JSON overhead — bytes never enter the AI's context). " +
-			"Disabled by default: requires settings.upload_local_allowed_paths to be configured in config.toml. " +
+			"By default only ~/.ssh-mcp/uploads is allowed; set an explicit empty list to disable, and expand paths only by manually editing TOML. " +
 			"Overwrites the destination file if it exists.",
 		InputSchema: json.RawMessage(`{
   "type": "object",
@@ -63,9 +68,8 @@ func handleSftpUpload(ctx context.Context, deps *Deps, args json.RawMessage) env
 	// feature is off, full stop, regardless of what else the caller sent.
 	if len(deps.Cfg.Settings.UploadLocalAllowedPaths) == 0 {
 		return envelope.ErrWithHint(envelope.CodeUploadDisabled,
-			"sftp_upload is disabled: settings.upload_local_allowed_paths is empty",
-			"Ask the user to add settings.upload_local_allowed_paths = [\"/abs/local/dir\", ...] to config.toml "+
-				"(absolute paths only; prefer a specific working directory, not $HOME) and restart ssh-mcp. "+
+			"sftp_upload is disabled: settings.upload_local_allowed_paths is explicitly empty",
+			"Ask the user to remove the explicit empty list to restore ~/.ssh-mcp/uploads, or manually configure a narrow absolute path in config.toml and restart ssh-mcp. "+
 				"This cannot be enabled through any MCP tool call.",
 			false)
 	}
@@ -207,9 +211,18 @@ func checkLocalUploadPath(deps *Deps, localPath string) (string, envelope.Respon
 	if !filepath.IsAbs(localPath) {
 		return "", envelope.Err(envelope.CodeInvalidArgument, "local_path must be an absolute path", false), false
 	}
+	if err := ensureDefaultUploadDir(localPath, deps.Cfg.Settings.UploadLocalAllowedPaths); err != nil {
+		if errors.Is(err, errDefaultUploadSymlink) {
+			return "", envelope.Err(envelope.CodePermissionDenied, err.Error(), false), false
+		}
+		return "", envelope.Err(envelope.CodeInternalError, err.Error(), false), false
+	}
 
 	real, err := filepath.EvalSymlinks(filepath.Clean(localPath))
 	if err != nil {
+		if !os.IsNotExist(err) {
+			return "", envelope.Err(envelope.CodeInternalError, fmt.Sprintf("resolve local_path %q: %v", localPath, err), false), false
+		}
 		return "", envelope.Err(envelope.CodeNotFound, fmt.Sprintf("local_path %q: %v", localPath, err), false), false
 	}
 
@@ -219,6 +232,65 @@ func checkLocalUploadPath(deps *Deps, localPath string) (string, envelope.Respon
 	}
 
 	return real, envelope.Response{}, true
+}
+
+func ensureDefaultUploadDir(localPath string, allowed []string) error {
+	defaults := config.DefaultUploadLocalAllowedPaths()
+	if len(defaults) != 1 || len(allowed) != 1 {
+		return nil
+	}
+	def := defaults[0]
+	clean := filepath.Clean(localPath)
+	if !strings.HasPrefix(clean, def+string(filepath.Separator)) {
+		return nil
+	}
+	if filepath.Clean(allowed[0]) != filepath.Clean(def) {
+		return nil
+	}
+	parent := filepath.Dir(def)
+	if _, err := os.Lstat(parent); os.IsNotExist(err) {
+		if err := os.Mkdir(parent, 0700); err != nil && !os.IsExist(err) {
+			return fmt.Errorf("create default upload parent: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("stat default upload parent: %w", err)
+	}
+	parentInfo, err := os.Lstat(parent)
+	if err != nil {
+		return fmt.Errorf("stat default upload parent: %w", err)
+	}
+	if parentInfo.Mode()&os.ModeSymlink != 0 {
+		return errDefaultUploadSymlink
+	}
+	if !parentInfo.IsDir() {
+		return fmt.Errorf("default upload parent is not a directory")
+	}
+
+	if _, err := os.Lstat(def); os.IsNotExist(err) {
+		if err := os.Mkdir(def, 0700); err != nil && !os.IsExist(err) {
+			return fmt.Errorf("create default upload directory: %w", err)
+		}
+	} else {
+		if err != nil {
+			return fmt.Errorf("stat default upload directory: %w", err)
+		}
+	}
+	info, err := os.Lstat(def)
+	if err != nil {
+		return fmt.Errorf("stat default upload directory: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return errDefaultUploadSymlink
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("default upload directory is invalid")
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(def, 0700); err != nil {
+			return fmt.Errorf("secure default upload directory: %w", err)
+		}
+	}
+	return nil
 }
 
 // isUnderLocalAllowedPrefix reports whether p (already EvalSymlinks-resolved

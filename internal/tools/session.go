@@ -545,7 +545,7 @@ func mapSessionError(err error) envelope.Response {
 		return envelope.Err(envelope.CodeHostKeyMismatch, msg, false)
 	case strings.Contains(msg, "HOST_KEY_UNKNOWN"):
 		return envelope.ErrWithHint(envelope.CodeHostKeyUnknown, msg,
-			"Run 'ssh-mcp trust <host>' to add the host to known_hosts", false)
+			hostKeyUnknownHint, false)
 	case strings.Contains(msg, "unable to authenticate") ||
 		strings.Contains(msg, "Authentication failed") ||
 		strings.Contains(msg, "auth failed"):

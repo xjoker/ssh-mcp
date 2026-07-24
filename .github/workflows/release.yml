@@ -3,38 +3,48 @@ name: Release
 on:
   push:
     tags:
-      - 'v[0-9]+.[0-9]+'   # Stable tags, scheme vYYYYMMDD.V (no -dev suffix)
+      - 'v[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].[1-9]'
+      - 'v[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].[1-9][0-9]+'
 
 permissions:
-  contents: write      # Required for creating GitHub Releases
+  contents: read
 
 jobs:
   release:
     name: Build and publish release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: '1.26.5'
 
+      - name: Verify stable tag is on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "release: stable tag commit $GITHUB_SHA is not on origin/main" >&2
+            exit 1
+          fi
+
       - name: Extract version
         id: version
         run: |
-          TAG="${GITHUB_REF_NAME}"          # e.g. v20260713.1
-          VERSION="${TAG#v}"                # e.g. 20260713.1
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="$(go run ./cmd/version-check --channel stable --tag "$TAG")"
           COMMIT="$(git rev-parse --short HEAD)"
-          # Single source of truth: the tag must match the committed VERSION file.
-          FILE_VERSION="$(cat VERSION | tr -d '[:space:]')"
-          if [ "$VERSION" != "$FILE_VERSION" ]; then
-            echo "release: tag $TAG (version $VERSION) does not match VERSION file ($FILE_VERSION)" >&2
-            exit 1
-          fi
           echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "commit=$COMMIT"   >> "$GITHUB_OUTPUT"
+
+      - name: Run release quality gates
+        run: make check
 
       - name: Build cross-platform binaries
         env:
@@ -63,11 +73,24 @@ jobs:
           build darwin  arm64
           build windows amd64
 
+      - name: Verify embedded version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          COMMIT:  ${{ steps.version.outputs.commit }}
+        run: |
+          ACTUAL="$(./dist/ssh-mcp_linux_amd64 version | head -n 1)"
+          EXPECTED="ssh-mcp ${VERSION} (commit ${COMMIT})"
+          [ "$ACTUAL" = "$EXPECTED" ] || {
+            echo "version mismatch: got '$ACTUAL', want '$EXPECTED'" >&2
+            exit 1
+          }
+
       - name: Generate checksums
         run: |
           cd dist
           sha256sum * > checksums.sha256
           cat checksums.sha256
+          sha256sum -c checksums.sha256
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3

@@ -71,6 +71,19 @@ try {
     throw "checksum mismatch for $Asset (expected $ExpectedSHA, got $ActualSHA)"
   }
 
+  $ExpectedVersion = if ($Tag.StartsWith('v')) { $Tag.Substring(1) } else { $Tag }
+  $VersionLines = @(& $Temp version)
+  if ($LASTEXITCODE -ne 0) {
+    throw 'downloaded binary could not report its version'
+  }
+  $VersionLine = if ($VersionLines.Count -gt 0) { [string]$VersionLines[0] } else { '' }
+  if ($VersionLine -notmatch '^ssh-mcp (?<version>[^ ]+) \(commit (?<commit>[^)]+)\)$' -or $Matches.version -ne $ExpectedVersion) {
+    throw "downloaded binary version mismatch: expected $ExpectedVersion, got $VersionLine"
+  }
+  if ($Matches.commit -eq 'unknown') {
+    throw 'downloaded binary has no embedded release commit'
+  }
+
   if (Test-Path -LiteralPath $Dest) {
     $Backup = "$Temp.backup"
     [System.IO.File]::Replace($Temp, $Dest, $Backup)

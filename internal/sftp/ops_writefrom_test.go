@@ -14,10 +14,28 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+type readerFromFile struct {
+	fakeFile
+	readFromCalls int
+	sizeSeen      int64
+}
+
+func (f *readerFromFile) ReadFrom(r io.Reader) (int64, error) {
+	f.readFromCalls++
+	f.sizeSeen = -1
+	if sized, ok := r.(interface{ Size() int64 }); ok {
+		f.sizeSeen = sized.Size()
+	}
+	// Hide ReaderFrom from io.Copy so this test double consumes the wrapped
+	// reader exactly once instead of recursively selecting ReadFrom again.
+	return io.Copy(struct{ io.Writer }{Writer: &f.fakeFile}, r)
+}
 
 // writeFromAndCapture streams data (via a real os.File, not an in-memory
 // reader) through Client.WriteFrom and returns the bytes the fake backend
@@ -173,5 +191,63 @@ func TestWriteFrom_ProgressCallback_TotalIsSize(t *testing.T) {
 	}
 	if lastWritten != int64(len(data)) {
 		t.Errorf("last written: got %d want %d (final callback should report full completion)", lastWritten, len(data))
+	}
+}
+
+func TestWriteFrom_ReaderFromPath_ByteExactSizeAndProgress(t *testing.T) {
+	data := randomBytes(t, 2*progressChunkSize+1)
+	wantSHA := sha256.Sum256(data)
+
+	dst := &readerFromFile{}
+	fb := &fakeBackend{
+		openFileFunc: func(string, int) (sftpFile, error) {
+			return dst, nil
+		},
+	}
+	c := &Client{b: fb}
+	p := mustRemotePath(t, "/srv/app/concurrent-upload.bin")
+
+	var progress []int64
+	cb := func(written, total int64) {
+		if total != int64(len(data)) {
+			t.Errorf("progress total = %d, want %d", total, len(data))
+		}
+		if len(progress) > 0 && written < progress[len(progress)-1] {
+			t.Errorf("progress regressed from %d to %d", progress[len(progress)-1], written)
+		}
+		progress = append(progress, written)
+	}
+
+	if err := c.WriteFrom(p, bytes.NewReader(data), int64(len(data)), 0o644, true, cb); err != nil {
+		t.Fatalf("WriteFrom: %v", err)
+	}
+	if dst.readFromCalls != 1 {
+		t.Fatalf("ReadFrom calls = %d, want 1", dst.readFromCalls)
+	}
+	if dst.sizeSeen != int64(len(data)) {
+		t.Fatalf("Size() = %d, want %d", dst.sizeSeen, len(data))
+	}
+	if !bytes.Equal(dst.buf, data) {
+		t.Fatalf("byte mismatch: len got=%d want=%d", len(dst.buf), len(data))
+	}
+	gotSHA := sha256.Sum256(dst.buf)
+	if gotSHA != wantSHA {
+		t.Fatalf("sha256 mismatch: got %x want %x", gotSHA, wantSHA)
+	}
+	if len(progress) < 2 {
+		t.Fatalf("progress callbacks = %d, want periodic and final callbacks", len(progress))
+	}
+	var sawIntermediate bool
+	for _, written := range progress {
+		if written > 0 && written < int64(len(data)) {
+			sawIntermediate = true
+			break
+		}
+	}
+	if !sawIntermediate {
+		t.Fatalf("progress = %v, want at least one value between 0 and %d", progress, len(data))
+	}
+	if got := progress[len(progress)-1]; got != int64(len(data)) {
+		t.Fatalf("final progress = %d, want %d", got, len(data))
 	}
 }

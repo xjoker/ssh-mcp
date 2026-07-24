@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main, dev]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     strategy:
@@ -16,10 +19,16 @@ jobs:
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: '1.26.5'
+
+      - name: check version contract
+        shell: bash
+        run: go run ./cmd/version-check
 
       - name: go vet
         run: go vet ./...
@@ -37,5 +46,20 @@ jobs:
         shell: bash
         run: bash scripts/check-no-insecure.sh
 
-      - name: build
-        run: go build ./cmd/ssh-mcp
+      - name: build and verify development version
+        shell: bash
+        run: |
+          VERSION="$(go run ./cmd/version-check)-dev"
+          COMMIT="$(git rev-parse --short HEAD)"
+          OUTPUT="ssh-mcp-ci"
+          [ "$RUNNER_OS" = "Windows" ] && OUTPUT="${OUTPUT}.exe"
+          go build -trimpath \
+            -ldflags="-X main.version=${VERSION} -X main.commit=${COMMIT}" \
+            -o "$OUTPUT" \
+            ./cmd/ssh-mcp
+          ACTUAL="$("./$OUTPUT" version | head -n 1)"
+          EXPECTED="ssh-mcp ${VERSION} (commit ${COMMIT})"
+          [ "$ACTUAL" = "$EXPECTED" ] || {
+            echo "version mismatch: got '$ACTUAL', want '$EXPECTED'" >&2
+            exit 1
+          }

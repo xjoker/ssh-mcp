@@ -1,6 +1,7 @@
 package knownhosts
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -17,14 +18,38 @@ var errHostKeyCaptured = errors.New("host key captured")
 // FetchHostKey retrieves a server key without attempting authentication or
 // changing known_hosts. Callers must show the fingerprint before Append.
 func FetchHostKey(addr string) (gossh.PublicKey, error) {
+	return FetchHostKeyContext(context.Background(), addr)
+}
+
+// FetchHostKeyContext retrieves a server key and interrupts dialing or the
+// SSH handshake when ctx is cancelled.
+func FetchHostKeyContext(ctx context.Context, addr string) (gossh.PublicKey, error) {
+	return fetchHostKeyContext(ctx, addr, 15*time.Second)
+}
+
+func fetchHostKeyContext(ctx context.Context, addr string, timeout time.Duration) (gossh.PublicKey, error) {
+	dialer := &net.Dialer{Timeout: timeout}
+	return fetchHostKeyContextWithDial(ctx, addr, timeout, dialer.DialContext)
+}
+
+func fetchHostKeyContextWithDial(ctx context.Context, addr string, timeout time.Duration, dial func(context.Context, string, string) (net.Conn, error)) (gossh.PublicKey, error) {
 	if addr == "" {
 		return nil, errors.New("host address is required")
 	}
-	connection, err := net.DialTimeout("tcp", addr, 15*time.Second)
+	deadline := time.Now().Add(timeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	connection, err := dial(ctx, "tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", addr, err)
 	}
 	defer connection.Close()
+	stopCancel := context.AfterFunc(ctx, func() { _ = connection.Close() })
+	defer stopCancel()
+	if err := connection.SetDeadline(deadline); err != nil {
+		return nil, fmt.Errorf("set host key handshake deadline for %s: %w", addr, err)
+	}
 
 	var captured gossh.PublicKey
 	clientConfig := &gossh.ClientConfig{
@@ -35,7 +60,7 @@ func FetchHostKey(addr string) (gossh.PublicKey, error) {
 		},
 		HostKeyAlgorithms: safety.ModernHostKeyAlgorithms(),
 		Config:            safety.ModernAlgorithms(nil),
-		Timeout:           15 * time.Second,
+		Timeout:           timeout,
 	}
 	_, _, _, err = gossh.NewClientConn(connection, addr, clientConfig)
 	if captured != nil {
@@ -45,40 +70,6 @@ func FetchHostKey(addr string) (gossh.PublicKey, error) {
 		return nil, fmt.Errorf("fetch host key from %s: %w", addr, err)
 	}
 	return nil, fmt.Errorf("fetch host key from %s: no host key received", addr)
-}
-
-func TrustHostKey(addr string) error {
-	appended := false
-	innerCallback := safety.HostKeyCallback(true)
-	callback := gossh.HostKeyCallback(func(hostname string, remote net.Addr, key gossh.PublicKey) error {
-		err := innerCallback(hostname, remote, key)
-		if err == nil {
-			appended = true
-		}
-		return err
-	})
-
-	clientConfig := &gossh.ClientConfig{
-		User: "mcp-trust-probe",
-		Auth: []gossh.AuthMethod{
-			gossh.Password(""),
-		},
-		HostKeyCallback:   callback,
-		HostKeyAlgorithms: safety.ModernHostKeyAlgorithms(),
-		Config:            safety.ModernAlgorithms(nil),
-		Timeout:           15 * time.Second,
-	}
-	client, err := gossh.Dial("tcp", addr, clientConfig)
-	if err != nil {
-		if appended {
-			return nil
-		}
-		if strings.Contains(err.Error(), "HOST_KEY_MISMATCH") {
-			return fmt.Errorf("host key mismatch for %s — key has changed, manual verification required", addr)
-		}
-		return fmt.Errorf("dial %s: %w", addr, err)
-	}
-	return client.Close()
 }
 
 func IsAuthenticationError(message string) bool {

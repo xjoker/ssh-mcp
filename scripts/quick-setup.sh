@@ -128,7 +128,7 @@ echo "✓ done."
 if [ "$AUTH" = "password" ]; then
   echo
   echo "Reminder: store the password in keychain BEFORE first connection:"
-  echo "  $BIN auth set-keychain ssh-mcp ssh-password:$NAME"
+  echo "  $BIN auth set ssh-password:$NAME"
 fi
 echo
 echo "Validate any time with:"

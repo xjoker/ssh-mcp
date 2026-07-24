@@ -20,7 +20,7 @@
 ssh-mcp 进程就运行在文件所在的本机，新工具入参为
 `(server, local_path, remote_path)`，由 MCP 进程自己 `os.Open` 读盘、流式写入
 SFTP —— 字节全程不进 AI 上下文，与 CLI upload 的数据通道完全一致，因此**没有
-大小上限**。这与用户已在用的 2term 堡垒机 MCP 的设计原则相同：「AI 只编排，
+大小上限**。这与现有堡垒机 MCP 的元数据编排原则相同：「AI 只编排，
 绝不搬字节」。
 
 同时因为工具运行在 MCP 进程内，`deps.Pool.Get(name)` 天然优先解析

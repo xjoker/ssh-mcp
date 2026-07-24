@@ -3,6 +3,8 @@ package knownhosts
 import (
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +14,86 @@ import (
 	sshknownhosts "golang.org/x/crypto/ssh/knownhosts"
 )
 
+// Status describes whether a scanned key is trusted by known_hosts.
+type Status string
+
+const (
+	StatusTrusted  Status = "trusted"
+	StatusUnknown  Status = "unknown"
+	StatusMismatch Status = "mismatch"
+)
+
 var fileMu sync.Mutex
+
+// Check compares key with the entry for addr in path without modifying it.
+// A missing file means no key has been trusted yet. Malformed files and read
+// failures are returned so callers never mistake an unreadable trust store for
+// an unknown host.
+func Check(path, addr string, key gossh.PublicKey) (Status, error) {
+	if path == "" {
+		return "", errors.New("known_hosts path is required")
+	}
+	if addr == "" {
+		return "", errors.New("host address is required")
+	}
+	if key == nil {
+		return "", errors.New("host key is required")
+	}
+
+	fileMu.Lock()
+	defer fileMu.Unlock()
+	return check(path, addr, key)
+}
+
+func check(path, addr string, key gossh.PublicKey) (Status, error) {
+	callbackAddr, err := callbackAddress(addr)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return StatusUnknown, nil
+	} else if err != nil {
+		return "", fmt.Errorf("stat known_hosts: %w", err)
+	}
+
+	callback, err := sshknownhosts.New(path)
+	if err != nil {
+		return "", fmt.Errorf("parse known_hosts: %w", err)
+	}
+	err = callback(callbackAddr, &net.TCPAddr{}, key)
+	if err == nil {
+		return StatusTrusted, nil
+	}
+	var revokedErr *sshknownhosts.RevokedError
+	if errors.As(err, &revokedErr) {
+		return StatusMismatch, nil
+	}
+	var keyErr *sshknownhosts.KeyError
+	if errors.As(err, &keyErr) {
+		if len(keyErr.Want) == 0 {
+			return StatusUnknown, nil
+		}
+		return StatusMismatch, nil
+	}
+	return "", fmt.Errorf("check known_hosts: %w", err)
+}
+
+func callbackAddress(addr string) (string, error) {
+	if _, _, err := net.SplitHostPort(addr); err == nil {
+		return addr, nil
+	}
+	ipText := addr
+	if strings.HasPrefix(ipText, "[") && strings.HasSuffix(ipText, "]") {
+		ipText = strings.TrimSuffix(strings.TrimPrefix(ipText, "["), "]")
+	}
+	if ip, err := netip.ParseAddr(ipText); err == nil {
+		return net.JoinHostPort(ip.String(), "22"), nil
+	}
+	if strings.Contains(addr, ":") {
+		return "", fmt.Errorf("invalid host address %q", addr)
+	}
+	return net.JoinHostPort(addr, "22"), nil
+}
 
 // Entry is a safe summary of one known_hosts entry.
 type Entry struct {
@@ -80,7 +161,10 @@ func list(path string) ([]Entry, error) {
 }
 
 // Append records a confirmed host key in path.
-func Append(path, host string, key gossh.PublicKey) error {
+func Append(path, host string, key gossh.PublicKey) (appendErr error) {
+	if path == "" {
+		return errors.New("known_hosts path is required")
+	}
 	if host == "" {
 		return errors.New("host is required")
 	}
@@ -92,6 +176,25 @@ func Append(path, host string, key gossh.PublicKey) error {
 	defer fileMu.Unlock()
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return fmt.Errorf("create known_hosts directory: %w", err)
+	}
+	releaseLock, err := acquireKnownHostsFileLock(path)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := releaseLock(); err != nil {
+			appendErr = errors.Join(appendErr, fmt.Errorf("release known_hosts lock: %w", err))
+		}
+	}()
+	status, err := check(path, host, key)
+	if err != nil {
+		return err
+	}
+	switch status {
+	case StatusTrusted:
+		return nil
+	case StatusMismatch:
+		return fmt.Errorf("host key mismatch for %s: known_hosts already contains a different key", host)
 	}
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
@@ -108,7 +211,7 @@ func Append(path, host string, key gossh.PublicKey) error {
 }
 
 // Revoke replaces one exact entry with an @revoked entry.
-func Revoke(path string, entry Entry) error {
+func Revoke(path string, entry Entry) (revokeErr error) {
 	if entry.raw == "" {
 		return errors.New("known_hosts entry is required")
 	}
@@ -121,6 +224,15 @@ func Revoke(path string, entry Entry) error {
 
 	fileMu.Lock()
 	defer fileMu.Unlock()
+	releaseLock, err := acquireKnownHostsFileLock(path)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := releaseLock(); err != nil {
+			revokeErr = errors.Join(revokeErr, fmt.Errorf("release known_hosts lock: %w", err))
+		}
+	}()
 	contents, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read known_hosts: %w", err)
@@ -144,13 +256,22 @@ func Revoke(path string, entry Entry) error {
 }
 
 // Remove deletes one exact entry while preserving every other line.
-func Remove(path string, entry Entry) error {
+func Remove(path string, entry Entry) (removeErr error) {
 	if entry.raw == "" {
 		return errors.New("known_hosts entry is required")
 	}
 
 	fileMu.Lock()
 	defer fileMu.Unlock()
+	releaseLock, err := acquireKnownHostsFileLock(path)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := releaseLock(); err != nil {
+			removeErr = errors.Join(removeErr, fmt.Errorf("release known_hosts lock: %w", err))
+		}
+	}()
 	contents, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read known_hosts: %w", err)

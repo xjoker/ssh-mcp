@@ -22,15 +22,15 @@ func TestCpRejectsSameServerCaseInsensitive(t *testing.T) {
 // subcommand. Edge cases: leading colon, missing colon, trailing colon.
 func TestSplitServerPath(t *testing.T) {
 	cases := []struct {
-		in           string
-		wantServer   string
-		wantPath     string
-		wantOK       bool
+		in         string
+		wantServer string
+		wantPath   string
+		wantOK     bool
 	}{
 		{"alpha:/data/foo", "alpha", "/data/foo", true},
 		{"alpha:relative/path", "alpha", "relative/path", true},
-		{"alpha:", "", "", false},     // empty path
-		{":/foo", "", "", false},      // empty server
+		{"alpha:", "", "", false},      // empty path
+		{":/foo", "", "", false},       // empty server
 		{"noseparator", "", "", false}, // no colon
 		{"", "", "", false},
 		{"a:b:c", "a", "b:c", true}, // first colon wins; path may contain colons

@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -250,5 +251,61 @@ func TestSaveWithPreCommit_ConflictSkipsOperation(t *testing.T) {
 	}
 	if string(body) != external {
 		t.Fatal("SaveWithPreCommit replaced a concurrent external change")
+	}
+}
+
+func TestSaveWithPreCommit_UnchangedConfigPreservesSourceBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	source := []byte("# keep this operator comment\n[settings]\n\n[servers.web]\nhost = \"example.com\"\nuser = \"deploy\"\nauth = \"agent\"\n")
+	if err := os.WriteFile(path, source, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	committed := false
+	if err := config.SaveWithPreCommit(path, cfg, func() error {
+		committed = true
+		return nil
+	}, func() error {
+		t.Fatal("rollback must not run when the config is unchanged")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !committed {
+		t.Fatal("pre-commit operation did not run")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, source) {
+		t.Fatalf("unchanged save rewrote source:\n%s", got)
+	}
+}
+
+func TestSaveWithPreCommit_DifferentPathStillCreatesTarget(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "source.toml")
+	targetPath := filepath.Join(dir, "target.toml")
+	if err := os.WriteFile(sourcePath, []byte(minimalAgent), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SaveWithPreCommit(targetPath, cfg, func() error {
+		return nil
+	}, func() error {
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(targetPath); err != nil {
+		t.Fatalf("target config was not created: %v", err)
 	}
 }

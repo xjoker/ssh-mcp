@@ -13,3 +13,4 @@
 test/integration/test_key
 test/integration/test_key.pub
 test/integration/.state/
+.AIINFO/

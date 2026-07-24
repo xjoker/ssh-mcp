@@ -59,6 +59,8 @@ type sftpConnArgs struct {
 	Inline *sftpInline `json:"inline,omitempty"`
 }
 
+const hostKeyUnknownHint = "First connection to an unknown host. Run ssh_host_scan first for the same server alias or host+port to inspect the SHA256 fingerprint, then have the user manually trust the host and retry. Do not retry or bypass host-key verification."
+
 // allowedPathsForServer returns the allowed_prefixes list for a server,
 // consulting (in order):
 //  1. cfg.Servers — the static config snapshot loaded at MCP startup.
@@ -430,11 +432,8 @@ func mapSSHConnErr(err error) envelope.Response {
 	case strings.Contains(msg, "HOST_KEY_MISMATCH"):
 		return envelope.Err(envelope.CodeHostKeyMismatch, msg, false)
 	case strings.Contains(msg, "HOST_KEY_UNKNOWN"):
-		// First contact with a new host always lands here (there is no TOFU
-		// flag on the MCP tool path by design — v0.0.5 removed it). Give the
-		// operator the exact next step instead of a bare error.
 		return envelope.ErrWithHint(envelope.CodeHostKeyUnknown, msg,
-			"First connection to an unknown host. Ask the user to run `ssh-mcp trust <host>[:port]` on this machine to inspect and pin the host key fingerprint, then retry.",
+			hostKeyUnknownHint,
 			false)
 	case strings.Contains(msg, "unable to authenticate"),
 		strings.Contains(msg, "Authentication failed"),

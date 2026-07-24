@@ -29,10 +29,8 @@ type Settings struct {
 	// UploadLocalAllowedPaths gates the sftp_upload tool (SDD design
 	// docs/design/sftp-upload-tool.md §3.1): absolute local filesystem path
 	// prefixes an AI is allowed to read from disk and stream to a remote
-	// server. Fail-closed default: empty, meaning sftp_upload is registered
-	// but every call returns UPLOAD_DISABLED until an operator hand-edits
-	// config.toml to opt in (this list cannot be populated via any MCP
-	// tool). Same Rule 11 validation as ServerConfig.AllowedPaths (absolute,
+	// server. Missing TOML field defaults to ~/.ssh-mcp/uploads; explicit []
+	// disables uploads. Same Rule 11 validation as ServerConfig.AllowedPaths (absolute,
 	// no "..", clean).
 	UploadLocalAllowedPaths []string `toml:"upload_local_allowed_paths"`
 }

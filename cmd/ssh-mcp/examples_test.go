@@ -114,3 +114,30 @@ func TestExamplesContainWarning(t *testing.T) {
 		}
 	}
 }
+
+func TestExamplesUseCurrentAuthCommand(t *testing.T) {
+	root := filepath.Join("..", "..")
+	paths := []string{
+		filepath.Join(root, "examples", "config.toml"),
+		filepath.Join(root, "examples", "quick-start.md"),
+		filepath.Join(root, "scripts", "quick-setup.sh"),
+	}
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile(%q): %v", path, err)
+		}
+		if strings.Contains(string(data), "set-keychain") {
+			t.Errorf("%s references removed command %q", path, "set-keychain")
+		}
+	}
+
+	data, err := os.ReadFile(paths[0])
+	if err != nil {
+		t.Fatalf("ReadFile(%q): %v", paths[0], err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "ssh-mcp auth set ssh-password:dbserver") {
+		t.Fatalf("%s does not show the current keychain enrollment command", paths[0])
+	}
+}

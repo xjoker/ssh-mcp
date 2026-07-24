@@ -13,11 +13,14 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 	"time"
+
+	versioncontract "github.com/xjoker/ssh-mcp/internal/version"
 )
 
 // httpClient is used for all outbound requests. The 5-minute Timeout is a
@@ -28,15 +31,25 @@ var httpClient = &http.Client{Timeout: 5 * time.Minute}
 const (
 	releaseLatestURL = "https://api.github.com/repos/xjoker/ssh-mcp/releases/latest"
 	// releasesListURL returns all releases including pre-releases (newest first).
-	releasesListURL = "https://api.github.com/repos/xjoker/ssh-mcp/releases?per_page=5"
+	releasesListURL = "https://api.github.com/repos/xjoker/ssh-mcp/releases?per_page=100"
 )
 
 // Release holds metadata for a published GitHub release.
 type Release struct {
-	Version  string // numeric only, e.g. "0.0.2"
-	TagName  string // e.g. "v0.0.2"
+	Version  string // e.g. "20260724.1" or "20260724.1-dev"
+	TagName  string // e.g. "v20260724.1"
 	AssetURL string // direct download URL for current OS/arch
 	SHA256   string // expected hex digest (empty if no checksum file)
+}
+
+type ghAsset struct {
+	Name               string `json:"name"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+}
+
+type ghRelease struct {
+	TagName string    `json:"tag_name"`
+	Assets  []ghAsset `json:"assets"`
 }
 
 // CheckLatest fetches the latest release from GitHub.
@@ -67,33 +80,24 @@ func CheckLatest(ctx context.Context, includePrerelease bool) (*Release, error) 
 		return nil, fmt.Errorf("updater: GitHub API %d", resp.StatusCode)
 	}
 
-	type ghAsset struct {
-		Name               string `json:"name"`
-		BrowserDownloadURL string `json:"browser_download_url"`
-	}
-	type ghRelease struct {
-		TagName string    `json:"tag_name"`
-		Assets  []ghAsset `json:"assets"`
-	}
-
-	var gh ghRelease
+	var releases []ghRelease
 	if includePrerelease {
-		// Response is an array; take the first (newest) entry.
-		var list []ghRelease
-		if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
 			return nil, fmt.Errorf("updater: decode response: %w", err)
 		}
-		if len(list) == 0 {
-			return nil, fmt.Errorf("updater: no releases found")
-		}
-		gh = list[0]
 	} else {
+		var gh ghRelease
 		if err := json.NewDecoder(resp.Body).Decode(&gh); err != nil {
 			return nil, fmt.Errorf("updater: decode response: %w", err)
 		}
+		releases = []ghRelease{gh}
 	}
 
 	binName := assetName(runtime.GOOS, runtime.GOARCH)
+	gh, err := selectRelease(releases, includePrerelease, binName)
+	if err != nil {
+		return nil, err
+	}
 	var assetURL, checksumURL string
 	for _, a := range gh.Assets {
 		switch a.Name {
@@ -103,24 +107,82 @@ func CheckLatest(ctx context.Context, includePrerelease bool) (*Release, error) 
 			checksumURL = a.BrowserDownloadURL
 		}
 	}
-	if assetURL == "" {
-		return nil, fmt.Errorf("updater: no asset for %s/%s (want %q)", runtime.GOOS, runtime.GOARCH, binName)
-	}
-
 	rel := &Release{
 		Version:  strings.TrimPrefix(gh.TagName, "v"),
 		TagName:  gh.TagName,
 		AssetURL: assetURL,
 	}
 
-	if checksumURL != "" {
-		sum, err := fetchSHA256(ctx, checksumURL, binName)
-		if err != nil {
-			return nil, fmt.Errorf("updater: fetch checksum: %w", err)
-		}
-		rel.SHA256 = sum
+	sum, err := fetchSHA256(ctx, checksumURL, binName)
+	if err != nil {
+		return nil, fmt.Errorf("updater: fetch checksum: %w", err)
 	}
+	rel.SHA256 = sum
 	return rel, nil
+}
+
+func selectRelease(releases []ghRelease, includePrerelease bool, binName string) (ghRelease, error) {
+	var selected *ghRelease
+	for i := range releases {
+		candidate := &releases[i]
+		version, ok := releaseVersion(candidate.TagName, includePrerelease)
+		if !ok {
+			continue
+		}
+		if selected == nil || cmpVer(parseVer(version), parseVer(strings.TrimPrefix(selected.TagName, "v"))) > 0 {
+			selected = candidate
+		}
+	}
+	if selected == nil {
+		return ghRelease{}, fmt.Errorf("updater: no valid release found")
+	}
+
+	hasBinary, hasChecksum := false, false
+	for _, asset := range selected.Assets {
+		switch asset.Name {
+		case binName:
+			hasBinary = asset.BrowserDownloadURL != ""
+		case "checksums.sha256":
+			hasChecksum = asset.BrowserDownloadURL != ""
+		}
+	}
+	if !hasBinary {
+		return ghRelease{}, fmt.Errorf("updater: release %s has no asset for %s/%s (want %q)", selected.TagName, runtime.GOOS, runtime.GOARCH, binName)
+	}
+	if !hasChecksum {
+		return ghRelease{}, fmt.Errorf("updater: release %s has no checksum asset", selected.TagName)
+	}
+	return *selected, nil
+}
+
+func releaseVersion(tag string, includePrerelease bool) (string, bool) {
+	if !strings.HasPrefix(tag, "v") {
+		return "", false
+	}
+	version := strings.TrimPrefix(tag, "v")
+	if err := versioncontract.ValidateBase(version); err == nil {
+		return version, true
+	}
+	if includePrerelease && strings.HasSuffix(version, "-dev") {
+		base := strings.TrimSuffix(version, "-dev")
+		if err := versioncontract.ValidateBase(base); err == nil {
+			return version, true
+		}
+	}
+	// Keep the one-way upgrade path from the legacy 0.0.x line until the first
+	// stable date-version release is universally available.
+	legacyVersion := version
+	if strings.Contains(legacyVersion, "-") {
+		if !includePrerelease || strings.Count(legacyVersion, "-") != 1 || !strings.HasSuffix(legacyVersion, "-dev") {
+			return "", false
+		}
+		legacyVersion = strings.TrimSuffix(legacyVersion, "-dev")
+	}
+	parsed := parseVer(legacyVersion)
+	if parsed == nil || len(parsed.parts) != 3 || parsed.parts[0] != 0 || parsed.parts[1] != 0 {
+		return "", false
+	}
+	return version, true
 }
 
 // IsNewer reports whether latest is strictly newer than current. Both are
@@ -139,6 +201,20 @@ func IsNewer(current, latest string) bool {
 // replaces destPath. It enforces HTTPS-only downloads and uses a
 // cryptographically random temp file name to prevent TOCTOU attacks.
 func Download(ctx context.Context, rel *Release, destPath string) error {
+	return downloadWithHooks(ctx, rel, destPath, installHooks{
+		prepare: prepareDownloadedBinary,
+		verify:  verifyDownloadedBinary,
+		replace: replaceDownloadedBinary,
+	})
+}
+
+type installHooks struct {
+	prepare func(context.Context, string) error
+	verify  func(context.Context, string, string) error
+	replace func(string, string) error
+}
+
+func downloadWithHooks(ctx context.Context, rel *Release, destPath string, hooks installHooks) error {
 	if !strings.HasPrefix(rel.AssetURL, "https://") {
 		return fmt.Errorf("updater: asset URL must use https (got %q)", rel.AssetURL)
 	}
@@ -148,7 +224,7 @@ func Download(ctx context.Context, rel *Release, destPath string) error {
 	if _, err := rand.Read(rnd[:]); err != nil {
 		return fmt.Errorf("updater: generate temp name: %w", err)
 	}
-	tmpPath := filepath.Join(dir, fmt.Sprintf(".ssh-mcp-update-%s-%x", rel.Version, rnd))
+	tmpPath := filepath.Join(dir, downloadTempName(runtime.GOOS, rel.Version, rnd))
 
 	// Create the temp file non-executable (0600). The execute bit is only
 	// granted after the SHA-256 check passes, so a partially-downloaded or
@@ -208,12 +284,47 @@ func Download(ctx context.Context, rel *Release, destPath string) error {
 	if err := os.Chmod(tmpPath, 0o700); err != nil { // #nosec G302 -- 0700 is the tightened permission, not the wide one gosec assumes
 		return fmt.Errorf("updater: chmod verified binary: %w", err)
 	}
+	if err := hooks.prepare(ctx, tmpPath); err != nil {
+		return fmt.Errorf("updater: prepare verified binary: %w", err)
+	}
+	if err := hooks.verify(ctx, tmpPath, rel.Version); err != nil {
+		return fmt.Errorf("updater: %w", err)
+	}
 
-	// Atomic rename — after this point the temp file is "owned" by the rename.
+	// After this point the temp file is owned by the platform replacement path.
 	cleanupOnce = false
-	if err := os.Rename(tmpPath, destPath); err != nil {
+	if err := hooks.replace(tmpPath, destPath); err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("updater: replace binary: %w", err)
+	}
+	return nil
+}
+
+func downloadTempName(goos, version string, random [8]byte) string {
+	name := fmt.Sprintf(".ssh-mcp-update-%s-%x", version, random)
+	if goos == "windows" {
+		name += ".exe"
+	}
+	return name
+}
+
+func verifyDownloadedBinary(ctx context.Context, path, wantVersion string) error {
+	output, err := exec.CommandContext(ctx, path, "version").Output()
+	if err != nil {
+		return fmt.Errorf("execute downloaded binary: %w", err)
+	}
+	return verifyVersionOutput(string(output), wantVersion)
+}
+
+func verifyVersionOutput(output, wantVersion string) error {
+	line := strings.SplitN(strings.TrimSpace(output), "\n", 2)[0]
+	prefix := "ssh-mcp " + wantVersion + " (commit "
+	if !strings.HasPrefix(line, prefix) || !strings.HasSuffix(line, ")") {
+		return fmt.Errorf("embedded version mismatch: got %q, want ssh-mcp %s with commit", line, wantVersion)
+	}
+	commit := strings.TrimSuffix(strings.TrimPrefix(line, prefix), ")")
+	if commit == "" || commit == "unknown" {
+		return fmt.Errorf("embedded commit is missing in %q", line)
 	}
 	return nil
 }

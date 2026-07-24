@@ -1120,18 +1120,62 @@ auth = "agent"
 // ---- Load: settings.upload_local_allowed_paths (sftp_upload, SDD design
 // docs/design/sftp-upload-tool.md §3.1) -------------------------------------
 
-// TestLoad_UploadLocalAllowedPaths_DefaultEmpty: absent from TOML → empty
-// slice, which is the fail-closed default that makes sftp_upload return
-// UPLOAD_DISABLED until an operator opts in by hand-editing config.toml.
-func TestLoad_UploadLocalAllowedPaths_DefaultEmpty(t *testing.T) {
+func TestLoad_UploadLocalAllowedPaths_Default(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	cfg := config.NewConfig()
+	want := filepath.Join(home, ".ssh-mcp", "uploads")
+	if got := cfg.Settings.UploadLocalAllowedPaths; len(got) != 1 || got[0] != want {
+		t.Fatalf("NewConfig default = %#v, want [%q]", got, want)
+	}
+	if _, err := os.Lstat(want); !os.IsNotExist(err) {
+		t.Fatalf("NewConfig created default upload directory: %v", err)
+	}
+
+	cfg = mustLoad(t, `
+[servers.myserver]
+host = "example.com"
+user = "deploy"
+auth = "agent"
+`)
+	if got := cfg.Settings.UploadLocalAllowedPaths; len(got) != 1 || got[0] != want {
+		t.Fatalf("Load default = %#v, want [%q]", got, want)
+	}
+	if _, err := os.Lstat(want); !os.IsNotExist(err) {
+		t.Fatalf("Load created default upload directory: %v", err)
+	}
+}
+
+func TestDefaultUploadLocalAllowedPaths_UserHomeDirFailureFailsClosed(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "")
+	t.Setenv("HOMEDRIVE", "")
+	t.Setenv("HOMEPATH", "")
+
+	if got := config.DefaultUploadLocalAllowedPaths(); len(got) != 0 {
+		t.Fatalf("helper default = %#v, want empty", got)
+	}
+	if got := config.NewConfig().Settings.UploadLocalAllowedPaths; len(got) != 0 {
+		t.Fatalf("NewConfig default = %#v, want empty", got)
+	}
+
 	cfg := mustLoad(t, `
 [servers.myserver]
 host = "example.com"
 user = "deploy"
 auth = "agent"
 `)
-	if len(cfg.Settings.UploadLocalAllowedPaths) != 0 {
-		t.Errorf("expected empty default, got %v", cfg.Settings.UploadLocalAllowedPaths)
+	if got := cfg.Settings.UploadLocalAllowedPaths; len(got) != 0 {
+		t.Fatalf("Load default = %#v, want empty", got)
+	}
+}
+
+func TestLoad_UploadLocalAllowedPaths_ExplicitEmpty(t *testing.T) {
+	cfg := mustLoad(t, "[settings]\nupload_local_allowed_paths = []\n")
+	if cfg.Settings.UploadLocalAllowedPaths == nil || len(cfg.Settings.UploadLocalAllowedPaths) != 0 {
+		t.Fatalf("explicit empty = %#v", cfg.Settings.UploadLocalAllowedPaths)
 	}
 }
 
@@ -1157,8 +1201,9 @@ host = "example.com"
 user = "deploy"
 auth = "agent"
 `, p1, p2))
-	if len(cfg.Settings.UploadLocalAllowedPaths) != 2 {
-		t.Errorf("expected 2 upload_local_allowed_paths, got %d", len(cfg.Settings.UploadLocalAllowedPaths))
+	got := cfg.Settings.UploadLocalAllowedPaths
+	if len(got) != 2 || got[0] != p1 || got[1] != p2 {
+		t.Errorf("upload_local_allowed_paths = %#v, want [%q %q]", got, p1, p2)
 	}
 }
 

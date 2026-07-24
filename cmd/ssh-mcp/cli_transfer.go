@@ -167,6 +167,84 @@ func (p *progressWriter) print(final bool) {
 	}
 }
 
+// progressReader wraps an inner io.Reader and prints a throttled progress
+// line to stderr as bytes are read from it. Used on upload paths (upload,
+// cp, fetch) so the *sftp.File destination can be passed to io.Copy
+// unwrapped: io.Copy checks dst for io.ReaderFrom, and *sftp.File.ReadFrom
+// drives pkg/sftp's concurrent write pipeline (UseConcurrentWrites, set in
+// internal/ssh.Client.SFTP) instead of sequential 32 KiB writes. Wrapping
+// the destination in a plain io.Writer, as progressWriter does for
+// downloads, would hide that ReadFrom method from io.Copy and silently
+// force it back onto the slow sequential path.
+//
+// Size() int64 is required by *sftp.File.ReadFrom to size its concurrent
+// write pipeline; without a size hint (or total <= 0, e.g. an unknown
+// Content-Length) it falls back to the client's default max concurrency.
+type progressReader struct {
+	inner    io.Reader
+	total    int64
+	read     int64
+	label    string
+	last     time.Time
+	started  time.Time
+	interval time.Duration
+	tty      bool
+}
+
+func newProgressReader(r io.Reader, total int64, label string) *progressReader {
+	now := time.Now()
+	return &progressReader{
+		inner:    r,
+		total:    total,
+		label:    label,
+		started:  now,
+		last:     now,
+		interval: 500 * time.Millisecond,
+		tty:      term.IsTerminal(int(os.Stderr.Fd())),
+	}
+}
+
+func (p *progressReader) Read(b []byte) (int, error) {
+	n, err := p.inner.Read(b)
+	p.read += int64(n)
+	if p.tty && time.Since(p.last) >= p.interval {
+		p.print(false)
+		p.last = time.Now()
+	}
+	return n, err
+}
+
+// Size implements the interface *sftp.File.ReadFrom checks for to determine
+// how many concurrent write requests to pipeline.
+func (p *progressReader) Size() int64 { return p.total }
+
+// Done emits a final progress line (newline-terminated).
+func (p *progressReader) Done() { p.print(true) }
+
+func (p *progressReader) print(final bool) {
+	elapsed := time.Since(p.started)
+	rate := float64(p.read) / elapsed.Seconds()
+	if elapsed.Seconds() < 0.1 {
+		rate = 0
+	}
+
+	var line string
+	if p.total > 0 {
+		pct := float64(p.read) * 100.0 / float64(p.total)
+		line = fmt.Sprintf("%s: %s / %s (%.1f%%) at %s/s",
+			p.label, humanBytes(p.read), humanBytes(p.total), pct, humanBytes(int64(rate)))
+	} else {
+		line = fmt.Sprintf("%s: %s at %s/s",
+			p.label, humanBytes(p.read), humanBytes(int64(rate)))
+	}
+	if final {
+		fmt.Fprintln(os.Stderr, line+" — done")
+	} else {
+		// TTY path — reflow in place.
+		fmt.Fprintf(os.Stderr, "\r%s", line)
+	}
+}
+
 func humanBytes(n int64) string {
 	const unit = 1024
 	if n < unit {
@@ -247,10 +325,10 @@ func uploadCmd(args []string) int {
 		return 1
 	}
 
-	pw := newProgressWriter(dst, info.Size(), fmt.Sprintf("upload %s → %s:%s", filepath.Base(localPath), server, remotePath))
-	written, copyErr := io.Copy(pw, src)
+	pr := newProgressReader(src, info.Size(), fmt.Sprintf("upload %s → %s:%s", filepath.Base(localPath), server, remotePath))
+	written, copyErr := io.Copy(dst, pr)
 	closeErr := dst.Close()
-	pw.Done()
+	pr.Done()
 
 	if copyErr != nil {
 		fmt.Fprintf(os.Stderr, "upload: stream: %v\n", copyErr)
@@ -440,10 +518,10 @@ func cpCmd(args []string) int {
 		return 1
 	}
 
-	pw := newProgressWriter(dstFile, info.Size(), fmt.Sprintf("cp %s:%s → %s:%s", srcServer, srcPath, dstServer, dstPath))
-	written, copyErr := io.Copy(pw, srcFile)
+	pr := newProgressReader(srcFile, info.Size(), fmt.Sprintf("cp %s:%s → %s:%s", srcServer, srcPath, dstServer, dstPath))
+	written, copyErr := io.Copy(dstFile, pr)
 	closeErr := dstFile.Close()
-	pw.Done()
+	pr.Done()
 
 	if copyErr != nil {
 		fmt.Fprintf(os.Stderr, "cp: stream: %v\n", copyErr)
@@ -542,10 +620,10 @@ func fetchCmd(args []string) int {
 		return 1
 	}
 
-	pw := newProgressWriter(dst, resp.ContentLength, fmt.Sprintf("fetch %s → %s:%s", url, server, remotePath))
-	written, copyErr := io.Copy(pw, resp.Body)
+	pr := newProgressReader(resp.Body, resp.ContentLength, fmt.Sprintf("fetch %s → %s:%s", url, server, remotePath))
+	written, copyErr := io.Copy(dst, pr)
 	closeErr := dst.Close()
-	pw.Done()
+	pr.Done()
 
 	if copyErr != nil {
 		fmt.Fprintf(os.Stderr, "fetch: stream: %v\n", copyErr)

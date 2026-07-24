@@ -115,6 +115,28 @@ if [ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]; then
 fi
 
 chmod 0700 "$TMP_BIN"
+
+# macOS may attach quarantine metadata to downloaded binaries. Sign and verify
+# the isolated candidate before executing its version command or replacing the
+# existing installation.
+if [ "$os" = "darwin" ]; then
+  xattr -cr "$TMP_BIN" || fail "failed to clear macOS quarantine metadata from downloaded binary"
+  codesign --force --sign - "$TMP_BIN" || fail "failed to ad-hoc sign downloaded binary"
+  codesign --verify --strict "$TMP_BIN" || fail "downloaded binary failed macOS code-signature verification"
+fi
+
+EXPECTED_VERSION="${TAG#v}"
+VERSION_OUTPUT="$("$TMP_BIN" version)" || fail "downloaded binary could not report its version"
+VERSION_LINE="$(printf '%s\n' "$VERSION_OUTPUT" | sed -n '1p')"
+ACTUAL_VERSION="$(printf '%s\n' "$VERSION_LINE" | sed -n 's/^ssh-mcp \([^ ]*\) (commit [^)]*)$/\1/p')"
+ACTUAL_COMMIT="$(printf '%s\n' "$VERSION_LINE" | sed -n 's/^ssh-mcp [^ ]* (commit \([^)]*\))$/\1/p')"
+if [ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]; then
+  fail "downloaded binary version mismatch: expected $EXPECTED_VERSION, got ${ACTUAL_VERSION:-invalid output: $VERSION_LINE}"
+fi
+if [ -z "$ACTUAL_COMMIT" ] || [ "$ACTUAL_COMMIT" = "unknown" ]; then
+  fail "downloaded binary has no embedded release commit"
+fi
+
 mv -f "$TMP_BIN" "$DEST" || fail "cannot replace $DEST"
 TMP_BIN=""
 

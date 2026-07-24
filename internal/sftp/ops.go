@@ -280,13 +280,74 @@ func (c *Client) writeAtomicFrom(p safety.RemotePath, r io.Reader, size int64, m
 	return nil
 }
 
-// copyWithProgress streams r into f in readChunkSize-sized reads, calling
-// progressCb every progressChunkSize bytes written. It preserves the
-// resume-after-short-write semantics of the old slice-based loop: a partial
-// f.Write is retried with the remainder of the current read chunk before the
-// next Read call, rather than re-reading from r (which could reorder or
-// duplicate bytes for a non-seekable source).
+// copyWithProgress streams r into f, reporting progress via progressCb.
+//
+// When f is a *pkgsftp.File (implements io.ReaderFrom), it uses f.ReadFrom
+// with a size-hinting reader wrapper so pkg/sftp's concurrent-write pipeline
+// (enabled via UseConcurrentWrites in New) fires: multiple write requests are
+// in flight at once instead of waiting for each ack before sending the next,
+// which is the dominant cost on high-RTT links. Progress is reported as
+// bytes read from the local source rather than bytes acked by the remote, a
+// deliberate trade-off since writes may complete out of order.
+//
+// Test fakes (fakeFile) don't implement io.ReaderFrom, so tests exercise the
+// chunked fallback below, which preserves the resume-after-short-write
+// semantics of the original slice-based loop: a partial f.Write is retried
+// with the remainder of the current read chunk before the next Read call,
+// rather than re-reading from r (which could reorder or duplicate bytes for
+// a non-seekable source).
 func copyWithProgress(f sftpFile, r io.Reader, total int64, progressCb func(written, total int64)) (int64, error) {
+	if rf, ok := f.(io.ReaderFrom); ok {
+		return copyViaReadFrom(rf, r, total, progressCb)
+	}
+	return copyChunked(f, r, total, progressCb)
+}
+
+// copyViaReadFrom drives f.ReadFrom via a reader wrapper that exposes Size(),
+// which pkg/sftp's File.ReadFrom needs to compute concurrency; without a
+// size hint it silently falls back to sequential writes (see pkg/sftp's
+// client.go File.ReadFrom).
+func copyViaReadFrom(rf io.ReaderFrom, r io.Reader, total int64, progressCb func(written, total int64)) (int64, error) {
+	pr := &sizedProgressReader{r: r, total: total, cb: progressCb}
+	n, err := rf.ReadFrom(pr)
+	if err == nil && progressCb != nil && n > 0 {
+		progressCb(n, total)
+	}
+	return n, err
+}
+
+// sizedProgressReader wraps r, reporting read progress via cb and exposing
+// Size() so pkg/sftp's File.ReadFrom can size its concurrent write pipeline.
+// Its Read is only ever called from the single goroutine inside pkg/sftp
+// that slices the reader into write requests, so no locking is needed.
+type sizedProgressReader struct {
+	r         io.Reader
+	total     int64
+	read      int64
+	sinceLast int64
+	cb        func(written, total int64)
+}
+
+func (p *sizedProgressReader) Read(b []byte) (int, error) {
+	n, err := p.r.Read(b)
+	if n > 0 {
+		p.read += int64(n)
+		p.sinceLast += int64(n)
+		if p.cb != nil && p.sinceLast >= progressChunkSize {
+			p.cb(p.read, p.total)
+			p.sinceLast = 0
+		}
+	}
+	return n, err
+}
+
+// Size implements the interface pkg/sftp's File.ReadFrom checks for to
+// determine how many concurrent write requests to pipeline.
+func (p *sizedProgressReader) Size() int64 { return p.total }
+
+// copyChunked is the sequential fallback used when f doesn't implement
+// io.ReaderFrom (e.g. test fakes).
+func copyChunked(f sftpFile, r io.Reader, total int64, progressCb func(written, total int64)) (int64, error) {
 	buf := make([]byte, readChunkSize)
 	var written int64
 	var sinceLastProgress int64

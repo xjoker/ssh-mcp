@@ -2,6 +2,8 @@ package tui
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -450,45 +452,55 @@ func (m *Model) savePassword() {
 		m.err = fmt.Sprintf("Password save failed: machine %q no longer exists", name)
 		return
 	}
-	service, account := "ssh-mcp", "ssh-password:"+name
-	targetRef, err := config.ParseCredRef("keychain:" + service + ":" + account)
-	if err != nil {
-		m.err = "Password save failed: " + err.Error()
-		return
-	}
+	service, account := "ssh-mcp", ""
+	var targetRef config.CredRef
 	if machine.Password.Kind == config.CredRefKeychain {
 		service, account, targetRef = machine.Password.Service, machine.Password.Account, machine.Password
+	} else {
+		account, err = newPasswordAccount(name)
+		if err != nil {
+			m.err = "Password save failed: " + err.Error()
+			return
+		}
+		targetRef, err = config.ParseCredRef("keychain:" + service + ":" + account)
+		if err != nil {
+			m.err = "Password save failed: " + err.Error()
+			return
+		}
 	}
 	changedRef := machine.Password != targetRef
 	secret := []byte(password)
-	err = m.credentials.Set(service, account, secret)
+	if changedRef {
+		machine.Password = targetRef
+		if err = config.UpsertServer(latest, name, machine); err != nil {
+			for index := range secret {
+				secret[index] = 0
+			}
+			m.err = "Password save failed: " + err.Error()
+			return
+		}
+	}
+	err = config.SaveWithPreCommit(m.options.ConfigPath, latest, func() error {
+		return m.credentials.Set(service, account, secret)
+	}, func() error {
+		if !changedRef {
+			return nil
+		}
+		deleteErr := m.credentials.Delete(service, account)
+		if errors.Is(deleteErr, auth.ErrKeyNotFound) {
+			return nil
+		}
+		return deleteErr
+	})
 	for index := range secret {
 		secret[index] = 0
+	}
+	if config.IsSaveCommitted(err) {
+		err = nil
 	}
 	if err != nil {
 		m.err = "Password save failed: " + err.Error()
 		return
-	}
-	if changedRef {
-		machine.Password = targetRef
-		if err = config.UpsertServer(latest, name, machine); err == nil {
-			err = config.Save(m.options.ConfigPath, latest)
-		}
-		if err != nil {
-			m.err = "Password save failed: credential was stored in the OS keychain, but the configuration update was not confirmed: " + err.Error()
-			return
-		}
-	} else {
-		current, loadErr := config.Load(m.options.ConfigPath)
-		if loadErr != nil {
-			m.err = "Password save failed: credential was stored in the OS keychain, but the active configuration could not be confirmed: " + loadErr.Error()
-			return
-		}
-		currentMachine, exists := current.Servers[name]
-		if !exists || currentMachine.Password != targetRef {
-			m.err = "Password save failed: credential was stored in the OS keychain, but the machine credential reference changed; review the machine and try again."
-			return
-		}
 	}
 	m.credentialStates[name] = credentialStored
 	delete(m.credentialErrors, name)
@@ -500,6 +512,14 @@ func (m *Model) savePassword() {
 	if err := m.refresh(); err != nil {
 		m.err, m.message = "Reload failed: "+err.Error(), ""
 	}
+}
+
+func newPasswordAccount(name string) (string, error) {
+	var nonce [8]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return "", fmt.Errorf("create keychain account: %w", err)
+	}
+	return "ssh-password:" + name + "-" + hex.EncodeToString(nonce[:]), nil
 }
 
 func (m *Model) openPasswordDeleteConfirmation() {

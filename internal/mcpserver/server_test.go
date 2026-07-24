@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -86,13 +87,32 @@ func TestServer_RegisterAll(t *testing.T) {
 		t.Fatal("tools.All() returned empty slice — tool init() functions may not have run")
 	}
 
-	// SDD requires at least 13 tools total (D1+D2+D3 = 5+5+3).
-	const minExpectedTools = 13
-	if len(allTools) < minExpectedTools {
-		t.Errorf("expected at least %d tools registered, got %d", minExpectedTools, len(allTools))
+	got := toolNames(allTools)
+	slices.Sort(got)
+	want := []string{
+		"audit_query",
+		"list_servers",
+		"self_update",
+		"session_close",
+		"session_send",
+		"session_start",
+		"sftp_list",
+		"sftp_op",
+		"sftp_read",
+		"sftp_stat",
+		"sftp_upload",
+		"ssh_exec",
+		"ssh_group_exec",
+		"ssh_host_scan",
+		"ssh_persistent_setup",
+		"ssh_quick_setup",
+		"tunnel",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("registered tools = %v, want %v", got, want)
 	}
 
-	t.Logf("registered %d tools: %v", len(allTools), toolNames(allTools))
+	t.Logf("registered %d tools: %v", len(allTools), got)
 }
 
 func TestServer_Shutdown(t *testing.T) {

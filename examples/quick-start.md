@@ -60,7 +60,7 @@ ssh-mcp auth set ssh-password:prod
 ssh-mcp trust prod
 ```
 
-`set-keychain` reads the password from stdin without echoing.
+`auth set` reads the password from stdin without echoing.
 
 ## 3. Plug into your MCP client
 

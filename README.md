@@ -4,7 +4,11 @@ SSH operations as MCP tools for AI assistants — run commands, manage files, op
 
 **[中文文档 →](README_zh.md)** (translated; English is the authoritative version)
 
-> **Pre-1.0 status.** `ssh-mcp` is on the `0.x.y` line. Functionality is stable enough for personal / small-team use (see `SECURITY.md` for the threat model), but breaking changes can still ship between minor releases when a security or design fix calls for it — they're always called out under `### Breaking` in `CHANGELOG.md`. The `1.0.0` release will lock in standard semver compatibility.
+> **Pre-1.0 status.** `ssh-mcp` uses date-based versions
+> (`YYYYMMDD.V`, with `-dev` for development releases). Functionality is
+> stable enough for personal / small-team use (see `SECURITY.md` for the threat
+> model), but breaking changes can still ship when a security or design fix
+> calls for it — they are called out under `### Breaking` in `CHANGELOG.md`.
 
 ---
 
@@ -17,27 +21,22 @@ SSH operations as MCP tools for AI assistants — run commands, manage files, op
 ```
 Install ssh-mcp on my machine using only shell commands (MCP is not yet available):
 
-1. Call the GitHub releases API to find the latest release tag:
-   GET https://api.github.com/repos/xjoker/ssh-mcp/releases
-   Use releases[0].tag_name as the version.
+1. Detect the platform and run the repository installer:
+   macOS/Linux:
+     curl -fsSL https://raw.githubusercontent.com/xjoker/ssh-mcp/main/scripts/install.sh | bash
+   Windows PowerShell:
+     iwr -useb https://raw.githubusercontent.com/xjoker/ssh-mcp/main/scripts/install.ps1 | iex
+   Do not download or overwrite the binary manually. The installer selects the
+   latest stable release, verifies SHA-256 plus the embedded version/commit,
+   and preserves any existing installation if validation fails.
 
-2. Detect my OS and architecture, then download the matching binary:
-   URL: https://github.com/xjoker/ssh-mcp/releases/download/{tag}/ssh-mcp_{os}_{arch}
-   os values : linux | darwin | windows
-   arch values: amd64 | arm64  (windows supports amd64 only)
-   Append .exe on Windows.
+2. Run: ssh-mcp config init
 
-3. Install the binary:
-   macOS/Linux → ~/.local/bin/ssh-mcp  (chmod +x, create dir if needed)
-   Windows     → %LOCALAPPDATA%\Programs\ssh-mcp\ssh-mcp.exe
-
-4. Run: ssh-mcp config init
-
-5. Register with Claude Code:
+3. Register with Claude Code:
    claude mcp add --transport stdio --scope user ssh-bridge -- ~/.local/bin/ssh-mcp
-   (Windows: use the full .exe path from step 3)
+   (Windows: use %LOCALAPPDATA%\Programs\ssh-mcp\ssh-mcp.exe)
 
-6. Confirm with: ssh-mcp version
+4. Confirm with: ssh-mcp version
 
 Then tell me: "Done — please restart Claude Code to activate the MCP server."
 ```
@@ -74,7 +73,7 @@ Ask me for: host, port, username, and auth method (agent / key / password).
 
 ### Codex
 
-Phase 1 — replace step 5 with:
+Phase 1 — replace step 3 with:
 ```
 codex mcp add ssh-bridge -- ~/.local/bin/ssh-mcp
 ```
@@ -414,7 +413,15 @@ Tag servers (`tags = ["prod", "eu"]`) and target entire fleets with a single `ss
 Every tool call is pre-recorded in a JSONL audit log before execution. `audit_query` provides structured search; credentials appear only as `{"redacted":true}`.
 
 **Self-update**
-`ssh-mcp update` fetches the latest release binary, verifies its SHA-256, and atomically replaces the running binary. The bridge also surfaces an update notice on startup when a newer version is available.
+`ssh-mcp update` fetches the newest valid release for the selected channel,
+requires both the matching SHA-256 entry and embedded version/commit, and only
+then replaces the user-local binary. macOS candidates are cleared of download
+attributes, ad-hoc signed, and verified before replacement. Windows uses a
+same-directory rename so the verified `.exe` is already at the public path
+before success is reported; a detached helper deletes the renamed old image
+after the current process exits. Any failed check preserves the installed
+binary. The bridge also surfaces an update notice on startup when a newer
+version is available.
 
 ---
 

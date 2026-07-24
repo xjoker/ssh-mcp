@@ -124,7 +124,9 @@ func (store *fakeCredentialStore) Set(service, account string, secret []byte) er
 	}
 	store.values[service+"/"+account] = append([]byte(nil), secret...)
 	if store.onSet != nil {
-		store.onSet()
+		onSet := store.onSet
+		store.onSet = nil
+		onSet()
 	}
 	return nil
 }
@@ -217,8 +219,13 @@ password = "env:SSH_MCP_TEST_PASSWORD"
 	if !strings.Contains(model.err, "Password save failed:") {
 		t.Fatalf("error = %q, want visible configuration save failure", model.err)
 	}
-	if got := string(store.values["ssh-mcp/ssh-password:existing"]); got != password {
-		t.Fatalf("stored credential = %q, want newly supplied password", got)
+	if len(store.deleteCalls) != 1 || !strings.HasPrefix(store.deleteCalls[0], "ssh-mcp/ssh-password:existing-") {
+		t.Fatalf("rollback delete calls = %v, want the generated account", store.deleteCalls)
+	}
+	for key := range store.values {
+		if strings.HasPrefix(key, "ssh-mcp/ssh-password:existing-") {
+			t.Fatalf("generated credential remains after configuration save failure: %s", key)
+		}
 	}
 	loaded, err := config.Load(configPath)
 	if err != nil {
@@ -260,9 +267,10 @@ password = "env:SSH_MCP_TEST_PASSWORD"
 	}
 }
 
-func TestPasswordManagerDoesNotOverwriteConcurrentConfigChange(t *testing.T) {
+func TestPasswordManagerUsesOwnedAccountWhenChangingReference(t *testing.T) {
 	const password = "replacement secret"
 	configPath := writeTUIConfig(t, `
+# keep this operator comment
 [settings]
 
 [servers.existing]
@@ -270,48 +278,35 @@ host = "host.example"
 user = "deploy"
 auth = "password"
 password = "env:SSH_MCP_TEST_PASSWORD"
-description = "original"
 `)
 	model, err := New(Options{ConfigPath: configPath})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var hookErr error
-	store := &fakeCredentialStore{onSet: func() {
-		latest, err := config.Load(configPath)
-		if err != nil {
-			hookErr = err
-			return
-		}
-		machine := latest.Servers["existing"]
-		machine.Description = "external update"
-		if err := config.UpsertServer(latest, "existing", machine); err != nil {
-			hookErr = err
-			return
-		}
-		hookErr = config.Save(configPath, latest)
+	store := &fakeCredentialStore{values: map[string][]byte{
+		"ssh-mcp/ssh-password:existing": []byte("independently managed secret"),
 	}}
 	model.credentials = store
 	model.openPasswordManager()
 	model.password.fields[0].SetValue(password)
 	model.password.fields[1].SetValue(password)
 	model.savePassword()
-	if hookErr != nil {
-		t.Fatal(hookErr)
-	}
-	if !strings.Contains(strings.ToLower(model.err), "changed") {
-		t.Fatalf("error = %q, want concurrent-change failure", model.err)
+	if model.err != "" {
+		t.Fatalf("save password: %s", model.err)
 	}
 	loaded, err := config.Load(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	machine := loaded.Servers["existing"]
-	if machine.Description != "external update" || machine.Password.Raw != "env:SSH_MCP_TEST_PASSWORD" {
-		t.Fatalf("machine after concurrent update = %+v, want external description and original credential reference", machine)
+	ref := loaded.Servers["existing"].Password
+	if ref.Service != "ssh-mcp" || !strings.HasPrefix(ref.Account, "ssh-password:existing-") {
+		t.Fatalf("credential reference = %+v, want a fresh TUI-owned account", ref)
 	}
-	if got := string(store.values["ssh-mcp/ssh-password:existing"]); got != password {
-		t.Fatalf("stored credential = %q, want newly supplied password", got)
+	if got := string(store.values["ssh-mcp/ssh-password:existing"]); got != "independently managed secret" {
+		t.Fatalf("canonical account = %q, want independently managed secret preserved", got)
+	}
+	if got := string(store.values[ref.Service+"/"+ref.Account]); got != password {
+		t.Fatalf("owned account = %q, want replacement secret", got)
 	}
 }
 
@@ -326,6 +321,10 @@ user = "deploy"
 auth = "password"
 password = "keychain:custom-service:custom-account"
 `)
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	model, err := New(Options{ConfigPath: configPath})
 	if err != nil {
 		t.Fatal(err)
@@ -350,67 +349,12 @@ password = "keychain:custom-service:custom-account"
 	if ref.Service != "custom-service" || ref.Account != "custom-account" {
 		t.Fatalf("credential reference = %+v, want existing custom keychain reference", ref)
 	}
-}
-
-func TestPasswordManagerDetectsConcurrentCustomKeychainReferenceChange(t *testing.T) {
-	const password = "replacement secret"
-	configPath := writeTUIConfig(t, `
-[settings]
-
-[servers.existing]
-host = "host.example"
-user = "deploy"
-auth = "password"
-password = "keychain:custom-service:old-account"
-`)
-	model, err := New(Options{ConfigPath: configPath})
+	after, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var hookErr error
-	store := &fakeCredentialStore{onSet: func() {
-		latest, err := config.Load(configPath)
-		if err != nil {
-			hookErr = err
-			return
-		}
-		newRef, err := config.ParseCredRef("keychain:custom-service:new-account")
-		if err != nil {
-			hookErr = err
-			return
-		}
-		machine := latest.Servers["existing"]
-		machine.Password = newRef
-		if err := config.UpsertServer(latest, "existing", machine); err != nil {
-			hookErr = err
-			return
-		}
-		hookErr = config.Save(configPath, latest)
-	}}
-	model.credentials = store
-	model.openPasswordManager()
-	model.password.fields[0].SetValue(password)
-	model.password.fields[1].SetValue(password)
-	model.savePassword()
-	if hookErr != nil {
-		t.Fatal(hookErr)
-	}
-	if !strings.Contains(strings.ToLower(model.err), "changed") {
-		t.Fatalf("error = %q, want changed-reference failure", model.err)
-	}
-	if model.message != "" {
-		t.Fatalf("success message = %q, want none after concurrent reference change", model.message)
-	}
-	loaded, err := config.Load(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ref := loaded.Servers["existing"].Password
-	if ref.Service != "custom-service" || ref.Account != "new-account" {
-		t.Fatalf("credential reference = %+v, want concurrent new-account reference preserved", ref)
-	}
-	if got := string(store.values["custom-service/old-account"]); got != password {
-		t.Fatalf("old account credential = %q, want supplied password retained without false success", got)
+	if !bytes.Equal(after, before) {
+		t.Fatalf("password-only update rewrote config:\n%s", after)
 	}
 }
 

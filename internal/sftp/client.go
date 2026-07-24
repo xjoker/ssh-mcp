@@ -50,22 +50,24 @@ type realBackend struct{ c *pkgsftp.Client }
 func (r *realBackend) ReadDir(p string) ([]os.FileInfo, error) { return r.c.ReadDir(p) }
 func (r *realBackend) Stat(p string) (os.FileInfo, error)      { return r.c.Stat(p) }
 func (r *realBackend) Lstat(p string) (os.FileInfo, error)     { return r.c.Lstat(p) }
-func (r *realBackend) ReadLink(p string) (string, error)        { return r.c.ReadLink(p) }
+func (r *realBackend) ReadLink(p string) (string, error)       { return r.c.ReadLink(p) }
 func (r *realBackend) OpenFile(path string, f int) (sftpFile, error) {
 	return r.c.OpenFile(path, f)
 }
-func (r *realBackend) Mkdir(path string) error               { return r.c.Mkdir(path) }
-func (r *realBackend) MkdirAll(path string) error            { return r.c.MkdirAll(path) }
-func (r *realBackend) Remove(path string) error              { return r.c.Remove(path) }
-func (r *realBackend) RemoveAll(path string) error           { return r.c.RemoveAll(path) }
-func (r *realBackend) RemoveDirectory(path string) error     { return r.c.RemoveDirectory(path) }
-func (r *realBackend) PosixRename(oldname, newname string) error { return r.c.PosixRename(oldname, newname) }
-func (r *realBackend) Rename(oldname, newname string) error  { return r.c.Rename(oldname, newname) }
+func (r *realBackend) Mkdir(path string) error           { return r.c.Mkdir(path) }
+func (r *realBackend) MkdirAll(path string) error        { return r.c.MkdirAll(path) }
+func (r *realBackend) Remove(path string) error          { return r.c.Remove(path) }
+func (r *realBackend) RemoveAll(path string) error       { return r.c.RemoveAll(path) }
+func (r *realBackend) RemoveDirectory(path string) error { return r.c.RemoveDirectory(path) }
+func (r *realBackend) PosixRename(oldname, newname string) error {
+	return r.c.PosixRename(oldname, newname)
+}
+func (r *realBackend) Rename(oldname, newname string) error      { return r.c.Rename(oldname, newname) }
 func (r *realBackend) Chmod(path string, mode os.FileMode) error { return r.c.Chmod(path, mode) }
-func (r *realBackend) Symlink(oldname, newname string) error { return r.c.Symlink(oldname, newname) }
-func (r *realBackend) RealPath(path string) (string, error)  { return r.c.RealPath(path) }
-func (r *realBackend) Getwd() (string, error)                { return r.c.Getwd() }
-func (r *realBackend) Close() error                          { return r.c.Close() }
+func (r *realBackend) Symlink(oldname, newname string) error     { return r.c.Symlink(oldname, newname) }
+func (r *realBackend) RealPath(path string) (string, error)      { return r.c.RealPath(path) }
+func (r *realBackend) Getwd() (string, error)                    { return r.c.Getwd() }
+func (r *realBackend) Close() error                              { return r.c.Close() }
 
 // Client is the SFTP client exposed to the rest of the project.
 // It wraps a sftpBackend (production: *pkgsftp.Client) and enforces
@@ -78,7 +80,14 @@ type Client struct {
 // The caller is responsible for closing the returned Client before closing
 // the SSH connection.
 func New(sshClient *ssh.Client) (*Client, error) {
-	c, err := pkgsftp.NewClient(sshClient)
+	// UseConcurrentWrites enables pkg/sftp's pipelined *File.ReadFrom writes:
+	// without it, every write chunk waits for the previous one's ack before
+	// the next is sent, so throughput on high-RTT links is bounded by
+	// packet-size / RTT rather than bandwidth. Our atomic write path
+	// (writeAtomicFrom: temp file + chmod + rename, discarding the temp file
+	// on any error) already tolerates the "file length may be undefined
+	// after a mid-write error" caveat this option documents.
+	c, err := pkgsftp.NewClient(sshClient, pkgsftp.UseConcurrentWrites(true))
 	if err != nil {
 		return nil, err
 	}

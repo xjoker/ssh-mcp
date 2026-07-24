@@ -1,12 +1,204 @@
 package main
 
 import (
+	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/xjoker/ssh-mcp/internal/knownhosts"
+	gossh "golang.org/x/crypto/ssh"
 )
+
+func TestTrustCmdRejectsWithoutWritingKnownHosts(t *testing.T) {
+	key := testTrustPublicKey(t)
+	withTrustDependencies(t, func(addr string) (gossh.PublicKey, error) { return key, nil }, func(string, string, gossh.PublicKey) error {
+		t.Fatal("Append must not be called when confirmation is rejected")
+		return nil
+	}, func() (string, error) { return filepath.Join(t.TempDir(), "known_hosts"), nil }, "no\n")
+
+	if code := trustCmd([]string{"--host", "example.test"}); code == 0 {
+		t.Fatal("trust: rejection must exit non-zero")
+	}
+}
+
+func TestTrustCmdEOFDoesNotWriteKnownHosts(t *testing.T) {
+	key := testTrustPublicKey(t)
+	withTrustDependencies(t, func(addr string) (gossh.PublicKey, error) { return key, nil }, func(string, string, gossh.PublicKey) error {
+		t.Fatal("Append must not be called when stdin reaches EOF")
+		return nil
+	}, func() (string, error) { return filepath.Join(t.TempDir(), "known_hosts"), nil }, "")
+
+	if code := trustCmd([]string{"--host", "example.test"}); code == 0 {
+		t.Fatal("trust: EOF must exit non-zero")
+	}
+}
+
+func TestTrustCmdConfirmationRequiresExactYesLine(t *testing.T) {
+	key := testTrustPublicKey(t)
+	for _, tc := range []struct {
+		name       string
+		input      string
+		wantAppend bool
+	}{
+		{name: "unix exact", input: "yes\n", wantAppend: true},
+		{name: "windows exact", input: "yes\r\n", wantAppend: true},
+		{name: "uppercase", input: "YES\n"},
+		{name: "mixed case", input: "Yes\n"},
+		{name: "leading space", input: " yes\n"},
+		{name: "trailing space", input: "yes \n"},
+		{name: "tab", input: "yes\t\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			appendCalls := 0
+			withTrustDependencies(t, func(string) (gossh.PublicKey, error) { return key, nil }, func(string, string, gossh.PublicKey) error {
+				appendCalls++
+				return nil
+			}, func() (string, error) { return filepath.Join(t.TempDir(), "known_hosts"), nil }, tc.input)
+
+			code := trustCmd([]string{"--host", "example.test"})
+			if tc.wantAppend {
+				if code != 0 || appendCalls != 1 {
+					t.Fatalf("trust(%q) = code %d, Append calls %d; want success and one append", tc.input, code, appendCalls)
+				}
+			} else if code == 0 || appendCalls != 0 {
+				t.Fatalf("trust(%q) = code %d, Append calls %d; want rejection and zero appends", tc.input, code, appendCalls)
+			}
+		})
+	}
+}
+
+func TestTrustCmdConfirmedAppendsFetchedKey(t *testing.T) {
+	key := testTrustPublicKey(t)
+	var gotPath, gotHost string
+	var gotKey gossh.PublicKey
+	withTrustDependencies(t, func(addr string) (gossh.PublicKey, error) {
+		if addr != "example.test:2200" {
+			t.Fatalf("FetchHostKey address = %q", addr)
+		}
+		return key, nil
+	}, func(path, host string, appended gossh.PublicKey) error {
+		gotPath, gotHost, gotKey = path, host, appended
+		return nil
+	}, func() (string, error) { return "/tmp/test-known_hosts", nil }, "yes\n")
+
+	if code := trustCmd([]string{"--host", "example.test", "--port", "2200"}); code != 0 {
+		t.Fatalf("trust exit code = %d, want 0", code)
+	}
+	if gotPath != "/tmp/test-known_hosts" || gotHost != "example.test:2200" || gotKey == nil || gossh.FingerprintSHA256(gotKey) != gossh.FingerprintSHA256(key) {
+		t.Fatalf("Append(%q, %q, %v), want (/tmp/test-known_hosts, example.test:2200, fetched key)", gotPath, gotHost, gotKey)
+	}
+}
+
+func TestTrustCmdSkipsAlreadyTrustedKeyWithoutPromptOrAppend(t *testing.T) {
+	key := testTrustPublicKey(t)
+	withTrustDependencies(t, func(string) (gossh.PublicKey, error) { return key, nil }, func(string, string, gossh.PublicKey) error {
+		t.Fatal("Append must not be called for an already trusted key")
+		return nil
+	}, func() (string, error) { return "/tmp/test-known_hosts", nil }, "")
+	trustCheckHostKey = func(string, string, gossh.PublicKey) (knownhosts.Status, error) {
+		return knownhosts.StatusTrusted, nil
+	}
+
+	if code := trustCmd([]string{"--host", "example.test"}); code != 0 {
+		t.Fatalf("trust exit code = %d, want 0", code)
+	}
+}
+
+func TestTrustCmdRejectsMismatchWithoutPromptOrAppend(t *testing.T) {
+	key := testTrustPublicKey(t)
+	withTrustDependencies(t, func(string) (gossh.PublicKey, error) { return key, nil }, func(string, string, gossh.PublicKey) error {
+		t.Fatal("Append must not be called for a mismatched key")
+		return nil
+	}, func() (string, error) { return "/tmp/test-known_hosts", nil }, "yes\n")
+	trustCheckHostKey = func(string, string, gossh.PublicKey) (knownhosts.Status, error) {
+		return knownhosts.StatusMismatch, nil
+	}
+
+	if code := trustCmd([]string{"--yes", "--host", "example.test"}); code == 0 {
+		t.Fatal("trust mismatch must exit non-zero even with --yes")
+	}
+}
+
+func TestTrustCmdIPv6UsesBracketedAddress(t *testing.T) {
+	key := testTrustPublicKey(t)
+	withTrustDependencies(t, func(addr string) (gossh.PublicKey, error) {
+		if addr != "[::1]:22" {
+			t.Fatalf("FetchHostKey address = %q", addr)
+		}
+		return key, nil
+	}, func(_ string, host string, _ gossh.PublicKey) error {
+		if host != "[::1]:22" {
+			t.Fatalf("Append address = %q", host)
+		}
+		return nil
+	}, func() (string, error) { return "/tmp/test-known_hosts", nil }, "yes\n")
+	if code := trustCmd([]string{"--host", "::1", "--port", "22"}); code != 0 {
+		t.Fatalf("trust exit code = %d", code)
+	}
+}
+
+func TestTrustCmdYesAppendsWithoutReadingConfirmation(t *testing.T) {
+	key := testTrustPublicKey(t)
+	appended := false
+	withTrustDependencies(t, func(string) (gossh.PublicKey, error) { return key, nil }, func(string, string, gossh.PublicKey) error {
+		appended = true
+		return nil
+	}, func() (string, error) { return "/tmp/test-known_hosts", nil }, "")
+
+	if code := trustCmd([]string{"--yes", "--host", "example.test"}); code != 0 {
+		t.Fatalf("trust --yes exit code = %d, want 0", code)
+	}
+	if !appended {
+		t.Fatal("trust --yes did not append fetched key")
+	}
+}
+
+func TestTrustCmdPrintsKeyTypeAndFingerprint(t *testing.T) {
+	key := testTrustPublicKey(t)
+	var output bytes.Buffer
+	withTrustDependencies(t, func(string) (gossh.PublicKey, error) { return key, nil }, func(string, string, gossh.PublicKey) error { return nil }, func() (string, error) { return "/tmp/test-known_hosts", nil }, "")
+	trustOutput = &output
+	t.Cleanup(func() { trustOutput = os.Stdout })
+
+	if code := trustCmd([]string{"--yes", "--host", "example.test"}); code != 0 {
+		t.Fatalf("trust --yes exit code = %d, want 0", code)
+	}
+	for _, want := range []string{key.Type(), gossh.FingerprintSHA256(key)} {
+		if !strings.Contains(output.String(), want) {
+			t.Errorf("trust output %q does not contain %q", output.String(), want)
+		}
+	}
+}
+
+func withTrustDependencies(t *testing.T, fetch func(string) (gossh.PublicKey, error), appendKey func(string, string, gossh.PublicKey) error, path func() (string, error), input string) {
+	t.Helper()
+	originalFetch, originalCheck, originalAppend, originalPath, originalInput := trustFetchHostKey, trustCheckHostKey, trustAppendHostKey, trustKnownHostsPath, trustInput
+	trustFetchHostKey, trustAppendHostKey, trustKnownHostsPath = fetch, appendKey, path
+	trustCheckHostKey = func(string, string, gossh.PublicKey) (knownhosts.Status, error) {
+		return knownhosts.StatusUnknown, nil
+	}
+	trustInput = strings.NewReader(input)
+	t.Cleanup(func() {
+		trustFetchHostKey, trustCheckHostKey, trustAppendHostKey, trustKnownHostsPath, trustInput = originalFetch, originalCheck, originalAppend, originalPath, originalInput
+	})
+}
+
+func testTrustPublicKey(t *testing.T) gossh.PublicKey {
+	t.Helper()
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := gossh.NewSignerFromKey(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signer.PublicKey()
+}
 
 // TestTrustCmdNoArgs verifies that `trust` with no arguments exits non-zero.
 func TestTrustCmdNoArgs(t *testing.T) {

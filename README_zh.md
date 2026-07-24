@@ -6,7 +6,10 @@
 
 > 本文档为 [English README](README.md) 的翻译版本。当中英描述出现冲突时，以英文版本为准。新功能/新版本通常先在英文版本落地，中文版会在同一 release 内同步翻译。
 
-> **Pre-1.0 状态。** `ssh-mcp` 处于 `0.x.y` 阶段。功能对个人 / 小团队场景已足够稳定（威胁模型见 `SECURITY.md`），但**当安全或设计修复需要时**，相邻 minor 版本之间仍可能出现破坏性变更 —— 每一处都会在 `CHANGELOG.md` 用 `### Breaking` 小节明确标注。`1.0.0` 发布起会承诺标准的 semver 兼容性。
+> **Pre-1.0 状态。** `ssh-mcp` 使用日期版本
+>（`YYYYMMDD.V`，开发版带 `-dev`）。功能对个人 / 小团队场景已足够稳定
+>（威胁模型见 `SECURITY.md`），但安全或设计修复仍可能带来破坏性变更；
+> 每一处都会在 `CHANGELOG.md` 用 `### Breaking` 小节明确标注。
 
 ---
 
@@ -19,27 +22,21 @@
 ```
 用命令行在我的机器上安装 ssh-mcp（此时 MCP 尚未启动）：
 
-1. 调用 GitHub releases API 获取最新版本号：
-   GET https://api.github.com/repos/xjoker/ssh-mcp/releases
-   使用 releases[0].tag_name 作为版本号。
+1. 检测平台并运行仓库安装脚本：
+   macOS/Linux：
+     curl -fsSL https://raw.githubusercontent.com/xjoker/ssh-mcp/main/scripts/install.sh | bash
+   Windows PowerShell：
+     iwr -useb https://raw.githubusercontent.com/xjoker/ssh-mcp/main/scripts/install.ps1 | iex
+   不要手动下载或覆盖二进制。安装脚本会选择最新正式版，校验 SHA-256
+   与内嵌版本/commit；任一校验失败都会保留已有安装。
 
-2. 检测我的操作系统和 CPU 架构，下载对应二进制文件：
-   URL: https://github.com/xjoker/ssh-mcp/releases/download/{tag}/ssh-mcp_{os}_{arch}
-   os 取值：linux | darwin | windows
-   arch 取值：amd64 | arm64（Windows 仅支持 amd64）
-   Windows 下文件名添加 .exe 后缀。
+2. 运行：ssh-mcp config init
 
-3. 安装二进制：
-   macOS/Linux → ~/.local/bin/ssh-mcp（chmod +x，目录不存在则创建）
-   Windows     → %LOCALAPPDATA%\Programs\ssh-mcp\ssh-mcp.exe
-
-4. 运行：ssh-mcp config init
-
-5. 注册到 Claude Code：
+3. 注册到 Claude Code：
    claude mcp add --transport stdio --scope user ssh-bridge -- ~/.local/bin/ssh-mcp
-   （Windows 使用第 3 步的完整 .exe 路径）
+   （Windows 使用 %LOCALAPPDATA%\Programs\ssh-mcp\ssh-mcp.exe）
 
-6. 验证：ssh-mcp version
+4. 验证：ssh-mcp version
 
 然后告诉我："完成 —— 请重启 Claude Code 以激活 MCP server。"
 ```
@@ -76,7 +73,7 @@ ssh-mcp 工具每次调用都弹出确认提示：
 
 ### Codex
 
-第一阶段 — 把第 5 步替换为：
+第一阶段 — 把第 3 步替换为：
 ```
 codex mcp add ssh-bridge -- ~/.local/bin/ssh-mcp
 ```
@@ -185,9 +182,10 @@ Claude Code 默认对每次 MCP 工具调用弹出确认提示。你可以将特
 
 #### Tier 3 — 永远不要 wildcard 预授权；每次必须人工确认
 
-这些工具具有持久或不可逆影响：`tunnel` 建立长期端口转发，`ssh_persistent_setup` 写入永久服务器凭据，`self_update` 替换当前运行的二进制（即安全边界本身）。请始终逐次人工确认。
+这些工具会跨越持久化或本机安全边界：`tunnel` 建立长期端口转发，`sftp_upload` 读取本机文件并发送到远端，`ssh_persistent_setup` 写入永久服务器凭据，`self_update` 替换当前运行的二进制（即安全边界本身）。请始终逐次人工确认。
 
 - `mcp__ssh-bridge__tunnel`
+- `mcp__ssh-bridge__sftp_upload`
 - `mcp__ssh-bridge__ssh_persistent_setup`
 - `mcp__ssh-bridge__self_update`
 
@@ -215,12 +213,13 @@ Claude Code 默认对每次 MCP 工具调用弹出确认提示。你可以将特
 
 | 工具 | 说明 |
 |------|------|
-| `sftp_op` | 上传、下载、创建目录、删除、移动、复制、创建软链接、stat、realpath。仅适合小文件（base64 / JSON 包大小限制 —— 大文件请用下方 CLI 命令）。`realpath` 操作同样受 `allowed_paths` 约束 —— 无法用于探测允许列表以外的路径。 |
+| `sftp_op` | 上传、下载、创建目录、删除、移动、复制、创建软链接、stat、realpath。仅适合小文件（base64 / JSON 包大小限制 —— 大文件请用 `sftp_upload` 或下方 CLI 命令）。`realpath` 操作同样受 `allowed_paths` 约束 —— 无法用于探测允许列表以外的路径。 |
+| `sftp_upload` ⚠️ | 将任意大小的本机文件直接流式上传到远端，不经 base64 或 AI 上下文。默认禁用：必须在 `config.toml` 中手工配置绝对路径前缀 `settings.upload_local_allowed_paths`；空列表会返回 `UPLOAD_DISABLED`。该工具可读取本机文件，属于 Tier 3，禁止 wildcard 预授权。 |
 | `sftp_list` | 列出远程目录内容（含元数据）。 |
 | `sftp_read` | 读取远程文件，支持字节偏移（tail / seek）。 |
 | `sftp_stat` | 查询单个远程路径的元数据。 |
 
-**大文件**和**服务器间互传**请用 CLI（直接 SFTP 流式传输，无大小限制）：
+**大文件**可使用 `sftp_upload` 或 CLI；**服务器间互传**请用 CLI（直接 SFTP 流式传输，无大小限制）：
 
 | 命令 | 用途 |
 |------|------|
@@ -359,7 +358,12 @@ proxy_chain = ["corp-http", "tor", "bastion-via-server"]   # 外→内顺序
 每次工具调用在执行前预先写入 JSONL 审计日志。`audit_query` 提供结构化查询；凭据字段仅显示 `{"redacted":true}`。
 
 **自动更新**
-`ssh-mcp update` 获取最新版本二进制，验证 SHA-256 后原子替换当前运行的二进制。启动时若有新版本可用，也会在 AI 客户端界面显示更新提示。
+`ssh-mcp update` 获取所选发布通道中最新的合法版本，强制核对 SHA-256
+条目以及二进制内嵌的版本/commit，全部通过后才替换用户目录中的程序。
+macOS 会先清理下载属性、执行 ad-hoc 签名并验签；Windows 会在同目录
+先改名运行中的旧程序，再把已验证 `.exe` 同步放到正式路径；只有正式路径
+已经更新才报告成功，后台 helper 仅在旧进程退出后删除旧副本。任一检查失败
+都会保留已安装版本。启动时若有新版本可用，也会在 AI 客户端界面显示更新提示。
 
 ---
 
