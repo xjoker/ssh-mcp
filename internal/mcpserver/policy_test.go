@@ -5,6 +5,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"testing"
 	"time"
 
@@ -100,6 +101,37 @@ func TestMiddlewareChain_PolicyDenies_SSHExecOnReadonlyServer(t *testing.T) {
 	}
 	if denied.ErrorCode != envelope.CodePolicyDenied {
 		t.Errorf("denied entry ErrorCode = %q, want POLICY_DENIED", denied.ErrorCode)
+	}
+}
+
+func TestMiddlewareChain_PolicyDeniesDateAndSSMutationsOnReadonlyServer(t *testing.T) {
+	for _, command := range []string{"date +%s -s @0", "ss -Ktn"} {
+		t.Run(command, func(t *testing.T) {
+			deps, _ := readonlyServerDeps(t)
+			var reached bool
+			req := callReq(`{"server":"ro-srv","command":` + strconv.Quote(command) + `}`)
+			res, err := middlewareChain(context.Background(), req, "ssh_exec", handlerReached(&reached), deps)
+			if err != nil {
+				t.Fatalf("middlewareChain: %v", err)
+			}
+			if reached {
+				t.Fatal("ssh_exec handler must not run when policy denies")
+			}
+			if !res.IsError {
+				t.Fatal("expected IsError=true")
+			}
+			var env struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal([]byte(res.Content[0].(*mcp.TextContent).Text), &env); err != nil {
+				t.Fatalf("unmarshal response: %v", err)
+			}
+			if env.Error.Code != envelope.CodePolicyDenied {
+				t.Fatalf("error code = %q, want POLICY_DENIED", env.Error.Code)
+			}
+		})
 	}
 }
 

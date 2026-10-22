@@ -236,6 +236,36 @@ func TestSessionSend_PolicyDeniesReadonlySession(t *testing.T) {
 	}
 }
 
+func TestSessionSend_PolicyDeniesDateAndSSMutations(t *testing.T) {
+	deps := mixedPolicyDeps()
+	deps.SessionMgr = newLiveSessionManager()
+
+	startCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	id, err := deps.SessionMgr.Start(startCtx, "ro")
+	if err != nil {
+		t.Fatalf("SessionMgr.Start: %v", err)
+	}
+
+	for _, command := range []string{"date +%s --set @0", "ss --kill --tcp"} {
+		t.Run(command, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			args := mustJSON(map[string]any{
+				"session_id": id,
+				"command":    command,
+			})
+			resp := handleSessionSend(ctx, deps, args)
+			if resp.OK {
+				t.Fatal("expected policy denial")
+			}
+			if resp.Error == nil || resp.Error.Code != envelope.CodePolicyDenied {
+				t.Fatalf("error = %+v, want POLICY_DENIED", resp.Error)
+			}
+		})
+	}
+}
+
 // TestSessionSend_UnrestrictedSession_NotPolicyDenied: a session opened
 // against a server with no mode configured is unaffected by policy — a
 // send that would be denied under readonly mode must not surface

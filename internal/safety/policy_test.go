@@ -193,6 +193,45 @@ func TestEvaluateCommand_Readonly_EscapeHatches_Denied(t *testing.T) {
 	}
 }
 
+func TestEvaluateCommand_Readonly_DateAndSSMutationsDenied(t *testing.T) {
+	p, err := CompilePolicy("readonly", nil, nil)
+	if err != nil {
+		t.Fatalf("CompilePolicy: %v", err)
+	}
+	denied := []string{
+		"date -s @0",
+		"date +%s -s @0",
+		"date +%s\t-s\t@0",
+		"date --set @0",
+		"date -u --set @0 +%s",
+		"ss -K",
+		"ss -Ktn",
+		"ss -tnK",
+		"ss -tn\t-K",
+		"ss --kill --tcp",
+		"ss --k --tcp",
+		"ss --ki --tcp",
+		"ss --kil --tcp",
+	}
+	for _, cmd := range denied {
+		if err := p.EvaluateCommand(cmd); err == nil {
+			t.Errorf("EvaluateCommand(%q): expected deny, got permit", cmd)
+		}
+	}
+	permitted := []string{
+		"date",
+		"date +%s",
+		"ss",
+		"ss -ltnp",
+		"ss --tcp --listening",
+	}
+	for _, cmd := range permitted {
+		if err := p.EvaluateCommand(cmd); err != nil {
+			t.Errorf("EvaluateCommand(%q): expected permit, got: %v", cmd, err)
+		}
+	}
+}
+
 func TestEvaluateCommand_Readonly_UserAllowAppendsToBuiltin(t *testing.T) {
 	p, err := CompilePolicy("readonly", []string{`^php artisan `}, nil)
 	if err != nil {

@@ -70,14 +70,14 @@ var readonlyAllowPatterns = []string{
 	`^id( |$)`,
 	// hostname with any argument (or -F) SETS the hostname — bare form only.
 	`^hostname$`,
-	// date -s / --set / -f mutate the system clock — permit only the bare
-	// form and +FORMAT output.
-	`^date($| \+)`,
+	// date options can mutate the system clock — permit only the bare form
+	// and a single +FORMAT output argument.
+	`^date([[:space:]]+\+[^[:space:]]+)?$`,
 	`^uptime( |$)`,
 	`^printenv( |$)`,
 	`^lsblk( |$)`,
 	`^lsof( |$)`,
-	`^ss( |$)`,
+	`^ss([[:space:]]|$)`,
 	`^sha256sum( |$)`,
 	`^md5sum( |$)`,
 	`^journalctl( |$)`,
@@ -104,6 +104,11 @@ var readonlyDenyPatterns = []string{
 	`(^| )--flush( |$)`,
 	`(^| )--setup-keys( |$)`,
 	`(^| )--sync( |$)`,
+	// ss -K / --kill terminate matching sockets. Preserve its broad
+	// observation allowlist while rejecting standalone and combined flags,
+	// plus getopt_long's unique --k / --ki / --kil abbreviations.
+	`^ss([[:space:]]|$)([^[:space:]]+[[:space:]]+)*-[^[:space:]]*K[^[:space:]]*([[:space:]]|$)`,
+	`^ss([[:space:]]|$)([^[:space:]]+[[:space:]]+)*--k(i(l(l)?)?)?([[:space:]]|$)`,
 }
 
 var (
