@@ -1,6 +1,6 @@
 module github.com/xjoker/ssh-mcp
 
-go 1.25.0
+go 1.26.0
 
 toolchain go1.26.10
 
@@ -12,10 +12,10 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/pkg/sftp v1.13.10
 	github.com/zalando/go-keyring v0.2.8
-	golang.org/x/crypto v0.54.0
-	golang.org/x/net v0.57.0
-	golang.org/x/sys v0.47.0
-	golang.org/x/term v0.45.0
+	golang.org/x/crypto v0.57.0
+	golang.org/x/net v0.60.0
+	golang.org/x/sys v0.48.0
+	golang.org/x/term v0.46.0
 	modernc.org/sqlite v1.53.0
 )
 

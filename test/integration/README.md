@@ -6,7 +6,7 @@ transport against two `linuxserver/openssh-server` containers.
 ## Prerequisites
 
 - Docker (compose v2)
-- Go 1.22+
+- Go 1.26+
 - A built binary at `bin/ssh-mcp`
 
 ## Setup
