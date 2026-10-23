@@ -2,7 +2,7 @@ module github.com/xjoker/ssh-mcp
 
 go 1.25.0
 
-toolchain go1.26.5
+toolchain go1.26.10
 
 require (
 	charm.land/bubbles/v2 v2.1.1
